@@ -346,3 +346,4 @@ compile_commands.json
 
 # Cppcheck
 *.cppcheck
+DerivedData

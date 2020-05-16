@@ -1,0 +1,41 @@
+#!/usr/bin/env python
+
+Import('env')
+Import('env_modules')
+
+env_swift = env_modules.Clone()
+  
+if True or env_swift['tools']:
+    # NOTE: It is safe to generate this file here, since this is still executed serially
+    import build_scripts.gen_swift_glue_version as gen_swift_glue_version
+    gen_swift_glue_version.generate_header('glue/GodotSwift', 'glue/swift_glue_version.gen.h')
+
+# Glue sources
+if False and env_swift['swift_glue']:
+    env_swift.Append(CPPDEFINES=['SWIFT_GLUE_ENABLED'])
+
+    import os.path
+    if not os.path.isfile('glue/swift_glue.gen.cpp'):
+        raise RuntimeError("Swift glue sources not found. Did you forget to run '--generate-swift-glue'?")
+
+
+# Configure Thread Local Storage
+
+conf = Configure(env_swift)
+env_swift = conf.Finish()
+
+# Add sources
+
+env_swift.add_source_files(env.modules_sources, '*.cpp')
+env_swift.add_source_files(env.modules_sources, 'glue/*.cpp')
+env_swift.add_source_files(env.modules_sources, 'swift_gd/*.cpp')
+env_swift.add_source_files(env.modules_sources, 'utils/*.cpp')
+
+env_swift.add_source_files(env.modules_sources, 'swift_gd/support/*.cpp')
+
+if env['platform'] in ['osx', 'iphone']:
+    env_swift.add_source_files(env.modules_sources, 'swift_gd/support/*.mm')
+    env_swift.add_source_files(env.modules_sources, 'swift_gd/support/*.m')
+
+if env['tools']:
+    env_swift.add_source_files(env.modules_sources, 'editor/*.cpp')
