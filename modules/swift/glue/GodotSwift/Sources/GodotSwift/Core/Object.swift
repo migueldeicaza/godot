@@ -7,31 +7,48 @@
 //
 
 import Foundation
+import CApiGodotSwift
+
+class SubclassTest: Object {
+    public override init ()
+    {
+        super.init (owns: false, handle: nil)
+        self.handle = Unmanaged.passRetained (self).toOpaque()
+    }
+}
 
 public class Object: CustomDebugStringConvertible {
-    var handle: OpaquePointer
+    var handle: UnsafeMutableRawPointer?
     var owns: Bool
     
-    public convenience init ()
+    public init ()
     {
-        self.init (owns: false, handle: godot_call_object_ctor ())
+        self.owns = false
+        self.handle = nil
+        self.handle = godot_icall_Object_Ctor (OpaquePointer (Unmanaged.passRetained (self).toOpaque()))
     }
     
-    public init (owns: Bool, handle: OpaquePointer)
+    public init (owns: Bool, handle: UnsafeMutableRawPointer?)
     {
         self.owns = owns
         self.handle = handle
     }
     
-    public var nativeInstance: OpaquePointer {
+    public var nativeInstance: UnsafeMutableRawPointer? {
         get {
             handle
         }
     }
     
-    var debugDescription: String {
+    public var debugDescription: String {
         get {
             return "Godot can provide this1"
         }
+    }
+
+    static func classDBgetMethod (type: String, method: String) -> UnsafeMutableRawPointer
+    {
+        print ("Calling Object.classDBgetMethod -- should call the bridge code")
+        abort ();
     }
 }

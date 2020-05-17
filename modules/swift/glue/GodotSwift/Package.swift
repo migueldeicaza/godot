@@ -2,6 +2,17 @@
 // The swift-tools-version declares the minimum version of Swift required to build this package.
 
 import PackageDescription
+import Foundation
+let dirs = [
+        "-I../../../..", 
+        "-I../../../../../..", 
+        "-I/Users/miguel/cvs/godot/platform/osx", 
+        "-I/Users/miguel/cvs/godot/"
+        ];
+
+let cdeps = [
+    CXXSetting.unsafeFlags(dirs)
+]
 
 let package = Package(
     name: "GodotSwift",
@@ -20,7 +31,13 @@ let package = Package(
         // Targets can depend on other targets in this package, and on products in packages which this package depends on.
         .target(
             name: "GodotSwift",
-            dependencies: []),
+            dependencies: ["CApiGodotSwift"],
+            cxxSettings: cdeps,
+            swiftSettings: [SwiftSetting.unsafeFlags(dirs)]),
+	.target(
+ 	    name: "CApiGodotSwift",
+        dependencies: [],
+        cxxSettings: cdeps),
         .testTarget(
             name: "GodotSwiftTests",
             dependencies: ["GodotSwift"]),

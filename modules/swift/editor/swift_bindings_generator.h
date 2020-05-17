@@ -619,10 +619,10 @@ class SwiftBindingsGenerator {
 
 	void _populate_global_constants();
 
-	Error _generate_swift_type(const TypeInterface &itype, const String &p_output_file);
+	Error _generate_swift_type(const TypeInterface &itype, const String &p_output_file, int &p_method_bind_count, StringBuilder &p_outmethodbind);
 
 	Error _generate_swift_property(const TypeInterface &p_itype, const PropertyInterface &p_iprop, StringBuilder &p_output);
-	Error _generate_swift_method(const TypeInterface &p_itype, const MethodInterface &p_imethod, int &p_method_bind_count, StringBuilder &p_output);
+	Error _generate_swift_method(const TypeInterface &p_itype, const MethodInterface &p_imethod, int &p_method_bind_count, StringBuilder &p_output, StringBuilder &p_outmethodbind);
 
 	void _generate_global_constants(StringBuilder &p_output);
 
