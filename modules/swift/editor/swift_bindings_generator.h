@@ -599,7 +599,7 @@ class SwiftBindingsGenerator {
 		return p_type.name;
 	}
 
-	String bbcode_to_xml(const String &p_bbcode, const TypeInterface *p_itype);
+	String bbcode_to_swiftcomment(const String &p_bbcode, const TypeInterface *p_itype);
 
 	int _determine_enum_prefix(const EnumInterface &p_ienum);
 	void _apply_prefix_to_enum_constants(EnumInterface &p_ienum, int p_prefix_length);

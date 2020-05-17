@@ -105,6 +105,8 @@ void SwiftLanguage::init() {
 #ifdef TOOLS_ENABLED
 	//EditorNode::add_init_callback(&_editor_init_callback);
 #endif
+    gdswift = memnew(GDSwift);
+    gdswift->initialize();
 #if defined(TOOLS_ENABLED) && defined(DEBUG_METHODS_ENABLED)
 	// Generate bindings here, before loading assemblies. 'initialize_load_assemblies' aborts
 	// the applications if the api assemblies or the main tools assembly is missing, but this
@@ -116,7 +118,6 @@ void SwiftLanguage::init() {
 #ifndef MONO_GLUE_ENABLED
 	print_line("Run this binary with '--generate-swift-glue path/to/modules/mono/glue'");
 #endif
-
 }
 
 void SwiftLanguage::finish() {

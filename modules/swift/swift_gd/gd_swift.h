@@ -38,7 +38,8 @@ class GDSwift {
 #ifdef TOOLS_ENABLED
 	uint64_t api_editor_hash;
 #endif
-
+	void _init_godot_api_hashes();
+	
 public:
 #ifdef DEBUG_METHODS_ENABLED
 	uint64_t get_api_core_hash() {
@@ -59,6 +60,9 @@ protected:
 public:
 	static GDSwift *get_singleton() { return singleton; }
 
+	void initialize();
+	GDSwift();
+	~GDSwift();
 };
 
 class _GodotSwift : public Object {

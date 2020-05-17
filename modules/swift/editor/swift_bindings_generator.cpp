@@ -50,11 +50,11 @@
 #include "../swift_gd/gd_swift.h"
 #define SWIFT_INDENT "    " // 4 whitespaces
 
-#define INDENT1 SWIFT_INDENT
-#define INDENT2 INDENT1 INDENT1
-#define INDENT3 INDENT2 INDENT1
-#define INDENT4 INDENT3 INDENT1
-#define INDENT5 INDENT4 INDENT1
+#define INDENT1 ""
+#define INDENT2 SWIFT_INDENT
+#define INDENT3 INDENT2 SWIFT_INDENT
+#define INDENT4 INDENT3 SWIFT_INDENT
+#define INDENT5 INDENT4 SWIFT_INDENT
 
 #define MEMBER_BEGIN "\n" INDENT2
 
@@ -179,7 +179,7 @@ static String snake_to_camel_case(const String &p_identifier, bool p_input_is_up
 	return ret;
 }
 
-String SwiftBindingsGenerator::bbcode_to_xml(const String &p_bbcode, const TypeInterface *p_itype) {
+String SwiftBindingsGenerator::bbcode_to_swiftcomment(const String &p_bbcode, const TypeInterface *p_itype) {
 
 	// Based on the version in EditorHelp
 
@@ -192,7 +192,7 @@ String SwiftBindingsGenerator::bbcode_to_xml(const String &p_bbcode, const TypeI
 
 	StringBuilder xml_output;
 
-	xml_output.append("<para>");
+	xml_output.append("");
 
 	List<String> tag_stack;
 	bool code_tag = false;
@@ -212,12 +212,12 @@ String SwiftBindingsGenerator::bbcode_to_xml(const String &p_bbcode, const TypeI
 				Vector<String> lines = text.split("\n");
 				for (int i = 0; i < lines.size(); i++) {
 					if (i != 0)
-						xml_output.append("<para>");
+						xml_output.append(" ");
 
 					xml_output.append(lines[i].xml_escape());
 
 					if (i != lines.size() - 1)
-						xml_output.append("</para>\n");
+						xml_output.append("\n");
 				}
 			}
 		}
@@ -235,12 +235,12 @@ String SwiftBindingsGenerator::bbcode_to_xml(const String &p_bbcode, const TypeI
 				Vector<String> lines = text.split("\n");
 				for (int i = 0; i < lines.size(); i++) {
 					if (i != 0)
-						xml_output.append("<para>");
+						xml_output.append("");
 
 					xml_output.append(lines[i].xml_escape());
 
 					if (i != lines.size() - 1)
-						xml_output.append("</para>\n");
+						xml_output.append("\n");
 				}
 			}
 
@@ -265,9 +265,9 @@ String SwiftBindingsGenerator::bbcode_to_xml(const String &p_bbcode, const TypeI
 			if (tag == "/url") {
 				xml_output.append("</a>");
 			} else if (tag == "/code") {
-				xml_output.append("</c>");
+				xml_output.append("`");
 			} else if (tag == "/codeblock") {
-				xml_output.append("</code>");
+				xml_output.append("```");
 			}
 		} else if (code_tag) {
 			xml_output.append("[");
@@ -281,9 +281,9 @@ String SwiftBindingsGenerator::bbcode_to_xml(const String &p_bbcode, const TypeI
 			if (link_target_parts.size() <= 0 || link_target_parts.size() > 2) {
 				ERR_PRINTS("Invalid reference format: '" + tag + "'.");
 
-				xml_output.append("<c>");
+				xml_output.append("`");
 				xml_output.append(tag);
-				xml_output.append("</c>");
+				xml_output.append("`");
 
 				pos = brk_end + 1;
 				continue;
@@ -321,11 +321,11 @@ String SwiftBindingsGenerator::bbcode_to_xml(const String &p_bbcode, const TypeI
 					const MethodInterface *target_imethod = target_itype->find_method_by_name(target_cname);
 
 					if (target_imethod) {
-						xml_output.append("<see cref=\"" BINDINGS_NAMESPACE ".");
+						xml_output.append("`" BINDINGS_NAMESPACE ".");
 						xml_output.append(target_itype->proxy_name);
 						xml_output.append(".");
 						xml_output.append(target_imethod->proxy_name);
-						xml_output.append("\"/>");
+						xml_output.append("`");
 					}
 				}
 			} else if (link_tag == "member") {
@@ -339,25 +339,25 @@ String SwiftBindingsGenerator::bbcode_to_xml(const String &p_bbcode, const TypeI
 					}
 
 					// TODO Map what we can
-					xml_output.append("<c>");
+					xml_output.append("`");
 					xml_output.append(link_target);
-					xml_output.append("</c>");
+					xml_output.append("`");
 				} else {
 					const PropertyInterface *target_iprop = target_itype->find_property_by_name(target_cname);
 
 					if (target_iprop) {
-						xml_output.append("<see cref=\"" BINDINGS_NAMESPACE ".");
+						xml_output.append("`" BINDINGS_NAMESPACE ".");
 						xml_output.append(target_itype->proxy_name);
 						xml_output.append(".");
 						xml_output.append(target_iprop->proxy_name);
-						xml_output.append("\"/>");
+						xml_output.append("`");
 					}
 				}
 			} else if (link_tag == "signal") {
 				// We do not declare signals in any way in C#, so there is nothing to reference
-				xml_output.append("<c>");
+				xml_output.append("`");
 				xml_output.append(link_target);
-				xml_output.append("</c>");
+				xml_output.append("`");
 			} else if (link_tag == "enum") {
 				StringName search_cname = !target_itype ? target_cname :
 														  StringName(target_itype->name + "." + (String)target_cname);
@@ -552,13 +552,13 @@ String SwiftBindingsGenerator::bbcode_to_xml(const String &p_bbcode, const TypeI
 			pos = brk_end + 1;
 			tag_stack.push_front(tag);
 		} else if (tag == "code") {
-			xml_output.append("<c>");
+			xml_output.append("`");
 
 			code_tag = true;
 			pos = brk_end + 1;
 			tag_stack.push_front(tag);
 		} else if (tag == "codeblock") {
-			xml_output.append("<code>");
+			xml_output.append("```");
 
 			code_tag = true;
 			pos = brk_end + 1;
@@ -625,7 +625,7 @@ String SwiftBindingsGenerator::bbcode_to_xml(const String &p_bbcode, const TypeI
 		}
 	}
 
-	xml_output.append("</para>");
+	xml_output.append("\n");
 
 	return xml_output.as_string();
 }
@@ -695,7 +695,7 @@ void SwiftBindingsGenerator::_apply_prefix_to_enum_constants(SwiftBindingsGenera
 				constant_name += parts[i];
 			}
 
-			curr_const.proxy_name = snake_to_pascal_case(constant_name, true);
+			curr_const.proxy_name = snake_to_camel_case(constant_name, true);
 		}
 	}
 }
@@ -779,7 +779,7 @@ void SwiftBindingsGenerator::_generate_global_constants(StringBuilder &p_output)
 		const ConstantInterface &iconstant = E->get();
 
 		if (iconstant.const_doc && iconstant.const_doc->description.size()) {
-			String xml_summary = bbcode_to_xml(fix_doc_description(iconstant.const_doc->description), NULL);
+			String xml_summary = bbcode_to_swiftcomment(fix_doc_description(iconstant.const_doc->description), NULL);
 			Vector<String> summary_lines = xml_summary.length() ? xml_summary.split("\n") : Vector<String>();
 
 			if (summary_lines.size()) {
@@ -840,19 +840,15 @@ void SwiftBindingsGenerator::_generate_global_constants(StringBuilder &p_output)
 			const ConstantInterface &iconstant = F->get();
 
 			if (iconstant.const_doc && iconstant.const_doc->description.size()) {
-				String xml_summary = bbcode_to_xml(fix_doc_description(iconstant.const_doc->description), NULL);
+				String xml_summary = bbcode_to_swiftcomment(fix_doc_description(iconstant.const_doc->description), NULL);
 				Vector<String> summary_lines = xml_summary.length() ? xml_summary.split("\n") : Vector<String>();
 
 				if (summary_lines.size()) {
-					p_output.append(INDENT2 "/// <summary>\n");
-
 					for (int i = 0; i < summary_lines.size(); i++) {
 						p_output.append(INDENT2 "/// ");
 						p_output.append(summary_lines[i]);
 						p_output.append("\n");
 					}
-
-					p_output.append(INDENT2 "/// </summary>\n");
 				}
 			}
 
@@ -887,10 +883,10 @@ Error SwiftBindingsGenerator::generate_swift_core_project(const String &p_proj_d
 	}
 
 	da->change_dir(p_proj_dir);
-	da->make_dir("Generated");
-	da->make_dir("Generated/GodotObjects");
+	da->make_dir("Sources/GodotSwift/Generated");
+	da->make_dir("Sources/GodotSwift/Generated/GodotObjects");
 
-	String base_gen_dir = spath::join(p_proj_dir, "Generated");
+	String base_gen_dir = spath::join(p_proj_dir, "Sources/GodotSwift/Generated");
 	String godot_objects_gen_dir = spath::join(base_gen_dir, "GodotObjects");
 
 	Vector<String> compile_items;
@@ -899,7 +895,7 @@ Error SwiftBindingsGenerator::generate_swift_core_project(const String &p_proj_d
 	{
 		StringBuilder constants_source;
 		_generate_global_constants(constants_source);
-		String output_file = spath::join(base_gen_dir, BINDINGS_GLOBAL_SCOPE_CLASS "_constants.cs");
+		String output_file = spath::join(base_gen_dir, BINDINGS_GLOBAL_SCOPE_CLASS "_constants.swift");
 		Error save_err = _save_file(output_file, constants_source);
 		if (save_err != OK)
 			return save_err;
@@ -913,7 +909,7 @@ Error SwiftBindingsGenerator::generate_swift_core_project(const String &p_proj_d
 		if (itype.api_type == ClassDB::API_EDITOR)
 			continue;
 
-		String output_file = spath::join(godot_objects_gen_dir, itype.proxy_name + ".cs");
+		String output_file = spath::join(godot_objects_gen_dir, itype.proxy_name + ".swift");
 		Error err = _generate_swift_type(itype, output_file);
 
 		if (err == ERR_SKIP)
@@ -929,23 +925,21 @@ Error SwiftBindingsGenerator::generate_swift_core_project(const String &p_proj_d
 
 	StringBuilder swift_icalls_content;
 
-	swift_icalls_content.append("using System;\n"
-							 "using System.Runtime.CompilerServices;\n"
-							 "\n");
-	swift_icalls_content.append("namespace " BINDINGS_NAMESPACE "\n" OPEN_BLOCK);
-	swift_icalls_content.append(INDENT1 "internal static class " BINDINGS_CLASS_NATIVECALLS "\n" INDENT1 OPEN_BLOCK);
+	swift_icalls_content.append("import Foundation\n");
+	//swift_icalls_content.append("namespace " BINDINGS_NAMESPACE "\n" OPEN_BLOCK);
+	swift_icalls_content.append(INDENT1 "class " BINDINGS_CLASS_NATIVECALLS "\n" INDENT1 OPEN_BLOCK);
 
-	swift_icalls_content.append(MEMBER_BEGIN "internal static ulong godot_api_hash = ");
-	swift_icalls_content.append(String::num_uint64(GDSwift::get_singleton()->get_api_core_hash()) + ";\n");
-	swift_icalls_content.append(MEMBER_BEGIN "internal static uint bindings_version = ");
-	swift_icalls_content.append(String::num_uint64(BINDINGS_GENERATOR_VERSION) + ";\n");
-	swift_icalls_content.append(MEMBER_BEGIN "internal static uint swift_glue_version = ");
-	swift_icalls_content.append(String::num_uint64(SWIFT_GLUE_VERSION) + ";\n");
+	swift_icalls_content.append(MEMBER_BEGIN "static let godot_api_hash: UInt64 = ");
+	swift_icalls_content.append(String::num_uint64(GDSwift::get_singleton()->get_api_core_hash()) + "\n");
+	swift_icalls_content.append(MEMBER_BEGIN "static let bindings_version: UInt32 = ");
+	swift_icalls_content.append(String::num_uint64(BINDINGS_GENERATOR_VERSION) + "\n");
+	swift_icalls_content.append(MEMBER_BEGIN "static let swift_glue_version: UInt32 = ");
+	swift_icalls_content.append(String::num_uint64(SWIFT_GLUE_VERSION) + "\n");
 
 #define ADD_INTERNAL_CALL(m_icall)                                                               \
 	if (!m_icall.editor_only) {                                                                  \
-		swift_icalls_content.append(MEMBER_BEGIN "[MethodImpl(MethodImplOptions.InternalCall)]\n"); \
-		swift_icalls_content.append(INDENT2 "internal extern static ");                             \
+		swift_icalls_content.append(MEMBER_BEGIN "//[MethodImpl(MethodImplOptions.InternalCall)]\n"); \
+		swift_icalls_content.append(INDENT2 "// internal extern static ");                             \
 		swift_icalls_content.append(m_icall.im_type_out + " ");                                     \
 		swift_icalls_content.append(m_icall.name + "(");                                            \
 		swift_icalls_content.append(m_icall.im_sig + ");\n");                                       \
@@ -960,32 +954,13 @@ Error SwiftBindingsGenerator::generate_swift_core_project(const String &p_proj_d
 
 	swift_icalls_content.append(INDENT1 CLOSE_BLOCK CLOSE_BLOCK);
 
-	String internal_methods_file = spath::join(base_gen_dir, BINDINGS_CLASS_NATIVECALLS ".cs");
+	String internal_methods_file = spath::join(base_gen_dir, BINDINGS_CLASS_NATIVECALLS ".swift");
 
 	Error err = _save_file(internal_methods_file, swift_icalls_content);
 	if (err != OK)
 		return err;
 
 	compile_items.push_back(internal_methods_file);
-
-	StringBuilder includes_props_content;
-	includes_props_content.append("<Project>\n"
-								  "  <ItemGroup>\n");
-
-	for (int i = 0; i < compile_items.size(); i++) {
-		String include = spath::relative_to(compile_items[i], p_proj_dir).replace("/", "\\");
-		includes_props_content.append("    <Compile Include=\"" + include + "\" />\n");
-	}
-
-	includes_props_content.append("  </ItemGroup>\n"
-								  "</Project>\n");
-
-	String includes_props_file = spath::join(base_gen_dir, "GeneratedIncludes.props");
-
-	err = _save_file(includes_props_file, includes_props_content);
-	if (err != OK)
-		return err;
-
 	return OK;
 }
 
@@ -1002,10 +977,10 @@ Error SwiftBindingsGenerator::generate_swift_editor_project(const String &p_proj
 	}
 
 	da->change_dir(p_proj_dir);
-	da->make_dir("Generated");
-	da->make_dir("Generated/GodotObjects");
+	da->make_dir("Sources/GodotSwiftEditor/Generated");
+	da->make_dir("Sources/GodotSwiftEditor/Generated/GodotObjects");
 
-	String base_gen_dir = spath::join(p_proj_dir, "Generated");
+	String base_gen_dir = spath::join(p_proj_dir, "Sources/GodotSwift/Generated");
 	String godot_objects_gen_dir = spath::join(base_gen_dir, "GodotObjects");
 
 	Vector<String> compile_items;
@@ -1016,7 +991,7 @@ Error SwiftBindingsGenerator::generate_swift_editor_project(const String &p_proj
 		if (itype.api_type != ClassDB::API_EDITOR)
 			continue;
 
-		String output_file = spath::join(godot_objects_gen_dir, itype.proxy_name + ".cs");
+		String output_file = spath::join(godot_objects_gen_dir, itype.proxy_name + ".swift");
 		Error err = _generate_swift_type(itype, output_file);
 
 		if (err == ERR_SKIP)
@@ -1030,18 +1005,16 @@ Error SwiftBindingsGenerator::generate_swift_editor_project(const String &p_proj
 
 	StringBuilder swift_icalls_content;
 
-	swift_icalls_content.append("using System;\n"
-							 "using System.Runtime.CompilerServices;\n"
-							 "\n");
-	swift_icalls_content.append("namespace " BINDINGS_NAMESPACE "\n" OPEN_BLOCK);
-	swift_icalls_content.append(INDENT1 "internal static class " BINDINGS_CLASS_NATIVECALLS_EDITOR "\n" INDENT1 OPEN_BLOCK);
+	swift_icalls_content.append("import Foundation\n");
+	//swift_icalls_content.append("namespace " BINDINGS_NAMESPACE "\n" OPEN_BLOCK);
+	swift_icalls_content.append(INDENT1 "class " BINDINGS_CLASS_NATIVECALLS_EDITOR "\n" INDENT1 OPEN_BLOCK);
 
-	swift_icalls_content.append(INDENT2 "internal static ulong godot_api_hash = ");
-	swift_icalls_content.append(String::num_uint64(GDSwift::get_singleton()->get_api_editor_hash()) + ";\n");
-	swift_icalls_content.append(INDENT2 "internal static uint bindings_version = ");
-	swift_icalls_content.append(String::num_uint64(BINDINGS_GENERATOR_VERSION) + ";\n");
-	swift_icalls_content.append(INDENT2 "internal static uint swift_glue_version = ");
-	swift_icalls_content.append(String::num_uint64(SWIFT_GLUE_VERSION) + ";\n");
+	swift_icalls_content.append(INDENT2 "static let godot_api_hash: UInt16 = ");
+	swift_icalls_content.append(String::num_uint64(GDSwift::get_singleton()->get_api_editor_hash()) + "\n");
+	swift_icalls_content.append(INDENT2 "static let bindings_version: UInt32 = ");
+	swift_icalls_content.append(String::num_uint64(BINDINGS_GENERATOR_VERSION) + "\n");
+	swift_icalls_content.append(INDENT2 "static let swift_glue_version: UInt32 = ");
+	swift_icalls_content.append(String::num_uint64(SWIFT_GLUE_VERSION) + "\n");
 	swift_icalls_content.append("\n");
 
 #define ADD_INTERNAL_CALL(m_icall)                                                          \
@@ -1062,7 +1035,7 @@ Error SwiftBindingsGenerator::generate_swift_editor_project(const String &p_proj
 
 	swift_icalls_content.append(INDENT1 CLOSE_BLOCK CLOSE_BLOCK);
 
-	String internal_methods_file = spath::join(base_gen_dir, BINDINGS_CLASS_NATIVECALLS_EDITOR ".cs");
+	String internal_methods_file = spath::join(base_gen_dir, BINDINGS_CLASS_NATIVECALLS_EDITOR ".swift");
 
 	Error err = _save_file(internal_methods_file, swift_icalls_content);
 	if (err != OK)
@@ -1111,7 +1084,7 @@ Error SwiftBindingsGenerator::generate_swift_api(const String &p_output_dir) {
 
 	String core_proj_dir = output_dir.plus_file(CORE_API_ASSEMBLY_NAME);
 
-	proj_err = generate_swift_core_project(core_proj_dir);
+	proj_err = generate_swift_core_project(output_dir);
 	if (proj_err != OK) {
 		ERR_PRINT("Generation of the Core API C# project failed.");
 		return proj_err;
@@ -1121,7 +1094,7 @@ Error SwiftBindingsGenerator::generate_swift_api(const String &p_output_dir) {
 
 	String editor_proj_dir = output_dir.plus_file(EDITOR_API_ASSEMBLY_NAME);
 
-	proj_err = generate_swift_editor_project(editor_proj_dir);
+	proj_err = generate_swift_editor_project(output_dir);
 	if (proj_err != OK) {
 		ERR_PRINT("Generation of the Editor API C# project failed.");
 		return proj_err;
@@ -1156,48 +1129,45 @@ Error SwiftBindingsGenerator::_generate_swift_type(const TypeInterface &itype, c
 
 	List<InternalCall> &custom_icalls = itype.api_type == ClassDB::API_EDITOR ? editor_custom_icalls : core_custom_icalls;
 
-	_log("Generating %s.cs...\n", itype.proxy_name.utf8().get_data());
+	_log("Generating %s.swift...\n", itype.proxy_name.utf8().get_data());
 
 	String ctor_method(ICALL_PREFIX + itype.proxy_name + "_Ctor"); // Used only for derived types
 
 	StringBuilder output;
 
-	output.append("using System;\n"); // IntPtr
-	output.append("using System.Diagnostics;\n"); // DebuggerBrowsable
+	output.append("import Foundation\n"); // IntPtr
+	//output.append("using System.Diagnostics;\n"); // DebuggerBrowsable
 
-	output.append("\n"
-				  "#pragma warning disable CS1591 // Disable warning: "
-				  "'Missing XML comment for publicly visible type or member'\n"
-				  "#pragma warning disable CS1573 // Disable warning: "
-				  "'Parameter has no matching param tag in the XML comment'\n");
+	output.append("\n");
+				  
 
-	output.append("\nnamespace " BINDINGS_NAMESPACE "\n" OPEN_BLOCK);
+	//output.append("\nnamespace " BINDINGS_NAMESPACE "\n" OPEN_BLOCK);
 
 	const DocData::ClassDoc *class_doc = itype.class_doc;
 
 	if (class_doc && class_doc->description.size()) {
-		String xml_summary = bbcode_to_xml(fix_doc_description(class_doc->description), &itype);
+		String xml_summary = bbcode_to_swiftcomment(fix_doc_description(class_doc->description), &itype);
 		Vector<String> summary_lines = xml_summary.length() ? xml_summary.split("\n") : Vector<String>();
 
 		if (summary_lines.size()) {
-			output.append(INDENT1 "/// <summary>\n");
+			output.append(INDENT1 "/**\n");
 
 			for (int i = 0; i < summary_lines.size(); i++) {
-				output.append(INDENT1 "/// ");
+				output.append(INDENT1 " * ");
 				output.append(summary_lines[i]);
 				output.append("\n");
 			}
 
-			output.append(INDENT1 "/// </summary>\n");
+			output.append(INDENT1 " */\n");
 		}
 	}
 
-	output.append(INDENT1 "public ");
-	if (itype.is_singleton) {
-		output.append("static partial class ");
-	} else {
-		output.append(itype.is_instantiable ? "partial class " : "abstract partial class ");
-	}
+	output.append(INDENT1 "public class ");
+	// if (itype.is_singleton) {
+	// 	output.append("class ");
+	// } else {
+	// 	output.append(itype.is_instantiable ? "class " : "class ");
+	// }
 	output.append(itype.proxy_name);
 
 	if (itype.is_singleton) {
@@ -1223,11 +1193,12 @@ Error SwiftBindingsGenerator::_generate_swift_type(const TypeInterface &itype, c
 			const ConstantInterface &iconstant = E->get();
 
 			if (iconstant.const_doc && iconstant.const_doc->description.size()) {
-				String xml_summary = bbcode_to_xml(fix_doc_description(iconstant.const_doc->description), &itype);
+				String xml_summary = bbcode_to_swiftcomment(fix_doc_description(iconstant.const_doc->description), &itype);
 				Vector<String> summary_lines = xml_summary.length() ? xml_summary.split("\n") : Vector<String>();
 
 				if (summary_lines.size()) {
-					output.append(MEMBER_BEGIN "/// <summary>\n");
+
+					output.append("\n" MEMBER_BEGIN "/// \n");
 
 					for (int i = 0; i < summary_lines.size(); i++) {
 						output.append(INDENT2 "/// ");
@@ -1235,15 +1206,15 @@ Error SwiftBindingsGenerator::_generate_swift_type(const TypeInterface &itype, c
 						output.append("\n");
 					}
 
-					output.append(INDENT2 "/// </summary>");
+					//output.append(INDENT2 "/// </summary>");
 				}
 			}
 
-			output.append(MEMBER_BEGIN "public const int ");
+			output.append(MEMBER_BEGIN "public let ");
 			output.append(iconstant.proxy_name);
-			output.append(" = ");
+			output.append(": Int = ");
 			output.append(itos(iconstant.value));
-			output.append(";");
+			//output.append(";");
 		}
 
 		if (itype.constants.size())
@@ -1264,11 +1235,11 @@ Error SwiftBindingsGenerator::_generate_swift_type(const TypeInterface &itype, c
 				const ConstantInterface &iconstant = F->get();
 
 				if (iconstant.const_doc && iconstant.const_doc->description.size()) {
-					String xml_summary = bbcode_to_xml(fix_doc_description(iconstant.const_doc->description), &itype);
+					String xml_summary = bbcode_to_swiftcomment(fix_doc_description(iconstant.const_doc->description), &itype);
 					Vector<String> summary_lines = xml_summary.length() ? xml_summary.split("\n") : Vector<String>();
 
 					if (summary_lines.size()) {
-						output.append(INDENT3 "/// <summary>\n");
+						//output.append(INDENT3 "/// \n");
 
 						for (int i = 0; i < summary_lines.size(); i++) {
 							output.append(INDENT3 "/// ");
@@ -1276,10 +1247,10 @@ Error SwiftBindingsGenerator::_generate_swift_type(const TypeInterface &itype, c
 							output.append("\n");
 						}
 
-						output.append(INDENT3 "/// </summary>\n");
+						//output.append(INDENT3 "/// </summary>\n");
 					}
 				}
-
+                output.append ("case ");
 				output.append(INDENT3);
 				output.append(iconstant.proxy_name);
 				output.append(" = ");
@@ -1306,18 +1277,18 @@ Error SwiftBindingsGenerator::_generate_swift_type(const TypeInterface &itype, c
 	if (itype.is_singleton) {
 		// Add the type name and the singleton pointer as static fields
 
-		output.append(MEMBER_BEGIN "private static Godot.Object singleton;\n");
+		output.append(MEMBER_BEGIN "static Godot.Object singleton\n");
 		output.append(MEMBER_BEGIN "public static Godot.Object Singleton\n" INDENT2 "{\n" INDENT3
-								   "get\n" INDENT3 "{\n" INDENT4 "if (singleton == null)\n" INDENT5
+								   "get\n" INDENT3 "{\n" INDENT4 "if singleton == nil\n" INDENT5
 								   "singleton = Engine.GetSingleton(typeof(");
 		output.append(itype.proxy_name);
-		output.append(").Name);\n" INDENT4 "return singleton;\n" INDENT3 "}\n" INDENT2 "}\n");
+		output.append(").Name)\n" INDENT4 "return singleton\n" INDENT3 "}\n" INDENT2 "}\n");
 
-		output.append(MEMBER_BEGIN "private const string " BINDINGS_NATIVE_NAME_FIELD " = \"");
+		output.append(MEMBER_BEGIN "let " BINDINGS_NATIVE_NAME_FIELD ": String = \"");
 		output.append(itype.name);
-		output.append("\";\n");
+		output.append("\"\n");
 
-		output.append(INDENT2 "internal static IntPtr " BINDINGS_PTR_FIELD " = ");
+		output.append(INDENT2 "static let " BINDINGS_PTR_FIELD ": Int = ");
 		output.append(itype.api_type == ClassDB::API_EDITOR ? BINDINGS_CLASS_NATIVECALLS_EDITOR : BINDINGS_CLASS_NATIVECALLS);
 		output.append("." ICALL_PREFIX);
 		output.append(itype.name);
@@ -1325,35 +1296,30 @@ Error SwiftBindingsGenerator::_generate_swift_type(const TypeInterface &itype, c
 	} else if (is_derived_type) {
 		// Add member fields
 
-		output.append(MEMBER_BEGIN "private const string " BINDINGS_NATIVE_NAME_FIELD " = \"");
+		output.append(MEMBER_BEGIN "let " BINDINGS_NATIVE_NAME_FIELD ": String = \"");
 		output.append(itype.name);
 		output.append("\";\n");
 
 		// Add default constructor
 		if (itype.is_instantiable) {
-			output.append(MEMBER_BEGIN "public ");
-			output.append(itype.proxy_name);
-			output.append("() : this(");
-			output.append(itype.memory_own ? "true" : "false");
+			output.append(MEMBER_BEGIN "public init (");
+			output.append("");
+			
 
-			// The default constructor may also be called by the engine when instancing existing native objects
-			// The engine will initialize the pointer field of the managed side before calling the constructor
-			// This is why we only allocate a new native object from the constructor if the pointer field is not set
-			output.append(")\n" OPEN_BLOCK_L2 "if (" BINDINGS_PTR_FIELD " == IntPtr.Zero)\n" INDENT4 BINDINGS_PTR_FIELD " = ");
+			output.append(")\n" OPEN_BLOCK_L2);
+			output.append("self.init (owns:");
+            		output.append(itype.memory_own ? "true" : "false");
+			output.append(", handle: ");
 			output.append(itype.api_type == ClassDB::API_EDITOR ? BINDINGS_CLASS_NATIVECALLS_EDITOR : BINDINGS_CLASS_NATIVECALLS);
 			output.append("." + ctor_method);
-			output.append("(this);\n" CLOSE_BLOCK_L2);
+			output.append("(self))\n" CLOSE_BLOCK_L2);
 		} else {
 			// Hide the constructor
-			output.append(MEMBER_BEGIN "internal ");
-			output.append(itype.proxy_name);
-			output.append("() {}\n");
+			output.append(MEMBER_BEGIN "init () {}\n");
 		}
 
 		// Add.. em.. trick constructor. Sort of.
-		output.append(MEMBER_BEGIN "internal ");
-		output.append(itype.proxy_name);
-		output.append("(bool " SWIFT_FIELD_MEMORYOWN ") : base(" SWIFT_FIELD_MEMORYOWN ") {}\n");
+        	output.append(MEMBER_BEGIN "init (owns: Bool, handle: OpaquePointer){\n" INDENT3 "super.init (owns: owns, handle: handle)\n" INDENT2 "}\n");
 	}
 
 	int method_bind_count = 0;
@@ -1381,10 +1347,7 @@ Error SwiftBindingsGenerator::_generate_swift_type(const TypeInterface &itype, c
 	output.append(INDENT1 CLOSE_BLOCK /* class */
 					CLOSE_BLOCK /* namespace */);
 
-	output.append("\n"
-				  "#pragma warning restore CS1591\n"
-				  "#pragma warning restore CS1573\n");
-
+	
 	return _save_file(p_output_file, output);
 }
 
@@ -1434,19 +1397,15 @@ Error SwiftBindingsGenerator::_generate_swift_property(const SwiftBindingsGenera
 	ERR_FAIL_NULL_V(prop_itype, ERR_BUG); // Property type not found
 
 	if (p_iprop.prop_doc && p_iprop.prop_doc->description.size()) {
-		String xml_summary = bbcode_to_xml(fix_doc_description(p_iprop.prop_doc->description), &p_itype);
+		String xml_summary = bbcode_to_swiftcomment(fix_doc_description(p_iprop.prop_doc->description), &p_itype);
 		Vector<String> summary_lines = xml_summary.length() ? xml_summary.split("\n") : Vector<String>();
 
 		if (summary_lines.size()) {
-			p_output.append(MEMBER_BEGIN "/// <summary>\n");
-
 			for (int i = 0; i < summary_lines.size(); i++) {
 				p_output.append(INDENT2 "/// ");
 				p_output.append(summary_lines[i]);
 				p_output.append("\n");
 			}
-
-			p_output.append(INDENT2 "/// </summary>");
 		}
 	}
 
@@ -1455,20 +1414,16 @@ Error SwiftBindingsGenerator::_generate_swift_property(const SwiftBindingsGenera
 	if (p_itype.is_singleton)
 		p_output.append("static ");
 
-	p_output.append(prop_itype->swift_type);
-	p_output.append(" ");
+	p_output.append ("var ");
 	p_output.append(p_iprop.proxy_name);
-	p_output.append("\n" INDENT2 OPEN_BLOCK);
-
+	p_output.append (": ");
+	p_output.append(prop_itype->swift_type);
+	p_output.append(" {\n");
+	
 	if (getter) {
-		p_output.append(INDENT3 "get\n"
+		p_output.append(INDENT3 "get {\n");
 
-								// TODO Remove this once we make accessor methods private/internal (they will no longer be marked as obsolete after that)
-								"#pragma warning disable CS0618 // Disable warning about obsolete method\n"
-
-				OPEN_BLOCK_L3);
-
-		p_output.append("return ");
+		p_output.append(INDENT4 "return ");
 		p_output.append(getter->proxy_name + "(");
 		if (p_iprop.index != -1) {
 			const ArgumentInterface &idx_arg = getter->arguments.front()->get();
@@ -1481,20 +1436,11 @@ Error SwiftBindingsGenerator::_generate_swift_property(const SwiftBindingsGenera
 				p_output.append(itos(p_iprop.index));
 			}
 		}
-		p_output.append(");\n"
-
-				CLOSE_BLOCK_L3
-
-						// TODO Remove this once we make accessor methods private/internal (they will no longer be marked as obsolete after that)
-						"#pragma warning restore CS0618\n");
+		p_output.append(")\n" CLOSE_BLOCK_L3);
 	}
 
 	if (setter) {
 		p_output.append(INDENT3 "set\n"
-
-								// TODO Remove this once we make accessor methods private/internal (they will no longer be marked as obsolete after that)
-								"#pragma warning disable CS0618 // Disable warning about obsolete method\n"
-
 				OPEN_BLOCK_L3);
 
 		p_output.append(setter->proxy_name + "(");
@@ -1509,12 +1455,9 @@ Error SwiftBindingsGenerator::_generate_swift_property(const SwiftBindingsGenera
 				p_output.append(itos(p_iprop.index) + ", ");
 			}
 		}
-		p_output.append("value);\n"
-
+		p_output.append("newValue)\n"
 				CLOSE_BLOCK_L3
-
-						// TODO Remove this once we make accessor methods private/internal (they will no longer be marked as obsolete after that)
-						"#pragma warning restore CS0618\n");
+        );
 	}
 
 	p_output.append(CLOSE_BLOCK_L2);
@@ -1547,21 +1490,20 @@ Error SwiftBindingsGenerator::_generate_swift_method(const SwiftBindingsGenerato
 			if (F != p_imethod.arguments.front())
 				arguments_sig += ", ";
 
-			if (iarg.def_param_mode == ArgumentInterface::NULLABLE_VAL)
-				arguments_sig += "Nullable<";
+			arguments_sig += "_ ";
+			arguments_sig += iarg.name;
+			arguments_sig += ": ";
 
 			arguments_sig += arg_type->swift_type;
 
 			if (iarg.def_param_mode == ArgumentInterface::NULLABLE_VAL)
-				arguments_sig += "> ";
+				arguments_sig += "? ";
 			else
 				arguments_sig += " ";
 
-			arguments_sig += iarg.name;
-
 			if (iarg.default_argument.size()) {
 				if (iarg.def_param_mode != ArgumentInterface::CONSTANT)
-					arguments_sig += " = null";
+					arguments_sig += " = nil";
 				else
 					arguments_sig += " = " + ssformat(iarg.default_argument, arg_type->swift_type);
 			}
@@ -1596,14 +1538,14 @@ Error SwiftBindingsGenerator::_generate_swift_method(const SwiftBindingsGenerato
 			String def_arg = ssformat(iarg.default_argument, arg_type->swift_type);
 
 			swift_in_statements += def_arg;
-			swift_in_statements += ";\n" INDENT3;
+			swift_in_statements += "\n" INDENT3;
 
 			icall_params += arg_type->swift_in.empty() ? arg_in : ssformat(arg_type->swift_in, arg_in);
 
 			// Apparently the name attribute must not include the @
 			String param_tag_name = iarg.name.begins_with("@") ? iarg.name.substr(1, iarg.name.length()) : iarg.name;
 
-			default_args_doc.append(MEMBER_BEGIN "/// <param name=\"" + param_tag_name + "\">If the parameter is null, then the default value is " + def_arg + "</param>");
+			default_args_doc.append(MEMBER_BEGIN "/// - Parameter " + param_tag_name + ": If the parameter is `nil`, then the default value is " + def_arg);
 		} else {
 			icall_params += arg_type->swift_in.empty() ? iarg.name : ssformat(arg_type->swift_in, iarg.name);
 		}
@@ -1612,26 +1554,23 @@ Error SwiftBindingsGenerator::_generate_swift_method(const SwiftBindingsGenerato
 	// Generate method
 	{
 		if (!p_imethod.is_virtual && !p_imethod.requires_object_call) {
-			p_output.append(MEMBER_BEGIN "[DebuggerBrowsable(DebuggerBrowsableState.Never)]" MEMBER_BEGIN "private static IntPtr ");
-			p_output.append(method_bind_field + " = Object." ICALL_GET_METHODBIND "(" BINDINGS_NATIVE_NAME_FIELD ", \"");
+			p_output.append (MEMBER_BEGIN "static var ");
+			p_output.append(method_bind_field);
+			p_output.append (": OpaquePointer = { Object." ICALL_GET_METHODBIND "(" BINDINGS_NATIVE_NAME_FIELD ", \"");
 			p_output.append(p_imethod.name);
-			p_output.append("\");\n");
+			p_output.append("\") }()\n");
 		}
 
 		if (p_imethod.method_doc && p_imethod.method_doc->description.size()) {
-			String xml_summary = bbcode_to_xml(fix_doc_description(p_imethod.method_doc->description), &p_itype);
+			String xml_summary = bbcode_to_swiftcomment(fix_doc_description(p_imethod.method_doc->description), &p_itype);
 			Vector<String> summary_lines = xml_summary.length() ? xml_summary.split("\n") : Vector<String>();
 
 			if (summary_lines.size()) {
-				p_output.append(MEMBER_BEGIN "/// <summary>\n");
-
 				for (int i = 0; i < summary_lines.size(); i++) {
 					p_output.append(INDENT2 "/// ");
 					p_output.append(summary_lines[i]);
 					p_output.append("\n");
 				}
-
-				p_output.append(INDENT2 "/// </summary>");
 			}
 		}
 
@@ -1640,38 +1579,43 @@ Error SwiftBindingsGenerator::_generate_swift_method(const SwiftBindingsGenerato
 		}
 
 		if (!p_imethod.is_internal) {
-			p_output.append(MEMBER_BEGIN "[GodotMethod(\"");
-			p_output.append(p_imethod.name);
-			p_output.append("\")]");
+			// p_output.append(MEMBER_BEGIN "@GodotMethod(\"");
+			// p_output.append(p_imethod.name);
+			// p_output.append("\")");
 		}
 
 		if (p_imethod.is_deprecated) {
 			if (p_imethod.deprecation_message.empty())
 				WARN_PRINTS("An empty deprecation message is discouraged. Method: '" + p_imethod.proxy_name + "'.");
 
-			p_output.append(MEMBER_BEGIN "[Obsolete(\"");
-			p_output.append(p_imethod.deprecation_message);
-			p_output.append("\")]");
+			// p_output.append(MEMBER_BEGIN "[Obsolete(\"");
+			// p_output.append(p_imethod.deprecation_message);
+			// p_output.append("\")]");
 		}
 
 		p_output.append(MEMBER_BEGIN);
-		p_output.append(p_imethod.is_internal ? "internal " : "public ");
-
+		p_output.append(p_imethod.is_internal ? " " : "public ");
+		
 		if (p_itype.is_singleton) {
 			p_output.append("static ");
 		} else if (p_imethod.is_virtual) {
 			p_output.append("virtual ");
 		}
+		p_output.append ("func ");
 
-		p_output.append(return_type->swift_type + " ");
 		p_output.append(p_imethod.proxy_name + "(");
-		p_output.append(arguments_sig + ")\n" OPEN_BLOCK_L2);
+		p_output.append(arguments_sig + ")");
+		if (return_type->swift_type != "void") {
+			p_output.append (" -> ");
+			p_output.append(return_type->swift_type);
+		}
+		p_output.append ("\n" OPEN_BLOCK_L2);
 
 		if (p_imethod.is_virtual) {
 			// Godot virtual method must be overridden, therefore we return a default value by default.
 
 			if (return_type->cname == name_cache.type_void) {
-				p_output.append("return;\n" CLOSE_BLOCK_L2);
+				p_output.append("return\n" CLOSE_BLOCK_L2);
 			} else {
 				p_output.append("return default(");
 				p_output.append(return_type->swift_type);
@@ -2152,32 +2096,32 @@ StringName SwiftBindingsGenerator::_get_int_type_name_from_meta(GodotTypeInfo::M
 
 	switch (p_meta) {
 		case GodotTypeInfo::METADATA_INT_IS_INT8:
-			return "sbyte";
+			return "Int8";
 			break;
 		case GodotTypeInfo::METADATA_INT_IS_INT16:
-			return "short";
+			return "Int16";
 			break;
 		case GodotTypeInfo::METADATA_INT_IS_INT32:
-			return "int";
+			return "Int32";
 			break;
 		case GodotTypeInfo::METADATA_INT_IS_INT64:
-			return "long";
+			return "Int64";
 			break;
 		case GodotTypeInfo::METADATA_INT_IS_UINT8:
-			return "byte";
+			return "UInt8";
 			break;
 		case GodotTypeInfo::METADATA_INT_IS_UINT16:
-			return "ushort";
+			return "UInt16";
 			break;
 		case GodotTypeInfo::METADATA_INT_IS_UINT32:
-			return "uint";
+			return "UInt32";
 			break;
 		case GodotTypeInfo::METADATA_INT_IS_UINT64:
-			return "ulong";
+			return "UInt64";
 			break;
 		default:
 			// Assume INT32
-			return "int";
+			return "UInt32";
 	}
 }
 
@@ -2185,17 +2129,17 @@ StringName SwiftBindingsGenerator::_get_float_type_name_from_meta(GodotTypeInfo:
 
 	switch (p_meta) {
 		case GodotTypeInfo::METADATA_REAL_IS_FLOAT:
-			return "float";
+			return "Float";
 			break;
 		case GodotTypeInfo::METADATA_REAL_IS_DOUBLE:
-			return "double";
+			return "Double";
 			break;
 		default:
 			// Assume real_t (float or double depending of REAL_T_IS_DOUBLE)
 #ifdef REAL_T_IS_DOUBLE
-			return "double";
+			return "Double";
 #else
-			return "float";
+			return "Float";
 #endif
 	}
 }
@@ -2244,7 +2188,7 @@ bool SwiftBindingsGenerator::_populate_object_type_interfaces() {
 		itype.c_out += C_METHOD_UNMANAGED_GET_MANAGED;
 		itype.c_out += itype.is_reference ? "(%1.ptr());\n" : "(%1);\n";
 
-		itype.swift_in = itype.is_singleton ? BINDINGS_PTR_FIELD : "Object." SWIFT_SMETHOD_GETINSTANCE "(%0)";
+		itype.swift_in = itype.is_singleton ? BINDINGS_PTR_FIELD : "(%0).handle";
 
 		itype.c_type = "Object*";
 		itype.c_type_in = itype.c_type;
@@ -2280,7 +2224,7 @@ bool SwiftBindingsGenerator::_populate_object_type_interfaces() {
 			iprop.index = ClassDB::get_property_index(type_cname, iprop.cname, &valid);
 			ERR_FAIL_COND_V(!valid, false);
 
-			iprop.proxy_name = escape_swift_keyword(snake_to_pascal_case(iprop.cname));
+			iprop.proxy_name = escape_swift_keyword(snake_to_camel_case(iprop.cname));
 
 			// Prevent the property and its enclosing type from sharing the same name
 			if (iprop.proxy_name == itype.proxy_name) {
@@ -2436,7 +2380,7 @@ bool SwiftBindingsGenerator::_populate_object_type_interfaces() {
 				imethod.add_argument(ivararg);
 			}
 
-			imethod.proxy_name = escape_swift_keyword(snake_to_pascal_case(imethod.name));
+			imethod.proxy_name = escape_swift_keyword(snake_to_camel_case(imethod.name));
 
 			// Prevent the method and its enclosing type from sharing the same name
 			if (imethod.proxy_name == itype.proxy_name) {
@@ -2691,13 +2635,28 @@ void SwiftBindingsGenerator::_populate_builtin_type_interfaces() {
 #undef INSERT_STRUCT_TYPE
 
 	// bool
+	itype = TypeInterface::create_value_type(String("Bool"));
+	{
+		// SwiftBoolean <---> bool
+		itype.c_in = "\t%0 %1_in = (%0)%1;\n";
+		itype.c_out = "\treturn (%0)%1;\n";
+		itype.c_type = "Bool";
+		itype.c_type_in = "int";
+		itype.c_type_out = itype.c_type_in;
+		itype.c_arg_in = "&%s_in";
+	}
+	itype.im_type_in = itype.name;
+	itype.im_type_out = itype.name;
+	builtin_types.insert(itype.cname, itype);
+
+	// bool
 	itype = TypeInterface::create_value_type(String("bool"));
 	{
 		// SwiftBoolean <---> bool
 		itype.c_in = "\t%0 %1_in = (%0)%1;\n";
 		itype.c_out = "\treturn (%0)%1;\n";
-		itype.c_type = "bool";
-		itype.c_type_in = "SwiftBoolean";
+		itype.c_type = "Bool";
+		itype.c_type_in = "int";
 		itype.c_type_out = itype.c_type_in;
 		itype.c_arg_in = "&%s_in";
 	}
@@ -2727,14 +2686,14 @@ void SwiftBindingsGenerator::_populate_builtin_type_interfaces() {
 
 		// The expected type for all integers in ptrcall is 'int64_t', so that's what we use for 'c_type'
 
-		INSERT_INT_TYPE("sbyte", int8_t, int64_t);
-		INSERT_INT_TYPE("short", int16_t, int64_t);
-		INSERT_INT_TYPE("int", int32_t, int64_t);
-		INSERT_INT_TYPE("byte", uint8_t, int64_t);
-		INSERT_INT_TYPE("ushort", uint16_t, int64_t);
-		INSERT_INT_TYPE("uint", uint32_t, int64_t);
+		INSERT_INT_TYPE("Int8", int8_t, int64_t);
+		INSERT_INT_TYPE("Int16", int16_t, int64_t);
+		INSERT_INT_TYPE("Int32", int32_t, int64_t);
+		INSERT_INT_TYPE("UInt8", uint8_t, int64_t);
+		INSERT_INT_TYPE("UInt16", uint16_t, int64_t);
+		INSERT_INT_TYPE("UInt32", uint32_t, int64_t);
 
-		itype = TypeInterface::create_value_type(String("long"));
+		itype = TypeInterface::create_value_type(String("Int64"));
 		{
 			itype.c_out = "\treturn (%0)%1;\n";
 			itype.c_in = "\t%0 %1_in = (%0)*%1;\n";
@@ -2752,7 +2711,7 @@ void SwiftBindingsGenerator::_populate_builtin_type_interfaces() {
 		itype.ret_as_byref_arg = true;
 		builtin_types.insert(itype.cname, itype);
 
-		itype = TypeInterface::create_value_type(String("ulong"));
+		itype = TypeInterface::create_value_type(String("UInt64"));
 		{
 			itype.c_in = "\t%0 %1_in = (%0)*%1;\n";
 			itype.c_out = "\t*%3 = (%0)%1;\n";
@@ -2774,7 +2733,7 @@ void SwiftBindingsGenerator::_populate_builtin_type_interfaces() {
 	{
 		// float
 		itype = TypeInterface();
-		itype.name = "float";
+		itype.name = "Float";
 		itype.cname = itype.name;
 		itype.proxy_name = "float";
 		{
@@ -2797,7 +2756,7 @@ void SwiftBindingsGenerator::_populate_builtin_type_interfaces() {
 
 		// double
 		itype = TypeInterface();
-		itype.name = "double";
+		itype.name = "Double";
 		itype.cname = itype.name;
 		itype.proxy_name = "double";
 		{
@@ -2822,7 +2781,7 @@ void SwiftBindingsGenerator::_populate_builtin_type_interfaces() {
 	itype = TypeInterface();
 	itype.name = "String";
 	itype.cname = itype.name;
-	itype.proxy_name = "string";
+	itype.proxy_name = "String";
 	itype.c_in = "\t%0 %1_in = " C_METHOD_SWIFTSTR_TO_GODOT "(%1);\n";
 	itype.c_out = "\treturn " C_METHOD_SWIFTSTR_FROM_GODOT "(%1);\n";
 	itype.c_arg_in = "&%s_in";
@@ -3006,7 +2965,7 @@ void SwiftBindingsGenerator::_populate_global_constants() {
 			int constant_value = GlobalConstants::get_global_constant_value(i);
 			StringName enum_name = GlobalConstants::get_global_constant_enum(i);
 
-			ConstantInterface iconstant(constant_name, snake_to_pascal_case(constant_name, true), constant_value);
+			ConstantInterface iconstant(constant_name, snake_to_camel_case(constant_name, true), constant_value);
 			iconstant.const_doc = const_doc;
 
 			if (enum_name != StringName()) {

@@ -41,3 +41,37 @@
 
 _GodotSwift *_GodotSwift::singleton = NULL;
 GDSwift *GDSwift::singleton = NULL;
+
+GDSwift::GDSwift () 
+{
+    singleton = this;
+    api_core_hash = 0;
+
+#ifdef TOOLS_ENABLED
+	api_editor_hash = 0;
+#endif
+}
+
+GDSwift::~GDSwift()
+{
+
+}
+
+void GDSwift::_init_godot_api_hashes() {
+#if defined(SWIFT_GLUE_ENABLED) && defined(DEBUG_METHODS_ENABLED)
+	if (get_api_core_hash() != GodotSwiftBindings::get_core_api_hash()) {
+		ERR_PRINT("Swift: Core API hash mismatch.");
+	}
+
+#ifdef TOOLS_ENABLED
+	if (get_api_editor_hash() != GodotSwiftBindings::get_editor_api_hash()) {
+		ERR_PRINT("Swift: Editor API hash mismatch.");
+	}
+#endif // TOOLS_ENABLED
+#endif // MONO_GLUE_ENABLED && DEBUG_METHODS_ENABLED
+}
+
+void GDSwift::initialize()
+{
+    _init_godot_api_hashes();
+}

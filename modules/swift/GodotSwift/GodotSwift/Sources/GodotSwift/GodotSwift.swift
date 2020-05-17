@@ -1,3 +1,0 @@
-
-
-public typealias GFloat = Float

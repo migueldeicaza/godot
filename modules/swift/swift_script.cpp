@@ -168,7 +168,7 @@ bool SwiftScript::get_property_default_value(const StringName &p_property, Varia
 
 MethodInfo SwiftScript::get_method_info(const StringName &p_method) const {
 	printf ("%s at %s:%d\n", __FUNCTION__, __FILE__, __LINE__);
-	return get_method_info ("Helo");
+	return MethodInfo();
 }
 
 bool SwiftScript::has_script_signal(const StringName &p_signal) const {
