@@ -46,7 +46,7 @@ public class Object: CustomDebugStringConvertible {
         }
     }
 
-    static func classDBgetMethod (type: String, method: String) -> UnsafeMutableRawPointer
+    static func classDBgetMethod (type: String, method: String) -> OpaquePointer
     {
         print ("Calling Object.classDBgetMethod -- should call the bridge code")
         abort ();

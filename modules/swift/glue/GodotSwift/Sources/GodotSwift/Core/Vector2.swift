@@ -85,7 +85,7 @@ public struct Vector2: Equatable {
         if almostEqual(lhs.x, rhs.x) {
             return lhs.y < rhs.y
         }
-        return lhs.x < rhs.y
+        return lhs.x < rhs.x
     }
     
 }

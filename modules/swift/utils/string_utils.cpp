@@ -218,7 +218,7 @@ bool is_swift_keyword(const String &p_name) {
 }
 
 String escape_swift_keyword(const String &p_name) {
-	return is_swift_keyword(p_name) ? "@" + p_name : p_name;
+	return is_swift_keyword(p_name) ? "`" + p_name + "`" : p_name;
 }
 #endif
 
