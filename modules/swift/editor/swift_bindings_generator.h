@@ -434,7 +434,7 @@ class SwiftBindingsGenerator {
 
 			r_enum_itype.swift_type = r_enum_itype.proxy_name;
 			r_enum_itype.swift_in = "%s.rawValue";
-			r_enum_itype.swift_out = "return %2 (rawValue: %0(%1))";
+			r_enum_itype.swift_out = "return %2 (rawValue: %0(%1))!";
 			r_enum_itype.im_type_in = "int";
 			r_enum_itype.im_type_out = "int";
 			r_enum_itype.class_doc = &EditorHelp::get_doc_data()->class_list[r_enum_itype.proxy_name];

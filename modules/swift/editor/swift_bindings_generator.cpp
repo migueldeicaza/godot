@@ -1274,20 +1274,13 @@ Error SwiftBindingsGenerator::_generate_swift_type(const TypeInterface &itype, c
 	if (itype.is_singleton) {
 		// Add the type name and the singleton pointer as static fields
 
-		output.append(MEMBER_BEGIN "static var _singleton: Godot.Object? = nil\n");
-		output.append(MEMBER_BEGIN "public var singleton: GodotObject?\n" INDENT2 "{\n" INDENT3
-								   "get\n" INDENT3 "{\n" INDENT4 "if singleton == nil {\n" INDENT5
-								   "_singleton = Engine.GetSingleton(/*typeof(*/\"");
+		output.append(MEMBER_BEGIN "public static var singleton: Object = { Engine.getSingleton(\"");
 		output.append(itype.proxy_name);
-		output.append("\")/*.Name)*/\n" INDENT4 "}\n" INDENT4 "return singleton\n" INDENT3 "}\n" INDENT2 "}\n");
-
-		//output.append(MEMBER_BEGIN "let " BINDINGS_NATIVE_NAME_FIELD ": String = \"");
-		//output.append(itype.name);
-		//output.append("\"\n");
+		output.append("\")}()\n");
 
 		output.append(INDENT2 "static let " BINDINGS_PTR_FIELD ": OpaquePointer = ");
-		output.append(itype.api_type == ClassDB::API_EDITOR ? BINDINGS_CLASS_NATIVECALLS_EDITOR : BINDINGS_CLASS_NATIVECALLS);
-		output.append("." ICALL_PREFIX);
+		//output.append(itype.api_type == ClassDB::API_EDITOR ? BINDINGS_CLASS_NATIVECALLS_EDITOR : BINDINGS_CLASS_NATIVECALLS);
+		output.append(ICALL_PREFIX);
 		output.append(itype.name);
 		output.append(SINGLETON_ICALL_SUFFIX "();\n");
 	} else if (is_derived_type) {
@@ -1602,7 +1595,11 @@ Error SwiftBindingsGenerator::_generate_swift_method(const SwiftBindingsGenerato
 		p_output.append(arguments_sig + ")");
 		if (return_type->swift_type != "void") {
 			p_output.append (" -> ");
+
 			p_output.append(return_type->swift_type);
+			if (return_type->is_reference){
+				p_output.append ("?");
+			}
 		}
 		p_output.append ("\n" OPEN_BLOCK_L2);
 
@@ -1655,6 +1652,7 @@ Error SwiftBindingsGenerator::_generate_swift_method(const SwiftBindingsGenerato
 		} else if (return_type->swift_out.empty()) {
 			p_output.append("return " + im_call + "(" + icall_params + ");\n");
 		} else {
+			//printf ("Return type is %ls\n", return_type->name.c_str());
 			p_output.append(ssformat(return_type->swift_out, im_call, icall_params, return_type->swift_type, return_type->im_type_out));
 			p_output.append("\n");
 		}
@@ -2150,7 +2148,10 @@ bool SwiftBindingsGenerator::_populate_object_type_interfaces() {
 
 	while (class_list.size()) {
 		StringName type_cname = class_list.front()->get();
-
+		auto x = String(type_cname).utf8().get_data();
+		if (strcmp (x, "AudioEffectRecord") == 0){
+			printf ("Found it\n");
+		}
 		ClassDB::APIType api_type = ClassDB::get_api_type(type_cname);
 
 		if (api_type == ClassDB::API_NONE) {
@@ -2183,13 +2184,19 @@ bool SwiftBindingsGenerator::_populate_object_type_interfaces() {
 		itype.c_out = "\treturn ";
 		itype.c_out += C_METHOD_UNMANAGED_GET_MANAGED;
 		itype.c_out += itype.is_reference ? "(%1.ptr());\n" : "(%1);\n";
-
+		if (itype.is_reference){
+			itype.swift_out = "let ret = %0(%1); return ret == nil ? nil : Unmanaged<%2>.fromOpaque (UnsafeRawPointer (ret!)).takeRetainedValue()";
+			itype.swift_type = itype.proxy_name;
+		} else {
+			itype.swift_type = itype.proxy_name;
+		}
 		itype.swift_in = itype.is_singleton ? BINDINGS_PTR_FIELD : "OpaquePointer (%0.handle)";
 
 		itype.c_type = "Object*";
 		itype.c_type_in = itype.c_type;
 		itype.c_type_out = "SwiftObject*";
-		itype.swift_type = itype.proxy_name;
+
+		
 		itype.im_type_in = "IntPtr";
 		itype.im_type_out = itype.proxy_name;
 
@@ -2360,7 +2367,8 @@ bool SwiftBindingsGenerator::_populate_object_type_interfaces() {
 
 				iarg.name = escape_swift_keyword(snake_to_camel_case(iarg.name));
 
-				if (m && m->has_default_argument(i)) {
+				// MIGUEL-TODO: Rectify later, when I can handle default parameters
+				if (m && m->has_default_argument(i) && false) {
 					bool defval_ok = _arg_default_value_from_variant(m->get_default_argument(i), iarg);
 					ERR_FAIL_COND_V_MSG(!defval_ok, false,
 							"Cannot determine default value for argument '" + orig_arg_name + "' of method '" + itype.name + "." + imethod.name + "'.");
@@ -2607,8 +2615,8 @@ void SwiftBindingsGenerator::_populate_builtin_type_interfaces() {
 		itype.c_in = "\t%0 %1_in = MARSHALLED_IN(" #m_type ", %1);\n"; \
 		itype.c_out = "\t*%3 = MARSHALLED_OUT(" #m_type ", %1);\n";    \
 		itype.c_arg_in = "&%s_in";                                     \
-		itype.c_type_in = "M_" #m_type "*";             \
-		itype.c_type_out = "M_" #m_type;                \
+		itype.c_type_in = "" #m_type "*";             \
+		itype.c_type_out = "" #m_type;                \
 		itype.swift_in = "/*1ref*/ &%s";                                        \
 		/* in swift_out, im_type_out (%3) includes the 'out ' part */     \
 		itype.swift_out = "var argRet: %3; %0(%1, &argRet); return argRet";        \
@@ -2645,16 +2653,18 @@ void SwiftBindingsGenerator::_populate_builtin_type_interfaces() {
 	itype.im_type_out = itype.name;
 	builtin_types.insert(itype.cname, itype);
 
-	// bool
+	// // bool
 	itype = TypeInterface::create_value_type(String("bool"));
 	{
 		// SwiftBoolean <---> bool
 		itype.c_in = "\t%0 %1_in = (%0)%1;\n";
 		itype.c_out = "\treturn (%0)%1;\n";
-		itype.c_type = "Bool";
-		itype.c_type_in = "int";
+		itype.c_type = "_Bool";
+		itype.c_type_in = "_Bool";
 		itype.c_type_out = itype.c_type_in;
 		itype.c_arg_in = "&%s_in";
+		itype.proxy_name = "Bool";
+		itype.swift_type = "Bool";
 	}
 	itype.im_type_in = itype.name;
 	itype.im_type_out = itype.name;
@@ -2693,7 +2703,8 @@ void SwiftBindingsGenerator::_populate_builtin_type_interfaces() {
 		{
 			itype.c_out = "\treturn (%0)%1;\n";
 			itype.c_in = "\t%0 %1_in = (%0)*%1;\n";
-			itype.c_out = "\t*%3 = (%0)%1;\n";
+			//itype.c_out = "\t*%3 = (%0)%1;\n";
+			itype.c_out = "\treturn (%0)%1;\n";
 			itype.c_type = "int64_t";
 			itype.c_arg_in = "&%s_in";
 		}
@@ -2703,14 +2714,15 @@ void SwiftBindingsGenerator::_populate_builtin_type_interfaces() {
 		itype.im_type_out = "/*4out*/ " + itype.name;
 		itype.swift_in = "/*3ref*/ &%0";
 		/* in swift_out, im_type_out (%3) includes the 'out ' part */
-		itype.swift_out = "var argRet: %3; %0(%1, &argRet); return /*(%2)*/argRet;";
-		itype.ret_as_byref_arg = true;
+		//itype.swift_out = "var argRet: %3; %0(%1, &argRet); return /*(%2)*/argRet;";
+		//itype.ret_as_byref_arg = true;
 		builtin_types.insert(itype.cname, itype);
 
 		itype = TypeInterface::create_value_type(String("UInt64"));
 		{
 			itype.c_in = "\t%0 %1_in = (%0)*%1;\n";
-			itype.c_out = "\t*%3 = (%0)%1;\n";
+			//itype.c_out = "\t*%3 = (%0)%1;\n";
+			itype.c_out = "\treturn (%0)%1;\n";
 			itype.c_type = "int64_t";
 			itype.c_arg_in = "&%s_in";
 		}
@@ -2720,8 +2732,8 @@ void SwiftBindingsGenerator::_populate_builtin_type_interfaces() {
 		itype.im_type_out = "/*3out*/ " + itype.name;
 		itype.swift_in = "/*5ref*/ &%0";
 		/* in swift_out, im_type_out (%3) includes the 'out ' part */
-		itype.swift_out = "var argRet: %3; %0(%1, &argRet); return %2(argRet);";
-		itype.ret_as_byref_arg = true;
+		//itype.swift_out = "var argRet: %3; %0(%1, &argRet); return %2(argRet);";
+		//itype.ret_as_byref_arg = true;
 		builtin_types.insert(itype.cname, itype);
 	}
 
@@ -2743,7 +2755,8 @@ void SwiftBindingsGenerator::_populate_builtin_type_interfaces() {
 
 			// The expected type for 'float' in ptrcall is 'double'
 			itype.c_in = "\t%0 %1_in = (%0)%1;\n"; // was \t%0 %1_in = (%0)*%1;\n
-			itype.c_out = "\t*%3 = (%0)%1;\n";
+			//itype.c_out = "\t*%3 = (%0)%1;\n";
+			itype.c_out = "\treturn (%0)%1;\n";
 			itype.c_type = "double";
 			itype.c_type_in = "float";  // was float*
 			itype.c_type_out = "float";
@@ -2754,8 +2767,8 @@ void SwiftBindingsGenerator::_populate_builtin_type_interfaces() {
 		itype.im_type_out = "/*1out*/" + itype.proxy_name; 
 		itype.swift_in = "/*8ref*/ %0"; // was &%0
 		/* in swift_out, im_type_out (%3) includes the 'out ' part */
-		itype.swift_out = "var argRet: %3; %0(%1, &argRet); return %2(argRet)";
-		itype.ret_as_byref_arg = true;
+		//itype.swift_out = "var argRet: %3; %0(%1, &argRet); return %2(argRet)";
+		//itype.ret_as_byref_arg = true;
 		builtin_types.insert(itype.cname, itype);
 
 		// double
@@ -2765,7 +2778,8 @@ void SwiftBindingsGenerator::_populate_builtin_type_interfaces() {
 		itype.proxy_name = "Double";
 		{
 			itype.c_in = "\t%0 %1_in = (%0)*%1;\n";
-			itype.c_out = "\t*%3 = (%0)%1;\n";
+			//itype.c_out = "\t*%3 = (%0)%1;\n";
+			itype.c_out = "\treturn (%0)%1;\n";
 			itype.c_type = "double";
 			itype.c_type_in = "double*";
 			itype.c_type_out = "double";
@@ -2776,8 +2790,8 @@ void SwiftBindingsGenerator::_populate_builtin_type_interfaces() {
 		itype.im_type_out = "/*2out*/" + itype.proxy_name;
 		itype.swift_in = "/*10ref*/ &%0";
 		/* in swift_out, im_type_out (%3) includes the 'out ' part */
-		itype.swift_out = "var argRet: %3; %0(%1, &argRet); return %2(argRet)";
-		itype.ret_as_byref_arg = true;
+		//itype.swift_out = "var argRet: %3; %0(%1, &argRet); return %2(argRet)";
+		//itype.ret_as_byref_arg = true;
 		builtin_types.insert(itype.cname, itype);
 	}
 
@@ -2795,6 +2809,7 @@ void SwiftBindingsGenerator::_populate_builtin_type_interfaces() {
 	itype.swift_type = itype.proxy_name;
 	itype.im_type_in = itype.proxy_name;
 	itype.im_type_out = itype.proxy_name;
+	itype.swift_out = "return String (cString: %0 (%1))";
 	builtin_types.insert(itype.cname, itype);
 
 	// NodePath
@@ -2904,7 +2919,7 @@ void SwiftBindingsGenerator::_populate_builtin_type_interfaces() {
 	itype.c_type = itype.name;
 	itype.c_type_in = itype.c_type + "*";
 	itype.c_type_out = itype.c_type + "*";
-	itype.swift_type = BINDINGS_NAMESPACE_COLLECTIONS "." + itype.proxy_name;
+	itype.swift_type = "G" + itype.proxy_name;
 	itype.swift_in = "%0." SWIFT_SMETHOD_GETINSTANCE "()";
 	itype.swift_out = "return " + itype.swift_type + "(%0(%1));";
 	itype.im_type_in = "IntPtr";
@@ -2920,7 +2935,7 @@ void SwiftBindingsGenerator::_populate_builtin_type_interfaces() {
 	itype.c_type = itype.name;
 	itype.c_type_in = itype.c_type + "*";
 	itype.c_type_out = itype.c_type + "*";
-	itype.swift_type = BINDINGS_NAMESPACE_COLLECTIONS "." + itype.proxy_name;
+	itype.swift_type = "G" + itype.proxy_name;
 	itype.swift_in = "%0." SWIFT_SMETHOD_GETINSTANCE "()";
 	itype.swift_out = "return " + itype.swift_type + "(%0(%1));";
 	itype.im_type_in = "IntPtr";

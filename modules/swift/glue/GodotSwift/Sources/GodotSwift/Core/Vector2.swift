@@ -11,10 +11,8 @@ public enum Axis2D {
     case x
     case y
 }
-public struct Vector2: Equatable {
-    public var x: GFloat
-    public var y: GFloat
-    
+
+public extension Vector2: Equatable {    
     public init (x: GFloat, y: GFloat)
     {
         self.x = x

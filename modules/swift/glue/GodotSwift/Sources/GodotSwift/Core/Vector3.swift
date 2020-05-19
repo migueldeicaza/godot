@@ -12,11 +12,7 @@ public enum Axis3D {
     case y
     case z
 }
-public struct Vector3: Equatable {
-    public var x: GFloat
-    public var y: GFloat
-    public var z: GFloat
-    
+public extension Vector3: Equatable {
     public init (x: GFloat, y: GFloat, z: GFloat)
     {
         self.x = x
