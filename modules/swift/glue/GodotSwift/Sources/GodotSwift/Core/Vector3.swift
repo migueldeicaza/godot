@@ -6,7 +6,7 @@
 //
 
 import Foundation
-
+import CApiGodotSwift
 public enum Axis3D {
     case x
     case y
@@ -17,6 +17,14 @@ public extension Vector3: Equatable {
     {
         self.x = x
         self.y = y
+        self.z = z
+    }
+
+    public init ()
+    {
+        self.x = 0
+        self.y = 0
+        self.z = 0
     }
     
     public subscript (axis: Axis3D) -> GFloat {

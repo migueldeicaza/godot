@@ -3,11 +3,12 @@
 // #include "core/method_bind.h"
 #include "modules/swift/swift_gd/gd_swift_marshal_c_api.h"
 #include <stdlib.h>
+#include <stdbool.h>
 
 typedef struct SwiftObject SwiftObject;
 typedef struct Object Object;
 typedef char SwiftString;
-typedef char SwiftArray;
+typedef struct { int len; const void *ptr; } SwiftArray;
 typedef struct Array Array;
 typedef struct Dictionary Dictionary;
 typedef struct NodePath NodePath;

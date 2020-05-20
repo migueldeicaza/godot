@@ -71,7 +71,7 @@
 #define SWIFT_FIELD_MEMORYOWN "memoryOwn"
 #define SWIFT_PARAM_METHODBIND "method"
 #define SWIFT_PARAM_INSTANCE "ptr"
-#define SWIFT_SMETHOD_GETINSTANCE "GetPtr"
+#define SWIFT_SMETHOD_GETINSTANCE "getHandle"
 #define SWIFT_METHOD_CALL "Call"
 
 #define GLUE_HEADER_FILE "glue_header.h"
@@ -1017,8 +1017,8 @@ Error SwiftBindingsGenerator::generate_swift_editor_project(const String &p_proj
 
 #define ADD_INTERNAL_CALL(m_icall)                                                          \
 	if (m_icall.editor_only) {                                                              \
-		swift_icalls_content.append(INDENT2 "[MethodImpl(MethodImplOptions.InternalCall)]\n"); \
-		swift_icalls_content.append(INDENT2 "internal extern static ");                        \
+		swift_icalls_content.append(INDENT2 "//[MethodImpl(MethodImplOptions.InternalCall)]\n"); \
+		swift_icalls_content.append(INDENT2 "//internal extern static ");                        \
 		swift_icalls_content.append(m_icall.im_type_out + " ");                                \
 		swift_icalls_content.append(m_icall.name + "(");                                       \
 		swift_icalls_content.append(m_icall.im_sig + ");\n");                                  \
@@ -1304,7 +1304,7 @@ Error SwiftBindingsGenerator::_generate_swift_type(const TypeInterface &itype, c
 			output.append("UnsafeMutableRawPointer ((OpaquePointer (Unmanaged.passRetained (self).toOpaque())))\n" CLOSE_BLOCK_L2);
 		} else {
 			// Hide the constructor
-			output.append(MEMBER_BEGIN "override init () {}\n");
+			output.append(MEMBER_BEGIN "override init () { super.init () }\n");
 		}
 
 		// Add.. em.. trick constructor. Sort of.
@@ -1383,6 +1383,10 @@ Error SwiftBindingsGenerator::_generate_swift_property(const SwiftBindingsGenera
 	const TypeInterface *prop_itype = _get_type_or_null(proptype_name);
 	ERR_FAIL_NULL_V(prop_itype, ERR_BUG); // Property type not found
 
+	// MIGUEL: For now, we skip generation of APIs that surface "object" as a parameter (which maps to a variant)
+	if (prop_itype->swift_type == "object"){
+		return OK;
+	}
 	if (p_iprop.prop_doc && p_iprop.prop_doc->description.size()) {
 		String xml_summary = bbcode_to_swiftcomment(fix_doc_description(p_iprop.prop_doc->description), &p_itype);
 		Vector<String> summary_lines = xml_summary.length() ? xml_summary.split("\n") : Vector<String>();
@@ -1406,6 +1410,10 @@ Error SwiftBindingsGenerator::_generate_swift_property(const SwiftBindingsGenera
 	p_output.append(p_iprop.proxy_name);
 	p_output.append (": ");
 	p_output.append(prop_itype->swift_type);
+	if (prop_itype->is_reference || prop_itype->swift_type == "Object"){
+		p_output.append ("?");
+	}
+
 	p_output.append(" {\n");
 	
 	if (getter) {
@@ -1463,7 +1471,13 @@ Error SwiftBindingsGenerator::_generate_swift_method(const SwiftBindingsGenerato
 	String swift_in_statements;
 
 	String icall_params = "NativeCalls." + method_bind_field + ", ";
-	icall_params += ssformat(p_itype.swift_in, "self");
+
+	if (p_itype.is_singleton) {
+		icall_params += "ptr";
+	} else {
+		icall_params += "OpaquePointer (self.handle)";
+	}
+	//icall_params += ssformat(p_itype.swift_in, "self");
 
 	StringBuilder default_args_doc;
 
@@ -1484,7 +1498,12 @@ Error SwiftBindingsGenerator::_generate_swift_method(const SwiftBindingsGenerato
 
 			arguments_sig += arg_type->swift_type;
 
-			if (iarg.def_param_mode == ArgumentInterface::NULLABLE_VAL)
+			// MIGUEL - For now we do not generate any method with a "object" parameter (maps to Variant)
+			if (arg_type->swift_type == "object"){
+				return OK;
+			}
+
+			if (iarg.def_param_mode == ArgumentInterface::NULLABLE_VAL || arg_type->is_reference)
 				arguments_sig += "? ";
 			else
 				arguments_sig += " ";
@@ -1537,6 +1556,9 @@ Error SwiftBindingsGenerator::_generate_swift_method(const SwiftBindingsGenerato
 		} else {
 			icall_params += arg_type->swift_in.empty() ? iarg.name : ssformat(arg_type->swift_in, iarg.name);
 		}
+	}
+	if (return_type->swift_type == "object"){
+		return OK;
 	}
 
 	// Generate method
@@ -1609,9 +1631,10 @@ Error SwiftBindingsGenerator::_generate_swift_method(const SwiftBindingsGenerato
 			if (return_type->cname == name_cache.type_void) {
 				p_output.append("return\n" CLOSE_BLOCK_L2);
 			} else {
-				p_output.append("return default(");
-				p_output.append(return_type->swift_type);
-				p_output.append(");\n" CLOSE_BLOCK_L2);
+				p_output.append("print (\"You must override this method\"); abort ();\n" CLOSE_BLOCK_L2);
+				//p_output.append("return default(");
+				//p_output.append(return_type->swift_type);
+				//p_output.append(");\n" CLOSE_BLOCK_L2);
 			}
 
 			return OK; // Won't increment method bind count
@@ -1899,7 +1922,7 @@ Error SwiftBindingsGenerator::_generate_glue_method(const SwiftBindingsGenerator
 		c_func_sig += ", ";
 		c_func_sig += return_type->c_type_in;
 		c_func_sig += " ";
-		c_func_sig += "arg_ret";
+		c_func_sig += "*arg_ret";
 
 		i++;
 	}
@@ -2149,9 +2172,7 @@ bool SwiftBindingsGenerator::_populate_object_type_interfaces() {
 	while (class_list.size()) {
 		StringName type_cname = class_list.front()->get();
 		auto x = String(type_cname).utf8().get_data();
-		if (strcmp (x, "AudioEffectRecord") == 0){
-			printf ("Found it\n");
-		}
+		
 		ClassDB::APIType api_type = ClassDB::get_api_type(type_cname);
 
 		if (api_type == ClassDB::API_NONE) {
@@ -2188,9 +2209,10 @@ bool SwiftBindingsGenerator::_populate_object_type_interfaces() {
 			itype.swift_out = "let ret = %0(%1); return ret == nil ? nil : Unmanaged<%2>.fromOpaque (UnsafeRawPointer (ret!)).takeRetainedValue()";
 			itype.swift_type = itype.proxy_name;
 		} else {
+			itype.swift_out = "let ret = %0(%1); return ret == nil ? nil : Unmanaged<%2>.fromOpaque (UnsafeRawPointer (ret!)).takeRetainedValue()";
 			itype.swift_type = itype.proxy_name;
 		}
-		itype.swift_in = itype.is_singleton ? BINDINGS_PTR_FIELD : "OpaquePointer (%0.handle)";
+		itype.swift_in = itype.is_singleton ? BINDINGS_PTR_FIELD : "OpaquePointer (%0?.handle)";
 
 		itype.c_type = "Object*";
 		itype.c_type_in = itype.c_type;
@@ -2272,7 +2294,7 @@ bool SwiftBindingsGenerator::_populate_object_type_interfaces() {
 
 			String cname = method_info.name;
 
-			if (blacklisted_methods.find(itype.cname) && blacklisted_methods[itype.cname].find(cname))
+			if (skipped_methods.find(itype.cname) && skipped_methods[itype.cname].find(cname))
 				continue;
 
 			MethodInterface imethod;
@@ -2380,7 +2402,7 @@ bool SwiftBindingsGenerator::_populate_object_type_interfaces() {
 			if (imethod.is_vararg) {
 				ArgumentInterface ivararg;
 				ivararg.type.cname = name_cache.type_VarArg;
-				ivararg.name = "@args";
+				ivararg.name = "args";
 				imethod.add_argument(ivararg);
 			}
 
@@ -2609,17 +2631,19 @@ void SwiftBindingsGenerator::_populate_builtin_type_interfaces() {
 
 	TypeInterface itype;
 
+		//itype.c_in = "\t%0 %1_in = MARSHALLED_IN(" #m_type ", %1);\n"; 
+
 #define INSERT_STRUCT_TYPE(m_type)                                     \
 	{                                                                  \
 		itype = TypeInterface::create_value_type(String(#m_type));     \
-		itype.c_in = "\t%0 %1_in = MARSHALLED_IN(" #m_type ", %1);\n"; \
+		itype.c_in = ""; \
 		itype.c_out = "\t*%3 = MARSHALLED_OUT(" #m_type ", %1);\n";    \
-		itype.c_arg_in = "&%s_in";                                     \
-		itype.c_type_in = "" #m_type "*";             \
+		itype.c_arg_in = "&%s";                                     \
+		itype.c_type_in = "" #m_type; /*"*";*/             \
 		itype.c_type_out = "" #m_type;                \
-		itype.swift_in = "/*1ref*/ &%s";                                        \
+		itype.swift_in = "/*1ref*/ %s";                                        \
 		/* in swift_out, im_type_out (%3) includes the 'out ' part */     \
-		itype.swift_out = "var argRet: %3; %0(%1, &argRet); return argRet";        \
+		itype.swift_out = "var argRet: %3 = %3(); %0(%1, &argRet); return argRet";        \
 		itype.im_type_out = "/*6out*/ " + itype.swift_type;                    \
 		itype.ret_as_byref_arg = true;                                 \
 		builtin_types.insert(itype.cname, itype);                      \
@@ -2804,12 +2828,13 @@ void SwiftBindingsGenerator::_populate_builtin_type_interfaces() {
 	itype.c_out = "\treturn " C_METHOD_SWIFTSTR_FROM_GODOT "(%1);\n";
 	itype.c_arg_in = "&%s_in";
 	itype.c_type = itype.name;
-	itype.c_type_in = "SwiftString*";
+	itype.c_type_in = "const SwiftString*";
 	itype.c_type_out = "SwiftString*";
 	itype.swift_type = itype.proxy_name;
 	itype.im_type_in = itype.proxy_name;
 	itype.im_type_out = itype.proxy_name;
 	itype.swift_out = "return String (cString: %0 (%1))";
+	//itype.swift_in = 
 	builtin_types.insert(itype.cname, itype);
 
 	// NodePath
@@ -2864,12 +2889,12 @@ void SwiftBindingsGenerator::_populate_builtin_type_interfaces() {
 	itype = TypeInterface();
 	itype.name = "VarArg";
 	itype.cname = itype.name;
-	itype.proxy_name = "object[]";
+	itype.proxy_name = "Object...";
 	itype.c_in = "\t%0 %1_in = " C_METHOD_SWIFTARRAY_TO(Array) "(%1);\n";
 	itype.c_arg_in = "&%s_in";
 	itype.c_type = "Array";
 	itype.c_type_in = "SwiftArray*";
-	itype.swift_type = "params object[]";
+	itype.swift_type = "Object...";
 	itype.im_type_in = "object[]";
 	builtin_types.insert(itype.cname, itype);
 
@@ -2883,9 +2908,10 @@ void SwiftBindingsGenerator::_populate_builtin_type_interfaces() {
 		itype.c_out = "\treturn " C_METHOD_SWIFTARRAY_FROM(m_type) "(%1);\n";  \
 		itype.c_arg_in = "&%s_in";                                            \
 		itype.c_type = #m_type;                                               \
-		itype.c_type_in = "SwiftArray*";                                       \
-		itype.c_type_out = "SwiftArray*";                                      \
+		itype.c_type_in = #m_type "Array";                                       \
+		itype.c_type_out = #m_type "Array";                                      \
 		itype.swift_type = itype.proxy_name;                                     \
+		itype.swift_in = #m_type "Array(count: Int32 (%0.count), data: %0.data)";	\
 		itype.im_type_in = itype.proxy_name;                                  \
 		itype.im_type_out = itype.proxy_name;                                 \
 		builtin_types.insert(itype.name, itype);                              \
@@ -2893,20 +2919,20 @@ void SwiftBindingsGenerator::_populate_builtin_type_interfaces() {
 
 #define INSERT_ARRAY(m_type, m_proxy_t) INSERT_ARRAY_FULL(m_type, m_type, m_proxy_t)
 
-	INSERT_ARRAY(PoolIntArray, UInt32);
-	INSERT_ARRAY_FULL(PoolByteArray, PoolByteArray, UInt8);
+	INSERT_ARRAY_FULL(PoolIntArray, uint32_t, UInt32);
+	INSERT_ARRAY_FULL(PoolByteArray, uint8_t, UInt8);
 
 #ifdef REAL_T_IS_DOUBLE
-	INSERT_ARRAY(PoolRealArray, Double);
+	INSERT_ARRAY_FULL(PoolRealArray, double, Double);
 #else
-	INSERT_ARRAY(PoolRealArray, Float);
+	INSERT_ARRAY_FULL(PoolRealArray, float, Float);
 #endif
 
-	INSERT_ARRAY(PoolStringArray, String);
+	INSERT_ARRAY_FULL(PoolStringArray, str_t, String);
 
-	INSERT_ARRAY(PoolColorArray, Color);
-	INSERT_ARRAY(PoolVector2Array, Vector2);
-	INSERT_ARRAY(PoolVector3Array, Vector3);
+	INSERT_ARRAY_FULL(PoolColorArray, Color, Color);
+	INSERT_ARRAY_FULL(PoolVector2Array, Vector2, Vector2);
+	INSERT_ARRAY_FULL(PoolVector3Array, Vector3, Vector3);
 
 #undef INSERT_ARRAY
 
@@ -3043,11 +3069,11 @@ void SwiftBindingsGenerator::_populate_global_constants() {
 	}
 }
 
-void SwiftBindingsGenerator::_initialize_blacklisted_methods() {
+void SwiftBindingsGenerator::_initialize_skipped_methods() {
 
-	blacklisted_methods["Object"].push_back("to_string"); // there is already ToString
-	blacklisted_methods["Object"].push_back("_to_string"); // override ToString instead
-	blacklisted_methods["Object"].push_back("_init"); // never called in C# (TODO: implement it)
+	skipped_methods["Object"].push_back("to_string"); // there is already ToString
+	skipped_methods["Object"].push_back("_to_string"); // override ToString instead
+	skipped_methods["Object"].push_back("_init"); // never called in C# (TODO: implement it)
 }
 
 void SwiftBindingsGenerator::_log(const char *p_format, ...) {
@@ -3069,7 +3095,7 @@ void SwiftBindingsGenerator::_initialize() {
 
 	enum_types.clear();
 
-	_initialize_blacklisted_methods();
+	_initialize_skipped_methods();
 
 	bool obj_type_ok = _populate_object_type_interfaces();
 	ERR_FAIL_COND_MSG(!obj_type_ok, "Failed to generate object type interfaces");

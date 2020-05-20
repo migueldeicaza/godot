@@ -510,9 +510,9 @@ class SwiftBindingsGenerator {
 	List<InternalCall> core_custom_icalls;
 	List<InternalCall> editor_custom_icalls;
 
-	Map<StringName, List<StringName> > blacklisted_methods;
+	Map<StringName, List<StringName> > skipped_methods;
 
-	void _initialize_blacklisted_methods();
+	void _initialize_skipped_methods();
 
 	struct NameCache {
 		StringName type_void;
