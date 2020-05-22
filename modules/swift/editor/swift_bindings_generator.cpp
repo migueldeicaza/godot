@@ -826,6 +826,9 @@ void SwiftBindingsGenerator::_generate_global_constants(StringBuilder &p_output)
 		}
 
 		p_output.append("\n" INDENT1 "public enum ");
+		if (enum_proxy_name == "Type"){
+			enum_proxy_name = "GType";
+		}
 		p_output.append(enum_proxy_name);
 		p_output.append(": Int32\n" INDENT1 OPEN_BLOCK);
 
@@ -1410,6 +1413,7 @@ Error SwiftBindingsGenerator::_generate_swift_property(const SwiftBindingsGenera
 	p_output.append(p_iprop.proxy_name);
 	p_output.append (": ");
 	p_output.append(prop_itype->swift_type);
+	printf ("Type %ls -> %s\n", prop_itype->swift_type.ptr(), prop_itype->is_reference ? "REF" : "NOT");
 	if (prop_itype->is_reference || prop_itype->swift_type == "Object"){
 		p_output.append ("?");
 	}

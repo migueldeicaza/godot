@@ -9,24 +9,14 @@ import Foundation
 import CApiGodotSwift
 
 public enum Axis2D {
-    case x
-    case y
+        case x
+        case y
 }
 
-public extension Vector2: Equatable {    
-    public init (x: GFloat, y: GFloat)
-    {
-        self.x = x
-        self.y = y
-    }
-    
-    public init (x:GFloat, y: GFloat)
-    {
-        self.x = 0
-        self.y = 0
-    }
-    
-    public subscript (axis: Axis2D) -> GFloat {
+public extension Vector2 // : Equatable 
+{    
+    static let zero = Vector2(x: 0, y: 0)
+    subscript (axis: Axis2D) -> GFloat {
         get {
             switch axis {
             case .x:
@@ -45,15 +35,15 @@ public extension Vector2: Equatable {
         }
     }
     
-    public func length () -> GFloat {
+    func length () -> GFloat {
         return sqrt (x*x + y*y)
     }
 
-    public func lengthSquared () -> GFloat {
+    func lengthSquared () -> GFloat {
         return x*x + y*y
     }
     
-    public func normalized () -> Vector2
+    func normalized () -> Vector2
     {
         let lsq = lengthSquared()
         if lsq == 0.0 {
@@ -64,20 +54,20 @@ public extension Vector2: Equatable {
         }
     }
 
-    public func cross (b: Vector2) -> GFloat {
+    func cross (b: Vector2) -> GFloat {
         return x * b.y + y * b.x
     }
     
-    public func abs() -> Vector2 {
+    func abs() -> Vector2 {
         return Vector2(x: x.magnitude, y: y.magnitude)
     }
     
-    static public func + (lhs: Vector2, rhs: Vector2) -> Vector2
+    static func + (lhs: Vector2, rhs: Vector2) -> Vector2
     {
         return Vector2(x: lhs.x+rhs.x, y: lhs.y+rhs.y)
     }
 
-    static public func - (lhs: Vector2, rhs: Vector2) -> Vector2
+    static func - (lhs: Vector2, rhs: Vector2) -> Vector2
     {
         return Vector2(x: lhs.x-rhs.x, y: lhs.y-rhs.y)
     }
@@ -86,7 +76,7 @@ public extension Vector2: Equatable {
         return a >= b.nextDown && a <= b.nextUp
     }
     
-    public static func < (lhs: Vector2, rhs: Vector2) -> Bool {
+    static func < (lhs: Vector2, rhs: Vector2) -> Bool {
         if almostEqual(lhs.x, rhs.x) {
             return lhs.y < rhs.y
         }

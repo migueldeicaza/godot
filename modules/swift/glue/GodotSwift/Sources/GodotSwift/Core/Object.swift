@@ -9,32 +9,28 @@
 import Foundation
 import CApiGodotSwift
 
-class SubclassTest: Object {
-    public override init ()
-    {
-        super.init (owns: false, handle: nil)
-        self.handle = Unmanaged.passRetained (self).toOpaque()
-    }
+protocol GodotInstantiable {
+    init (owns: Bool, handle: OpaquePointer?)
 }
 
-public class Object: CustomDebugStringConvertible {
-    var handle: UnsafeMutableRawPointer?
+public class Object: CustomDebugStringConvertible, GodotInstantiable {
+    var handle: OpaquePointer?
     var owns: Bool
     
     public init ()
     {
         self.owns = false
         self.handle = nil
-        self.handle = godot_icall_Object_Ctor (OpaquePointer (Unmanaged.passRetained (self).toOpaque()))
+        self.handle = OpaquePointer (godot_icall_Object_Ctor (OpaquePointer (Unmanaged.passRetained (self).toOpaque())))
     }
     
-    public init (owns: Bool, handle: UnsafeMutableRawPointer?)
+    public required init (owns: Bool, handle: OpaquePointer?)
     {
         self.owns = owns
         self.handle = handle
     }
     
-    public var nativeInstance: UnsafeMutableRawPointer? {
+    public var nativeInstance: OpaquePointer? {
         get {
             handle
         }
@@ -50,5 +46,15 @@ public class Object: CustomDebugStringConvertible {
     {
         print ("Calling Object.classDBgetMethod -- should call the bridge code")
         abort ();
+    }
+
+    static var objectMap: [OpaquePointer:Any] = [:]
+
+    static func lookupInstance<T:GodotInstantiable> (ptr: OpaquePointer) -> T
+    {
+        if let obj = objectMap [ptr] {
+            return obj as! T
+        }
+        return T(owns: false, handle: ptr)
     }
 }
