@@ -34,6 +34,5 @@
 #include "core/variant.h"
 
 #include "gd_swift.h"
-//#include "gd_mono_utils.h"
 
 #endif // GDSWIFTMARSHAL_H

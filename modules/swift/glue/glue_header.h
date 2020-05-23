@@ -28,14 +28,15 @@
 /* SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.                */
 /*************************************************************************/
 
-#ifdef SWIFT_GLUE_ENABLED
 
-#include "base_object_glue.h"
-#include "collections_glue.h"
-#include "gd_glue.h"
-#include "nodepath_glue.h"
-#include "rid_glue.h"
-#include "string_glue.h"
+//#include "base_object_glue.h"
+//#include "collections_glue.h"
+//#include "gd_glue.h"
+//#include "nodepath_glue.h"
+//#include "rid_glue.h"
+//#include "string_glue.h"
+#include <stdint.h>
+#include <stdbool.h>
 
 void godot_register_glue_header_icalls() {
 	//godot_register_collections_icalls();
@@ -58,7 +59,7 @@ void godot_register_glue_header_icalls() {
 #include "core/reference.h"
 #include "core/typedefs.h"
 #include "core/ustring.h"
-
+#include "core/method_bind.h"
 //#include "../mono_gd/gd_mono_class.h"
 //#include "../mono_gd/gd_mono_internals.h"
 //#include "../mono_gd/gd_mono_utils.h"
@@ -70,6 +71,6 @@ void godot_register_glue_header_icalls() {
 	}                                                  \
 	Object *m_instance = ci->creation_func();
 
-#include "arguments_vector.h"
+//#include "arguments_vector.h"
 
-#endif // MONO_GLUE_ENABLED
+
