@@ -78,7 +78,7 @@ void libgodot_scene_load(void *scene) {
 	}
 }
 
-bool libgodot_is_scene_loadable() {
+int libgodot_is_scene_loadable() {
 	return scene_load_function != nullptr;
 }
 

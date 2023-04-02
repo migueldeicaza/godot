@@ -54,7 +54,7 @@ void libgodot_project_settings_load(void *project_settings);
 
 void libgodot_scene_load(void *scene);
 
-bool libgodot_is_scene_loadable();
+int libgodot_is_scene_loadable();
 
 LIBGODOT_API void *libgodot_create_callable(void *customobject);
 
