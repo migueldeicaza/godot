@@ -66,8 +66,9 @@ jobs:
 
       - name: Prepare artifact
         run: |
-          strip bin/godot.*
-          chmod +x bin/godot.*
+#          strip bin/godot.*
+#          chmod +x bin/libgodot.*
+	  ls bin
 
       - name: Upload artifact
         uses: ./.github/actions/upload-artifact
