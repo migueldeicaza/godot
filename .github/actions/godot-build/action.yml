@@ -32,5 +32,5 @@ runs:
       run: |
         echo "Building with flags:" platform=${{ inputs.platform }} target=${{ inputs.target }} tests=${{ inputs.tests }} ${{ env.SCONSFLAGS }}
         if [ "${{ inputs.target }}" != "editor" ]; then rm -rf editor; fi  # Ensure we don't include editor code.
-        scons platform=${{ inputs.platform }} target=${{ inputs.target }} tests=${{ inputs.tests }} ${{ env.SCONSFLAGS }}
+        scons platform=${{ inputs.platform }} target=${{ inputs.target }} tests=${{ inputs.tests }} ${{ env.SCONSFLAGS }} library_type=shared_library
         ls -l bin/
