@@ -204,7 +204,7 @@ jobs:
       - name: Prepare artifact
         if: ${{ matrix.artifact }}
         run: |
-	  ls bin
+          ls bin
 
       - name: Upload artifact
         uses: ./.github/actions/upload-artifact
