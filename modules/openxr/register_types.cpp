@@ -73,7 +73,7 @@ static OpenXRInteractionProfileMetadata *openxr_interaction_profile_metadata = n
 static Ref<OpenXRInterface> openxr_interface;
 
 #ifdef TOOLS_ENABLED
-static void _editor_init() {
+static void _editor_init(void *data) {
 	if (OpenXRAPI::openxr_is_enabled(false)) {
 		// Only add our OpenXR action map editor if OpenXR is enabled for our project
 

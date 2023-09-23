@@ -4555,7 +4555,7 @@ void EditorNode::_editor_file_dialog_unregister(EditorFileDialog *p_dialog) {
 	singleton->editor_file_dialogs.erase(p_dialog);
 }
 
-Vector<EditorNodeInitCallback> EditorNode::_init_callbacks;
+Vector<EditorNode::InitCallbackCtx> EditorNode::_init_callbacks;
 
 void EditorNode::_begin_first_scan() {
 	OS::get_singleton()->benchmark_begin_measure("editor_scan_and_import");
@@ -7911,7 +7911,7 @@ EditorNode::EditorNode() {
 	pick_main_scene->connect("custom_action", callable_mp(this, &EditorNode::_pick_main_scene_custom_action));
 
 	for (int i = 0; i < _init_callbacks.size(); i++) {
-		_init_callbacks[i]();
+		_init_callbacks[i].callback(_init_callbacks[i].data);
 	}
 
 	editor_data.add_edited_scene(-1);

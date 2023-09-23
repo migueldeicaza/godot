@@ -48,7 +48,7 @@
 #include "editor/editor_node.h"
 #include "editor/editor_settings.h"
 
-static void _editor_init() {
+static void _editor_init(void *data) {
 	Ref<EditorSceneFormatImporterGLTF> import_gltf;
 	import_gltf.instantiate();
 	ResourceImporterScene::add_importer(import_gltf);

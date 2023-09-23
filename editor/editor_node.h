@@ -36,7 +36,7 @@
 #include "editor/editor_folding.h"
 #include "editor/editor_plugin.h"
 
-typedef void (*EditorNodeInitCallback)();
+typedef void (*EditorNodeInitCallback)(void*);
 typedef void (*EditorPluginInitializeCallback)();
 typedef bool (*EditorBuildCallback)();
 
@@ -247,6 +247,11 @@ private:
 	enum {
 		MAX_INIT_CALLBACKS = 128,
 		MAX_BUILD_CALLBACKS = 128
+	};
+
+	struct InitCallbackCtx {
+		EditorNodeInitCallback callback;
+		void *data;
 	};
 
 	struct BottomPanelItem {
@@ -497,7 +502,7 @@ private:
 	static EditorPluginInitializeCallback plugin_init_callbacks[MAX_INIT_CALLBACKS];
 	static int build_callback_count;
 	static int plugin_init_callback_count;
-	static Vector<EditorNodeInitCallback> _init_callbacks;
+	static Vector<InitCallbackCtx> _init_callbacks;
 
 	String _get_system_info() const;
 
@@ -733,7 +738,13 @@ public:
 	static void remove_extension_editor_plugin(const StringName &p_class_name);
 
 	static void add_plugin_init_callback(EditorPluginInitializeCallback p_callback);
-	static void add_init_callback(EditorNodeInitCallback p_callback) { _init_callbacks.push_back(p_callback); }
+	static void add_init_callback(EditorNodeInitCallback p_callback, void *data = nullptr) { 
+		InitCallbackCtx ctx;
+		ctx.callback = p_callback;
+		ctx.data = data;
+		_init_callbacks.push_back(ctx); 
+	}
+	
 	static void add_build_callback(EditorBuildCallback p_callback);
 
 	static bool immediate_confirmation_dialog(const String &p_text, const String &p_ok_text = TTR("Ok"), const String &p_cancel_text = TTR("Cancel"));

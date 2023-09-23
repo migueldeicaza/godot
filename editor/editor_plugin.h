@@ -100,6 +100,7 @@ protected:
 	GDVIRTUAL0R(bool, _build)
 	GDVIRTUAL0(_enable_plugin)
 	GDVIRTUAL0(_disable_plugin)
+	GDVIRTUAL0(_editor_init)
 
 public:
 	enum CustomControlContainer {
@@ -236,6 +237,12 @@ public:
 
 	void enable_plugin();
 	void disable_plugin();
+
+	static void editor_init_callback(void *data);
+	void editor_init();
+	void request_notify_editor_init();
+	void register_with_editor();
+	void unregister_with_editor();
 
 	EditorPlugin() {}
 	virtual ~EditorPlugin() {}

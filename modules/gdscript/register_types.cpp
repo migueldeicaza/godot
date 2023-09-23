@@ -101,7 +101,7 @@ public:
 	virtual String get_name() const override { return "GDScript"; }
 };
 
-static void _editor_init() {
+static void _editor_init(void *) {
 	Ref<EditorExportGDScript> gd_export;
 	gd_export.instantiate();
 	EditorExport::get_singleton()->add_export_plugin(gd_export);

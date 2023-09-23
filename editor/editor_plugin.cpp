@@ -477,6 +477,27 @@ void EditorPlugin::disable_plugin() {
 	GDVIRTUAL_CALL(_disable_plugin);
 }
 
+void EditorPlugin::editor_init() {
+	GDVIRTUAL_CALL(_editor_init);
+}
+
+void EditorPlugin::editor_init_callback (void *data) {
+	EditorPlugin *ep = (EditorPlugin *)data;
+	ep->editor_init ();
+}
+
+void EditorPlugin::request_notify_editor_init() {
+	EditorNode::add_init_callback (editor_init_callback, this);
+}
+
+void EditorPlugin::register_with_editor() {
+	EditorNode::add_editor_plugin(this);
+}
+
+void EditorPlugin::unregister_with_editor() {
+	EditorNode::remove_editor_plugin(this);
+}
+
 void EditorPlugin::set_window_layout(Ref<ConfigFile> p_layout) {
 	GDVIRTUAL_CALL(_set_window_layout, p_layout);
 }
@@ -548,6 +569,10 @@ void EditorPlugin::_notification(int p_what) {
 }
 
 void EditorPlugin::_bind_methods() {
+	ClassDB::bind_method(D_METHOD("request_notify_editor_init"), &EditorPlugin::request_notify_editor_init);
+	ClassDB::bind_method(D_METHOD("register"), &EditorPlugin::register_with_editor);
+	ClassDB::bind_method(D_METHOD("unregister"), &EditorPlugin::unregister_with_editor);
+
 	ClassDB::bind_method(D_METHOD("add_control_to_container", "container", "control"), &EditorPlugin::add_control_to_container);
 	ClassDB::bind_method(D_METHOD("add_control_to_bottom_panel", "control", "title"), &EditorPlugin::add_control_to_bottom_panel);
 	ClassDB::bind_method(D_METHOD("add_control_to_dock", "slot", "control"), &EditorPlugin::add_control_to_dock);
@@ -622,6 +647,7 @@ void EditorPlugin::_bind_methods() {
 	GDVIRTUAL_BIND(_build);
 	GDVIRTUAL_BIND(_enable_plugin);
 	GDVIRTUAL_BIND(_disable_plugin);
+	GDVIRTUAL_BIND(_editor_init);
 
 	ADD_SIGNAL(MethodInfo("scene_changed", PropertyInfo(Variant::OBJECT, "scene_root", PROPERTY_HINT_RESOURCE_TYPE, "Node")));
 	ADD_SIGNAL(MethodInfo("scene_closed", PropertyInfo(Variant::STRING, "filepath")));

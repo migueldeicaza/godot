@@ -54,7 +54,7 @@
 #endif
 
 #ifdef TOOLS_ENABLED
-static void _editor_init_callback() {
+static void _editor_init_callback(void *data) {
 	EditorDebuggerServer::register_protocol_handler("ws://", EditorDebuggerServerWebSocket::create);
 }
 #endif
