@@ -1,0 +1,10 @@
+module CGodot {
+	umbrella header "umbrella.h"
+	export *
+}
+
+module CGodotEditor {
+	use CGodot
+	umbrella header "editor/umbrella-editor.h"
+	export *
+}
