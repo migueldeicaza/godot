@@ -1,6 +1,6 @@
 sdi=swift/Sources/CGodot/include/
 
-find ./ -name '*.h' -and -not -name 'umbrella*.h' | grep -v '\.build' | grep -v thirdparty | rsync -a --files-from=- ./ $sdi
+find . -name '*.h' -and -not -name 'umbrella*.h' | grep -v '\.build' | grep -v thirdparty | grep -v "^./tests" | rsync -a --files-from=- ./ $sdi
 mkdir -p $sdi/thirdparty/misc mkdir -p $sdi/thirdparty/minizip
 cp $sdi/platform/macos/*h $sdi/
 cp core/string/char_range.inc swift/Sources/CGodot/include/core/string/
