@@ -43,10 +43,6 @@
 #ifndef _unz64_H
 #define _unz64_H
 
-#ifdef __cplusplus
-extern "C" {
-#endif
-
 #ifndef _ZLIB_H
 #include "zlib.h"
 #endif
@@ -57,6 +53,10 @@ extern "C" {
 
 #ifdef HAVE_BZIP2
 #include "bzlib.h"
+#endif
+
+#ifdef __cplusplus
+extern "C" {
 #endif
 
 #define Z_BZIP2ED 12

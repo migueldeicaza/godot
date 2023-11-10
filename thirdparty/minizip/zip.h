@@ -40,10 +40,6 @@
 #ifndef _zip12_H
 #define _zip12_H
 
-#ifdef __cplusplus
-extern "C" {
-#endif
-
 //#define HAVE_BZIP2
 
 #ifndef _ZLIB_H
@@ -56,6 +52,10 @@ extern "C" {
 
 #ifdef HAVE_BZIP2
 #include "bzlib.h"
+#endif
+
+#ifdef __cplusplus
+extern "C" {
 #endif
 
 #define Z_BZIP2ED 12
