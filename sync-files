@@ -1,17 +1,11 @@
-#
-# Directories to exclude from thirdparty:
-# zstd
-# libtheora
-# msdfgen
-# freetype
-# icu
-# mbedtls
-# amd*
 sdi=swift/Sources/CGodot/include/
-find ./ -name '*h' -and -not -name 'umbrella*.h' -print0 | rsync -av --files-from=- --from0 ./ $sdi
+
+find ./ -name '*.h' -and -not -name 'umbrella*.h' | grep -v '\.build' | grep -v thirdparty | rsync -a --files-from=- ./ $sdi
+mkdir -p $sdi/thirdparty/misc mkdir -p $sdi/thirdparty/minizip
+cp $sdi/platform/macos/*h $sdi/
 cp core/string/char_range.inc swift/Sources/CGodot/include/core/string/
 cp core/object/gdvirtual.gen.inc swift/Sources/CGodot/include/core/object/
 cp core/extension/ext_wrappers.gen.inc swift/Sources/CGodot/include/core/extension/
-cp ./core/math/*.inc swift/Sources/CGodot/include/core/math/
-echo "TODO: you need to concatenate the inc files in math into the calling code, or it will fail"
-echo "TODO: you need to patch zip.h and unzip.h to move the extern C after the includes"
+
+cp thirdparty/misc/{r128.h,pcg.h,ok_color.h,mikktspace.h} $sdi/thirdparty/misc
+cp thirdparty/minizip/{zip.h,unzip.h,ioapi.h} thirdparty/minizip/unzip.h $sdi/thirdparty/minizip

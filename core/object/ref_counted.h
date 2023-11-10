@@ -51,7 +51,10 @@ public:
 
 	RefCounted();
 	~RefCounted() {}
-};
+
+} SWIFT_SHARED_REFERENCE(refcounted_global_retain, refcounted_global_release);
+void refcounted_global_retain (RefCounted *t);
+void refcounted_global_release (RefCounted *t);
 
 template <class T>
 class Ref {
@@ -222,6 +225,7 @@ public:
 		unref();
 	}
 };
+
 
 class WeakRef : public RefCounted {
 	GDCLASS(WeakRef, RefCounted);

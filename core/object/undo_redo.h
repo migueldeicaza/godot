@@ -30,7 +30,7 @@
 
 #ifndef UNDO_REDO_H
 #define UNDO_REDO_H
-
+#include <swift/bridging>
 #include "core/object/class_db.h"
 #include "core/object/ref_counted.h"
 
@@ -140,7 +140,7 @@ public:
 
 	UndoRedo() {}
 	~UndoRedo();
-};
+} SWIFT_UNSAFE_REFERENCE;
 
 VARIANT_ENUM_CAST(UndoRedo::MergeMode);
 

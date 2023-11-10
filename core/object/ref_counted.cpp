@@ -44,6 +44,14 @@ bool RefCounted::init_ref() {
 	}
 }
 
+void refcounted_global_retain (RefCounted *t) {
+	t->reference();
+}
+
+void refcounted_global_release (RefCounted *t) {
+	t->unreference();
+}
+
 void RefCounted::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("init_ref"), &RefCounted::init_ref);
 	ClassDB::bind_method(D_METHOD("reference"), &RefCounted::reference);

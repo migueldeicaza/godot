@@ -3,8 +3,8 @@ module CGodot {
 	export *
 }
 
-module CGodotEditor {
-	use CGodot
-	umbrella header "editor/umbrella-editor.h"
-	export *
-}
+// module CGodotEditor {
+// 	use CGodot
+// 	umbrella header "editor/umbrella-editor.h"
+// 	export *
+// }

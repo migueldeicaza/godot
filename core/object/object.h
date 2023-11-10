@@ -570,6 +570,7 @@ public:                                                                 \
 private:
 
 class ScriptInstance;
+#include <swift/bridging>
 
 class Object {
 public:
@@ -985,7 +986,7 @@ public:
 
 	Object();
 	virtual ~Object();
-};
+} SWIFT_UNSAFE_REFERENCE;
 
 bool predelete_handler(Object *p_object);
 void postinitialize_handler(Object *p_object);

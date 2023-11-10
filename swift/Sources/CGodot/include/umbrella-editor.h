@@ -177,7 +177,6 @@
 #include "editor/renames_map_3_to_4.h"
 #include "editor/register_exporters.h"
 #include "editor/editor_locale_dialog.h"
-#include "editor/umbrella-editor.h"
 #include "editor/editor_help.h"
 #include "editor/editor_script.h"
 #include "editor/doc_tools.h"
