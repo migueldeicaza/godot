@@ -1,8 +1,10 @@
 sdi=swift/Sources/CGodot/include/
 
-find . -name '*.h' -and -not -name 'umbrella*.h' | grep -v '\.build' | grep -v thirdparty | grep -v "^./tests" | rsync -a --files-from=- ./ $sdi
+(find . -name '*.h' -and -not -name 'umbrella*.h' | grep -v '\.build' | grep -v "^./modules/" | grep -v "^./swift" | grep -v "^./platform" | grep -v thirdparty | grep -v "^./tests" | grep -v editor/builtin_fonts.gen.h | grep -v "^./drivers" | grep -v "^./servers/rendering" | grep -v gen.h$; echo ./core/disabled_classes.gen.h; echo core/version_generated.gen.h; echo modules/modules_enabled.gen.h; echo modules/regex/regex.h; echo servers/rendering_server.h; echo servers/rendering/rendering_device.h; echo servers/rendering/shader_warnings.h; echo servers/rendering/rendering_device_binds.h) | rsync -a --files-from=- ./ $sdi
+
+
 mkdir -p $sdi/thirdparty/misc mkdir -p $sdi/thirdparty/minizip
-cp $sdi/platform/macos/*h $sdi/
+cp ./platform/macos/*h $sdi/
 cp core/string/char_range.inc swift/Sources/CGodot/include/core/string/
 cp core/object/gdvirtual.gen.inc swift/Sources/CGodot/include/core/object/
 cp core/extension/ext_wrappers.gen.inc swift/Sources/CGodot/include/core/extension/
