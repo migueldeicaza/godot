@@ -761,7 +761,7 @@ public:
 	void _validate_property(PropertyInfo &p_property) const;
 	Viewport();
 	~Viewport();
-};
+} SWIFT_UNSAFE_REFERENCE;
 
 class SubViewport : public Viewport {
 	GDCLASS(SubViewport, Viewport);

@@ -462,7 +462,7 @@ public:
 
 	Window();
 	~Window();
-};
+} SWIFT_UNSAFE_REFERENCE;
 
 VARIANT_ENUM_CAST(Window::Mode);
 VARIANT_ENUM_CAST(Window::Flags);

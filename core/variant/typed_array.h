@@ -86,7 +86,7 @@ struct VariantInternalAccessor<const TypedArray<T> &> {
 		_FORCE_INLINE_ TypedArray() {                                                                            \
 			set_typed(m_variant_type, StringName(), Variant());                                                  \
 		}                                                                                                        \
-	};
+	} SWIFT_UNSAFE_REFERENCE;
 
 MAKE_TYPED_ARRAY(bool, Variant::BOOL)
 MAKE_TYPED_ARRAY(uint8_t, Variant::INT)

@@ -30,7 +30,7 @@
 
 #ifndef DIALOGS_H
 #define DIALOGS_H
-
+#include <swift/bridging>
 #include "box_container.h"
 #include "scene/gui/button.h"
 #include "scene/gui/label.h"
@@ -111,7 +111,7 @@ public:
 
 	AcceptDialog();
 	~AcceptDialog();
-};
+} SWIFT_UNSAFE_REFERENCE;
 
 class ConfirmationDialog : public AcceptDialog {
 	GDCLASS(ConfirmationDialog, AcceptDialog);

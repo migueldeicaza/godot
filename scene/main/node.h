@@ -711,7 +711,7 @@ public:
 #endif
 	Node();
 	~Node();
-};
+} SWIFT_UNSAFE_REFERENCE;
 
 VARIANT_ENUM_CAST(Node::DuplicateFlags);
 VARIANT_ENUM_CAST(Node::ProcessMode);
