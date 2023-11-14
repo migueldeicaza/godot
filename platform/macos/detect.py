@@ -126,8 +126,8 @@ def configure(env: "Environment"):
     vanilla = is_vanilla_clang(env)
 
     # Workaround for Xcode 15 linker bug.
-    if not vanilla and cc_version_major == 15 and cc_version_minor == 0:
-        env.Prepend(LINKFLAGS=["-ld_classic"])
+    #if not vanilla and cc_version_major == 15 and cc_version_minor == 0:
+    #    env.Prepend(LINKFLAGS=["-ld_classic"])
 
     env.Append(CCFLAGS=["-fobjc-arc"])
 
