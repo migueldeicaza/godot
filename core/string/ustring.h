@@ -32,12 +32,13 @@
 #define USTRING_GODOT_H
 
 // Note: _GODOT suffix added to header guard to avoid conflict with ICU header.
-
+#include <swift/bridging>
 #include "core/string/char_utils.h"
 #include "core/templates/cowdata.h"
 #include "core/templates/vector.h"
 #include "core/typedefs.h"
 #include "core/variant/array.h"
+#include <string>
 
 /*************************************************************************/
 /*  CharProxy                                                            */
@@ -159,7 +160,7 @@ public:
 	bool operator==(const CharString &p_right) const;
 	CharString &operator+=(char p_char);
 	int length() const { return size() ? size() - 1 : 0; }
-	const char *get_data() const;
+	const char *get_data() const SWIFT_RETURNS_INDEPENDENT_VALUE;
 	operator const char *() const { return get_data(); };
 
 protected:
@@ -267,6 +268,7 @@ public:
 	signed char naturalnocasecmp_to(const String &p_str) const;
 
 	const char32_t *get_data() const;
+
 	/* standard size stuff */
 
 	_FORCE_INLINE_ int length() const {
@@ -278,6 +280,11 @@ public:
 
 	/* debug, error messages */
 	void print_unicode_error(const String &p_message, bool p_critical = false) const;
+
+	std::string as_std_string() const {
+		auto u8 = utf8();
+		return std::string(u8.ptr(), u8.size());
+	}
 
 	/* complex helpers */
 	String substr(int p_from, int p_chars = -1) const;
@@ -471,7 +478,7 @@ public:
 	String(const wchar_t *p_str, int p_clip_to_len);
 	String(const char32_t *p_str, int p_clip_to_len);
 	String(const StrRange &p_range);
-};
+} SWIFT_UNSAFE_REFERENCE;
 
 bool operator==(const char *p_chr, const String &p_str);
 bool operator==(const wchar_t *p_chr, const String &p_str);

@@ -142,7 +142,9 @@ public:
 		return (void *)_data;
 	}
 	bool operator!=(const StringName &p_name) const;
-
+	std::string as_std_string() const {
+		return std::string(_data->name.utf8().get_data(), _data->name.utf8().length());
+	}
 	_FORCE_INLINE_ operator String() const {
 		if (_data) {
 			if (_data->cname) {

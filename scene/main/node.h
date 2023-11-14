@@ -383,6 +383,7 @@ public:
 
 	StringName get_name() const;
 	String get_description() const;
+	std::string get_description_std_string() const;
 	void set_name(const String &p_name);
 
 	InternalMode get_internal_mode() const;

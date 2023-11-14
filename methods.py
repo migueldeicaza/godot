@@ -604,7 +604,7 @@ def no_verbose(sys, env):
     env.Append(ARCOMSTR=[link_library_message])
     env.Append(RANLIBCOMSTR=[ranlib_library_message])
     env.Append(SHLINKCOMSTR=[link_shared_library_message])
-    env.Append(LINKCOMSTR=[link_program_message])
+    #env.Append(LINKCOMSTR=[link_program_message])
     env.Append(JARCOMSTR=[java_library_message])
     env.Append(JAVACCOMSTR=[java_compile_source_message])
 

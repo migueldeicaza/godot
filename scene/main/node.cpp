@@ -1197,6 +1197,11 @@ String Node::get_description() const {
 	return description;
 }
 
+std::string Node::get_description_std_string() const {
+	auto u8 = get_description().utf8();
+	return std::string(u8.ptr(), u8.size());
+}
+
 static SafeRefCount node_hrcr_count;
 
 void Node::init_node_hrcr() {
