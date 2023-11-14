@@ -219,6 +219,7 @@ def configure(env: "Environment"):
     env.Append(CPPDEFINES=["MACOS_ENABLED", "UNIX_ENABLED", "COREAUDIO_ENABLED", "COREMIDI_ENABLED"])
     env.Append(
         LINKFLAGS=[
+            "-mmacosx-version-min=14.0",
             "-framework",
             "Cocoa",
             "-framework",

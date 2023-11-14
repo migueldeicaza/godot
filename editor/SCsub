@@ -128,4 +128,6 @@ if env.editor_build:
     SConscript("plugins/SCsub")
 
     lib = env.add_library("editor", env.editor_sources)
+    env.Prepend(LIBS=["Godot", "swiftCore"])
     env.Prepend(LIBS=[lib])
+    env.Prepend(LIBPATH=["/Users/miguel/cvs/godot-master/.build/debug","/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX14.0.sdk/usr/lib/swift/"])

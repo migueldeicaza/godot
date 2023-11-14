@@ -29,7 +29,6 @@
 /**************************************************************************/
 
 #include "main.h"
-
 #include "core/config/project_settings.h"
 #include "core/core_globals.h"
 #include "core/core_string_names.h"
@@ -80,6 +79,7 @@
 #include "servers/text/text_server_dummy.h"
 #include "servers/text_server.h"
 #include "servers/xr_server.h"
+#include "main/Godot-Swift.h"
 
 #ifdef TESTS_ENABLED
 #include "tests/test_main.h"
@@ -3251,6 +3251,7 @@ bool Main::start() {
 		if (editor) {
 			OS::get_singleton()->benchmark_begin_measure("editor");
 			editor_node = memnew(EditorNode);
+			Godot::dump (editor_node);
 			sml->get_root()->add_child(editor_node);
 
 			if (!_export_preset.is_empty()) {
