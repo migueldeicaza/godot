@@ -34,7 +34,11 @@
 #if defined(LIBRARY_ENABLED)
 
 #if defined(WINDOWS_ENABLED) | defined(UWP_ENABLED)
+#if defined(core_EXPORTS)
 #define LIBGODOT_API __declspec(dllexport)
+#else
+#define GODOT_API __declspec(dllimport)
+#endif
 #elif defined(ANDROID_ENABLED)
 #include <jni.h>
 #define LIBGODOT_API JNIEXPORT
