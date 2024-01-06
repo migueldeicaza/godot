@@ -16,7 +16,7 @@
 		<constructor name="Quaternion">
 			<return type="Quaternion" />
 			<description>
-				Constructs a default-initialized quaternion with all components set to [code]0[/code].
+				Constructs a default-initialized quaternion with the x, y and z components set to [code]0[/code] and w component set to 1.0.
 			</description>
 		</constructor>
 		<constructor name="Quaternion">
