@@ -41,6 +41,8 @@
 #import "core/os/os.h"
 #import "servers/display/native_menu.h"
 
+#import "drivers/apple/rendering_native_surface_apple.h"
+
 #if defined(GLES3_ENABLED)
 #import "embedded_gl_manager.h"
 
@@ -65,6 +67,27 @@
 // which clashes with GLAD.
 #import "macos_quartz_core_spi.h"
 
+Ref<RenderingNativeSurface> DisplayServerMacOSEmbedded::native_surface;
+
+DisplayServerMacOSEmbedded *DisplayServerMacOSEmbedded::get_singleton() {
+	return (DisplayServerMacOSEmbedded *)DisplayServer::get_singleton();
+}
+
+void DisplayServerMacOSEmbedded::set_native_surface(Ref<RenderingNativeSurface> p_native_surface) {
+	native_surface = p_native_surface;
+}
+
+void DisplayServerMacOSEmbedded::_bind_methods() {
+	ClassDB::bind_static_method("DisplayServerMacOSEmbedded", D_METHOD("set_native_surface", "native_surface"), &DisplayServerMacOSEmbedded::set_native_surface);
+	ClassDB::bind_static_method("DisplayServerMacOSEmbedded", D_METHOD("get_singleton"), &DisplayServerMacOSEmbedded::get_singleton);
+	ClassDB::bind_method(D_METHOD("resize_window", "size", "id"), &DisplayServerMacOSEmbedded::resize_window);
+	ClassDB::bind_method(D_METHOD("set_content_scale", "content_scale"), &DisplayServerMacOSEmbedded::set_content_scale);
+	ClassDB::bind_method(D_METHOD("touch_press", "idx", "x", "y", "pressed", "double_click", "window"), &DisplayServerMacOSEmbedded::touch_press);
+	ClassDB::bind_method(D_METHOD("touch_drag", "idx", "prev_x", "prev_y", "x", "y", "pressure", "tilt", "window"), &DisplayServerMacOSEmbedded::touch_drag);
+	ClassDB::bind_method(D_METHOD("touches_canceled", "idx", "window"), &DisplayServerMacOSEmbedded::touches_canceled);
+	ClassDB::bind_method(D_METHOD("key", "key", "char", "unshifted", "physical", "modifiers", "pressed", "window"), &DisplayServerMacOSEmbedded::key, DEFVAL(DisplayServerEnums::MAIN_WINDOW_ID));
+}
+
 DisplayServerMacOSEmbedded::DisplayServerMacOSEmbedded(const String &p_rendering_driver, DisplayServerEnums::WindowMode p_mode, DisplayServerEnums::VSyncMode p_vsync_mode, uint32_t p_flags, const Vector2i *p_position, const Vector2i &p_resolution, int p_screen, DisplayServerEnums::Context p_context, Error &r_error) {
 	EmbeddedDebugger::initialize(this);
 
@@ -75,6 +98,11 @@ DisplayServerMacOSEmbedded::DisplayServerMacOSEmbedded(const String &p_rendering
 	Input::get_singleton()->set_event_dispatch_function(_dispatch_input_events);
 
 	rendering_driver = p_rendering_driver;
+	Ref<RenderingNativeSurfaceApple> apple_surface = native_surface;
+	CALayer *native_layer = nullptr;
+	if (apple_surface.is_valid()) {
+		native_layer = (__bridge CALayer *)(void *)apple_surface->get_layer();
+	}
 
 #if defined(RD_ENABLED)
 #if defined(VULKAN_ENABLED)
@@ -135,7 +163,12 @@ DisplayServerMacOSEmbedded::DisplayServerMacOSEmbedded(const String &p_rendering
 			r_error = ERR_UNAVAILABLE;
 			ERR_FAIL_MSG("Could not initialize native OpenGL.");
 		}
-		layer = [CALayer new];
+		if (native_layer) {
+			layer = native_layer;
+		} else {
+			layer = [CALayer new];
+			layer_owned = true;
+		}
 		// OpenGL content is flipped, so it must be transformed.
 		layer.anchorPoint = CGPointMake(0, 0);
 		layer.transform = CATransform3DMakeScale(1.0, -1.0, 1.0);
@@ -151,7 +184,13 @@ DisplayServerMacOSEmbedded::DisplayServerMacOSEmbedded(const String &p_rendering
 
 #if defined(RD_ENABLED)
 	if (rendering_context) {
-		layer = [CAMetalLayer new];
+		if (native_layer) {
+			layer = native_layer;
+			ERR_FAIL_COND_MSG(![layer isKindOfClass:[CAMetalLayer class]], "Embedded rendering requires a CAMetalLayer native surface for RD drivers.");
+		} else {
+			layer = [CAMetalLayer new];
+			layer_owned = true;
+		}
 		layer.anchorPoint = CGPointMake(0, 1);
 
 		union {
@@ -212,13 +251,15 @@ DisplayServerMacOSEmbedded::DisplayServerMacOSEmbedded(const String &p_rendering
 	bounds = CGRectApplyAffineTransform(bounds, CGAffineTransformInvert(CGAffineTransformMakeScale(display_scale, display_scale)));
 	layer.bounds = bounds;
 
-	CGSConnectionID connection_id = CGSMainConnectionID();
-	ca_context = [CAContext contextWithCGSConnection:connection_id options:@{ kCAContextCIFilterBehavior : @"ignore" }];
-	ca_context.layer = layer;
+	if (!native_layer) {
+		CGSConnectionID connection_id = CGSMainConnectionID();
+		ca_context = [CAContext contextWithCGSConnection:connection_id options:@{ kCAContextCIFilterBehavior : @"ignore" }];
+		ca_context.layer = layer;
 
-	{
-		Array arr = { ca_context.contextId };
-		EngineDebugger::get_singleton()->send_message("game_view:set_context_id", arr);
+		{
+			Array arr = { ca_context.contextId };
+			EngineDebugger::get_singleton()->send_message("game_view:set_context_id", arr);
+		}
 	}
 }
 
@@ -248,6 +289,10 @@ DisplayServerMacOSEmbedded::~DisplayServerMacOSEmbedded() {
 		rendering_context = nullptr;
 	}
 #endif
+
+	if (layer_owned) {
+		layer = nullptr;
+	}
 }
 
 DisplayServer *DisplayServerMacOSEmbedded::create_func(const String &p_rendering_driver, DisplayServerEnums::WindowMode p_mode, DisplayServerEnums::VSyncMode p_vsync_mode, uint32_t p_flags, const Vector2i *p_position, const Vector2i &p_resolution, int p_screen, DisplayServerEnums::Context p_context, int64_t /* p_parent_window */, Error &r_error) {
@@ -366,7 +411,7 @@ void DisplayServerMacOSEmbedded::_dispatch_input_events(const Ref<InputEvent> &p
 	ds->send_input_event(p_event, window_id);
 }
 
-void DisplayServerMacOSEmbedded::send_input_event(const Ref<InputEvent> &p_event, DisplayServerEnums::WindowID p_id) const {
+void DisplayServerMacOSEmbedded::send_input_event(const Ref<InputEvent> &p_event, DisplayServerEnums::DisplayServerEnums::WindowID p_id) const {
 	if (p_id != DisplayServerEnums::INVALID_WINDOW_ID) {
 		const Callable *cb = input_event_callbacks.getptr(p_id);
 		if (cb) {
@@ -379,14 +424,14 @@ void DisplayServerMacOSEmbedded::send_input_event(const Ref<InputEvent> &p_event
 	}
 }
 
-void DisplayServerMacOSEmbedded::send_input_text(const String &p_text, DisplayServerEnums::WindowID p_id) const {
+void DisplayServerMacOSEmbedded::send_input_text(const String &p_text, DisplayServerEnums::DisplayServerEnums::WindowID p_id) const {
 	const Callable *cb = input_text_callbacks.getptr(p_id);
 	if (cb) {
 		_window_callback(*cb, p_text);
 	}
 }
 
-void DisplayServerMacOSEmbedded::send_window_event_by_id(DisplayServerEnums::WindowEvent p_event, DisplayServerEnums::WindowID p_id) const {
+void DisplayServerMacOSEmbedded::send_window_event_by_id(DisplayServerEnums::WindowEvent p_event, DisplayServerEnums::DisplayServerEnums::WindowID p_id) const {
 	const Callable *cb = window_event_callbacks.getptr(p_id);
 	if (cb) {
 		_window_callback(*cb, int(p_event));
@@ -397,6 +442,76 @@ void DisplayServerMacOSEmbedded::_window_callback(const Callable &p_callable, co
 	if (p_callable.is_valid()) {
 		p_callable.call(p_arg);
 	}
+}
+
+void DisplayServerMacOSEmbedded::perform_event(const Ref<InputEvent> &p_event) {
+	Input::get_singleton()->parse_input_event(p_event);
+}
+
+void DisplayServerMacOSEmbedded::resize_window(Size2i p_size, DisplayServerEnums::WindowID p_id) {
+	Size2i scaled_size = Size2i(int32_t(p_size.x * content_scale), int32_t(p_size.y * content_scale));
+	_window_set_size(scaled_size, p_id);
+}
+
+void DisplayServerMacOSEmbedded::set_content_scale(float p_content_scale) {
+	if (Math::is_equal_approx(content_scale, p_content_scale)) {
+		return;
+	}
+	content_scale = p_content_scale;
+	state.screen_window_scale = p_content_scale;
+}
+
+void DisplayServerMacOSEmbedded::touch_press(int p_idx, int p_x, int p_y, bool p_pressed, bool p_double_click, DisplayServerEnums::WindowID p_window) {
+	Ref<InputEventScreenTouch> ev;
+	ev.instantiate();
+	ev->set_window_id(p_window);
+	ev->set_index(p_idx);
+	ev->set_pressed(p_pressed);
+	ev->set_position(Vector2(p_x, p_y));
+	ev->set_double_tap(p_double_click);
+	perform_event(ev);
+}
+
+void DisplayServerMacOSEmbedded::touch_drag(int p_idx, int p_prev_x, int p_prev_y, int p_x, int p_y, float p_pressure, Vector2 p_tilt, DisplayServerEnums::WindowID p_window) {
+	Ref<InputEventScreenDrag> ev;
+	ev.instantiate();
+	ev->set_window_id(p_window);
+	ev->set_index(p_idx);
+	ev->set_pressure(p_pressure);
+	ev->set_tilt(p_tilt);
+	ev->set_position(Vector2(p_x, p_y));
+	ev->set_relative(Vector2(p_x - p_prev_x, p_y - p_prev_y));
+	ev->set_relative_screen_position(ev->get_relative());
+	perform_event(ev);
+}
+
+void DisplayServerMacOSEmbedded::touches_canceled(int p_idx, DisplayServerEnums::WindowID p_window) {
+	touch_press(p_idx, -1, -1, false, false, p_window);
+}
+
+void DisplayServerMacOSEmbedded::key(Key p_key, char32_t p_char, Key p_unshifted, Key p_physical, BitField<KeyModifierMask> p_modifiers, bool p_pressed, DisplayServerEnums::WindowID p_window) {
+	Ref<InputEventKey> ev;
+	ev.instantiate();
+	ev->set_window_id(p_window);
+	ev->set_echo(false);
+	ev->set_pressed(p_pressed);
+	ev->set_keycode(fix_keycode(p_char, p_key));
+	if (p_key != Key::SHIFT) {
+		ev->set_shift_pressed(p_modifiers.has_flag(KeyModifierMask::SHIFT));
+	}
+	if (p_key != Key::CTRL) {
+		ev->set_ctrl_pressed(p_modifiers.has_flag(KeyModifierMask::CTRL));
+	}
+	if (p_key != Key::ALT) {
+		ev->set_alt_pressed(p_modifiers.has_flag(KeyModifierMask::ALT));
+	}
+	if (p_key != Key::META) {
+		ev->set_meta_pressed(p_modifiers.has_flag(KeyModifierMask::META));
+	}
+	ev->set_key_label(p_unshifted);
+	ev->set_physical_keycode(p_physical);
+	ev->set_unicode(fix_unicode(p_char));
+	perform_event(ev);
 }
 
 // MARK: -
@@ -564,7 +679,7 @@ Size2i DisplayServerMacOSEmbedded::window_get_min_size(DisplayServerEnums::Windo
 }
 
 void DisplayServerMacOSEmbedded::window_set_size(const Size2i p_size, DisplayServerEnums::WindowID p_window) {
-	print_line("Embedded window can't be resized.");
+	_window_set_size(p_size, p_window);
 }
 
 void DisplayServerMacOSEmbedded::_window_set_size(const Size2i p_size, DisplayServerEnums::WindowID p_window) {

@@ -69,6 +69,7 @@
 #include "servers/rendering/renderer_rd/uniform_set_cache_rd.h"
 #include "servers/rendering/rendering_device.h"
 #include "servers/rendering/rendering_device_binds.h"
+#include "servers/rendering/rendering_native_surface.h"
 #include "servers/rendering/rendering_server.h"
 #include "servers/rendering/shader_include_db.h"
 #include "servers/rendering/shader_types.h"
@@ -162,6 +163,7 @@ void register_server_types() {
 
 	GDREGISTER_ABSTRACT_CLASS(AccessibilityServer);
 	GDREGISTER_ABSTRACT_CLASS(DisplayServer);
+	GDREGISTER_ABSTRACT_CLASS(RenderingNativeSurface);
 	GDREGISTER_ABSTRACT_CLASS(RenderingServer);
 	GDREGISTER_CLASS(AudioServer);
 

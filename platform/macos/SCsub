@@ -33,11 +33,15 @@ files = [
 if env["angle"]:
     files += ["gl_manager_macos_angle.mm"]
 
-if env.editor_build:
+if env.editor_build or env["library_type"] != "executable":
     files += [
         "display_server_macos_embedded.mm",
         "embedded_debugger.mm",
         "embedded_gl_manager.mm",
+    ]
+
+if env.editor_build:
+    files += [
         "editor/embedded_game_view_plugin.mm",
         "editor/embedded_process_macos.mm",
     ]

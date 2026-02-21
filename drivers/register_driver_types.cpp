@@ -33,6 +33,9 @@
 #include "core/io/resource_saver.h"
 #include "drivers/png/image_loader_png.h"
 #include "drivers/png/resource_saver_png.h"
+#if defined(MACOS_ENABLED) || defined(APPLE_EMBEDDED_ENABLED)
+#include "drivers/apple/rendering_native_surface_apple.h"
+#endif
 
 #ifdef ACCESSKIT_ENABLED
 #include "drivers/accesskit/accessibility_server_accesskit.h"
@@ -44,6 +47,9 @@ static Ref<ResourceSaverPNG> resource_saver_png;
 void register_core_driver_types() {
 #ifdef ACCESSKIT_ENABLED
 	AccessibilityServerAccessKit::register_create_func();
+#endif
+#if defined(MACOS_ENABLED) || defined(APPLE_EMBEDDED_ENABLED)
+	GDREGISTER_ABSTRACT_CLASS(RenderingNativeSurfaceApple);
 #endif
 
 	image_loader_png.instantiate();

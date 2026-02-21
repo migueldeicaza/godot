@@ -1,5 +1,5 @@
 /**************************************************************************/
-/*  libgodot_macos.mm                                                     */
+/*  rendering_native_surface.h                                            */
 /**************************************************************************/
 /*                         This file is part of:                          */
 /*                             GODOT ENGINE                               */
@@ -28,75 +28,17 @@
 /* SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.                 */
 /**************************************************************************/
 
-#include "os_macos.h"
+#pragma once
 
 #include "core/object/class_db.h"
-#include "core/extension/godot_instance.h"
-#include "core/extension/libgodot.h"
-#include "main/main.h"
+#include "core/object/ref_counted.h"
 
-#include "display_server_macos_embedded.h"
-static OS_MacOS *os = nullptr;
+class RenderingNativeSurface : public RefCounted {
+	GDCLASS(RenderingNativeSurface, RefCounted);
 
-static GodotInstance *instance = nullptr;
-static bool embedded_driver_registered = false;
-static bool embedded_class_registered = false;
+	static void _bind_methods();
 
-static bool _wants_embedded_driver(int p_argc, char *p_argv[]) {
-	for (int i = 1; i < p_argc; i++) {
-		if (strcmp("--embedded", p_argv[i]) == 0) {
-			return true;
-		}
-		if (i < p_argc - 1 && strcmp("--display-driver", p_argv[i]) == 0 && strcmp("embedded", p_argv[i + 1]) == 0) {
-			return true;
-		}
-	}
-	return false;
-}
-
-GDExtensionObjectPtr libgodot_create_godot_instance(int p_argc, char *p_argv[], GDExtensionInitializationFunction p_init_func) {
-	ERR_FAIL_COND_V_MSG(instance != nullptr, nullptr, "Only one Godot Instance may be created.");
-
-	if (!embedded_driver_registered && _wants_embedded_driver(p_argc, p_argv)) {
-		DisplayServerMacOSEmbedded::register_embedded_driver();
-		embedded_driver_registered = true;
-	}
-
-	uint32_t remaining_args = p_argc - 1;
-	os = new OS_MacOS_NSApp(p_argv[0], remaining_args, remaining_args > 0 ? &p_argv[1] : nullptr);
-
-	@autoreleasepool {
-		Error err = Main::setup(p_argv[0], remaining_args, remaining_args > 0 ? &p_argv[1] : nullptr, false);
-		if (err != OK) {
-			return nullptr;
-		}
-
-		if (!embedded_class_registered) {
-			ClassDB::register_abstract_class<DisplayServerMacOSEmbedded>();
-			embedded_class_registered = true;
-		}
-
-		instance = memnew(GodotInstance);
-		if (!instance->initialize(p_init_func)) {
-			memdelete(instance);
-			instance = nullptr;
-			return nullptr;
-		}
-
-		return (GDExtensionObjectPtr)instance;
-	}
-}
-
-void libgodot_destroy_godot_instance(GDExtensionObjectPtr p_godot_instance) {
-	GodotInstance *godot_instance = (GodotInstance *)p_godot_instance;
-	if (instance == godot_instance) {
-		godot_instance->stop();
-		memdelete(godot_instance);
-		instance = nullptr;
-		Main::cleanup();
-		if (os != nullptr) {
-			memdelete(os);
-			os = nullptr;
-		}
-	}
-}
+public:
+	RenderingNativeSurface();
+	~RenderingNativeSurface();
+};
