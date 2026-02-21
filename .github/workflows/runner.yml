@@ -13,34 +13,100 @@ jobs:
     name: 📊 Static checks
     uses: ./.github/workflows/static_checks.yml
 
-  # Second stage: Run all the builds and some of the tests.
-
-  android-build:
-    name: 🤖 Android
-    needs: static-checks
-    uses: ./.github/workflows/android_builds.yml
+  # Second stage: Build Apple payloads only.
 
   ios-build:
     name: 🍏 iOS
     needs: static-checks
     uses: ./.github/workflows/ios_builds.yml
 
-  linux-build:
-    name: 🐧 Linux
-    needs: static-checks
-    uses: ./.github/workflows/linux_builds.yml
-
   macos-build:
     name: 🍎 macOS
     needs: static-checks
     uses: ./.github/workflows/macos_builds.yml
 
-  windows-build:
-    name: 🏁 Windows
-    needs: static-checks
-    uses: ./.github/workflows/windows_builds.yml
+  package-apple-payloads:
+    name: 📦 Package Apple Payloads
+    needs:
+      - ios-build
+      - macos-build
+    runs-on: macos-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
 
-  web-build:
-    name: 🌐 Web
-    needs: static-checks
-    uses: ./.github/workflows/web_builds.yml
+      - name: Download iOS payload
+        uses: actions/download-artifact@v4
+        with:
+          name: libgodot-ios
+          path: artifacts/ios
+
+      - name: Download macOS payload
+        uses: actions/download-artifact@v4
+        with:
+          name: libgodot-macos
+          path: artifacts/macos
+
+      - name: Build xcframework payloads
+        run: |
+          set -euo pipefail
+
+          mkdir -p dist/staging dist/ios dist/macos dist/apple
+          cp artifacts/ios/core/extension/libgodot.h dist/staging/libgodot.h
+          if [ -f artifacts/ios/core/extension/gdextension_interface.gen.h ]; then
+            cp artifacts/ios/core/extension/gdextension_interface.gen.h dist/staging/gdextension_interface.gen.h
+          fi
+
+          lipo -create \
+            artifacts/ios/bin/libgodot.ios.template_release.arm64.simulator.a \
+            artifacts/ios/bin/libgodot.ios.template_release.x86_64.simulator.a \
+            -output dist/staging/libgodot.ios.template_release.simulator.universal.a
+
+          cp artifacts/ios/bin/libgodot.ios.template_release.arm64.a dist/staging/libgodotkit.ios.device.a
+          cp dist/staging/libgodot.ios.template_release.simulator.universal.a dist/staging/libgodotkit.ios.simulator.a
+          cp artifacts/macos/bin/libgodot.macos.template_debug.universal.dylib dist/staging/libgodotkit.dylib
+          install_name_tool -id @rpath/libgodotkit.dylib dist/staging/libgodotkit.dylib
+
+          xcodebuild -create-xcframework \
+            -library dist/staging/libgodotkit.ios.device.a \
+            -headers dist/staging \
+            -library dist/staging/libgodotkit.ios.simulator.a \
+            -headers dist/staging \
+            -output dist/ios/libgodot.xcframework
+
+          xcodebuild -create-xcframework \
+            -library dist/staging/libgodotkit.dylib \
+            -headers dist/staging \
+            -output dist/macos/libgodot.xcframework
+
+          cp -R dist/ios/libgodot.xcframework dist/apple/libgodot-ios.xcframework
+          cp -R dist/macos/libgodot.xcframework dist/apple/libgodot-macos.xcframework
+          cp dist/staging/libgodot.h dist/apple/
+          if [ -f dist/staging/gdextension_interface.gen.h ]; then
+            cp dist/staging/gdextension_interface.gen.h dist/apple/
+          fi
+
+          ditto -c -k --sequesterRsrc --keepParent dist/ios/libgodot.xcframework dist/libgodot-ios.xcframework.zip
+          ditto -c -k --sequesterRsrc --keepParent dist/macos/libgodot.xcframework dist/libgodot-macos.xcframework.zip
+          ditto -c -k --sequesterRsrc --keepParent dist/apple dist/libgodot-apple-payloads.zip
+
+      - name: Upload packaged payloads
+        uses: actions/upload-artifact@v4
+        with:
+          name: libgodot-apple-payloads
+          path: |
+            dist/libgodot-ios.xcframework.zip
+            dist/libgodot-macos.xcframework.zip
+            dist/libgodot-apple-payloads.zip
+          retention-days: 60
+
+      - name: Publish release assets (tag builds)
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/libgodot-ios.xcframework.zip
+            dist/libgodot-macos.xcframework.zip
+            dist/libgodot-apple-payloads.zip
