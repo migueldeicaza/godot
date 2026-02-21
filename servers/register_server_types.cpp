@@ -67,6 +67,7 @@
 #include "rendering/renderer_rd/uniform_set_cache_rd.h"
 #include "rendering/rendering_device.h"
 #include "rendering/rendering_device_binds.h"
+#include "rendering/rendering_native_surface.h"
 #include "rendering/rendering_server.h"
 #include "rendering/shader_include_db.h"
 #include "rendering/storage/render_data.h"
@@ -154,6 +155,7 @@ void register_server_types() {
 	OS::get_singleton()->set_has_server_feature_callback(has_server_feature_callback);
 
 	GDREGISTER_ABSTRACT_CLASS(DisplayServer);
+	GDREGISTER_ABSTRACT_CLASS(RenderingNativeSurface);
 	GDREGISTER_ABSTRACT_CLASS(RenderingServer);
 	GDREGISTER_CLASS(AudioServer);
 

@@ -31,6 +31,7 @@
 #pragma once
 
 #include "display_server_macos_base.h"
+#include "servers/rendering/rendering_native_surface.h"
 
 @class CAContext;
 @class CALayer;
@@ -56,7 +57,7 @@ struct DisplayServerEmbeddedState {
 };
 
 class DisplayServerEmbedded : public DisplayServerMacOSBase {
-	GDSOFTCLASS(DisplayServerEmbedded, DisplayServerMacOSBase)
+	GDCLASS(DisplayServerEmbedded, DisplayServerMacOSBase)
 
 	DisplayServerEmbeddedState state;
 
@@ -69,9 +70,12 @@ class DisplayServerEmbedded : public DisplayServerMacOSBase {
 	HashMap<WindowID, Callable> input_event_callbacks;
 	HashMap<WindowID, Callable> input_text_callbacks;
 
+	float content_scale = 1.0f;
+
 	WindowID window_id_counter = MAIN_WINDOW_ID;
 
 	bool transparent = false;
+	bool layer_owned = false;
 
 	CAContext *ca_context = nullptr;
 	// Either be a CAMetalLayer or a CALayer depending on the rendering driver.
@@ -109,7 +113,17 @@ class DisplayServerEmbedded : public DisplayServerMacOSBase {
 	};
 	HashMap<int, Joy> joysticks;
 
+	void perform_event(const Ref<InputEvent> &p_event);
+
+	static Ref<RenderingNativeSurface> native_surface;
+
+protected:
+	static void _bind_methods();
+
 public:
+	static DisplayServerEmbedded *get_singleton();
+	static void set_native_surface(Ref<RenderingNativeSurface> p_native_surface);
+
 	static void register_embedded_driver();
 	static DisplayServer *create_func(const String &p_rendering_driver, WindowMode p_mode, DisplayServer::VSyncMode p_vsync_mode, uint32_t p_flags, const Vector2i *p_position, const Vector2i &p_resolution, int p_screen, Context p_context, int64_t p_parent_window, Error &r_error);
 	static Vector<String> get_rendering_drivers_func();
@@ -131,6 +145,12 @@ public:
 	void send_input_text(const String &p_text, DisplayServer::WindowID p_id = MAIN_WINDOW_ID) const;
 	void send_window_event(DisplayServer::WindowEvent p_event, DisplayServer::WindowID p_id = MAIN_WINDOW_ID) const;
 	void _window_callback(const Callable &p_callable, const Variant &p_arg) const;
+	void resize_window(Size2i p_size, WindowID p_id);
+	void set_content_scale(float p_content_scale);
+	void touch_press(int p_idx, int p_x, int p_y, bool p_pressed, bool p_double_click, DisplayServer::WindowID p_window);
+	void touch_drag(int p_idx, int p_prev_x, int p_prev_y, int p_x, int p_y, float p_pressure, Vector2 p_tilt, DisplayServer::WindowID p_window);
+	void touches_canceled(int p_idx, DisplayServer::WindowID p_window);
+	void key(Key p_key, char32_t p_char, Key p_unshifted, Key p_physical, BitField<KeyModifierMask> p_modifiers, bool p_pressed, DisplayServer::WindowID p_window = MAIN_WINDOW_ID);
 
 	virtual void beep() const override;
 

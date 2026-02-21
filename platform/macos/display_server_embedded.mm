@@ -30,6 +30,8 @@
 
 #import "display_server_embedded.h"
 
+#import "drivers/apple/rendering_native_surface_apple.h"
+
 #if defined(GLES3_ENABLED)
 #import "embedded_gl_manager.h"
 #import "platform_gl.h"
@@ -57,6 +59,27 @@
 #import "core/io/marshalls.h"
 #import "core/os/main_loop.h"
 
+Ref<RenderingNativeSurface> DisplayServerEmbedded::native_surface;
+
+DisplayServerEmbedded *DisplayServerEmbedded::get_singleton() {
+	return (DisplayServerEmbedded *)DisplayServer::get_singleton();
+}
+
+void DisplayServerEmbedded::set_native_surface(Ref<RenderingNativeSurface> p_native_surface) {
+	native_surface = p_native_surface;
+}
+
+void DisplayServerEmbedded::_bind_methods() {
+	ClassDB::bind_static_method("DisplayServerEmbedded", D_METHOD("set_native_surface", "native_surface"), &DisplayServerEmbedded::set_native_surface);
+	ClassDB::bind_static_method("DisplayServerEmbedded", D_METHOD("get_singleton"), &DisplayServerEmbedded::get_singleton);
+	ClassDB::bind_method(D_METHOD("resize_window", "size", "id"), &DisplayServerEmbedded::resize_window);
+	ClassDB::bind_method(D_METHOD("set_content_scale", "content_scale"), &DisplayServerEmbedded::set_content_scale);
+	ClassDB::bind_method(D_METHOD("touch_press", "idx", "x", "y", "pressed", "double_click", "window"), &DisplayServerEmbedded::touch_press);
+	ClassDB::bind_method(D_METHOD("touch_drag", "idx", "prev_x", "prev_y", "x", "y", "pressure", "tilt", "window"), &DisplayServerEmbedded::touch_drag);
+	ClassDB::bind_method(D_METHOD("touches_canceled", "idx", "window"), &DisplayServerEmbedded::touches_canceled);
+	ClassDB::bind_method(D_METHOD("key", "key", "char", "unshifted", "physical", "modifiers", "pressed", "window"), &DisplayServerEmbedded::key, DEFVAL(MAIN_WINDOW_ID));
+}
+
 DisplayServerEmbedded::DisplayServerEmbedded(const String &p_rendering_driver, WindowMode p_mode, DisplayServer::VSyncMode p_vsync_mode, uint32_t p_flags, const Vector2i *p_position, const Vector2i &p_resolution, int p_screen, Context p_context, Error &r_error) {
 	EmbeddedDebugger::initialize(this);
 
@@ -67,6 +90,11 @@ DisplayServerEmbedded::DisplayServerEmbedded(const String &p_rendering_driver, W
 	Input::get_singleton()->set_event_dispatch_function(_dispatch_input_events);
 
 	rendering_driver = p_rendering_driver;
+	Ref<RenderingNativeSurfaceApple> apple_surface = native_surface;
+	CALayer *native_layer = nullptr;
+	if (apple_surface.is_valid()) {
+		native_layer = (__bridge CALayer *)(void *)apple_surface->get_layer();
+	}
 
 #if defined(RD_ENABLED)
 #if defined(VULKAN_ENABLED)
@@ -127,7 +155,12 @@ DisplayServerEmbedded::DisplayServerEmbedded(const String &p_rendering_driver, W
 			r_error = ERR_UNAVAILABLE;
 			ERR_FAIL_MSG("Could not initialize native OpenGL.");
 		}
-		layer = [CALayer new];
+		if (native_layer) {
+			layer = native_layer;
+		} else {
+			layer = [CALayer new];
+			layer_owned = true;
+		}
 		// OpenGL content is flipped, so it must be transformed.
 		layer.anchorPoint = CGPointMake(0, 0);
 		layer.transform = CATransform3DMakeScale(1.0, -1.0, 1.0);
@@ -142,7 +175,13 @@ DisplayServerEmbedded::DisplayServerEmbedded(const String &p_rendering_driver, W
 
 #if defined(RD_ENABLED)
 	if (rendering_context) {
-		layer = [CAMetalLayer new];
+		if (native_layer) {
+			layer = native_layer;
+			ERR_FAIL_COND_MSG(![layer isKindOfClass:[CAMetalLayer class]], "Embedded rendering requires a CAMetalLayer native surface for RD drivers.");
+		} else {
+			layer = [CAMetalLayer new];
+			layer_owned = true;
+		}
 		layer.anchorPoint = CGPointMake(0, 1);
 
 		union {
@@ -202,13 +241,15 @@ DisplayServerEmbedded::DisplayServerEmbedded(const String &p_rendering_driver, W
 	bounds = CGRectApplyAffineTransform(bounds, CGAffineTransformInvert(CGAffineTransformMakeScale(scale, scale)));
 	layer.bounds = bounds;
 
-	CGSConnectionID connection_id = CGSMainConnectionID();
-	ca_context = [CAContext contextWithCGSConnection:connection_id options:@{ kCAContextCIFilterBehavior : @"ignore" }];
-	ca_context.layer = layer;
+	if (!native_layer) {
+		CGSConnectionID connection_id = CGSMainConnectionID();
+		ca_context = [CAContext contextWithCGSConnection:connection_id options:@{ kCAContextCIFilterBehavior : @"ignore" }];
+		ca_context.layer = layer;
 
-	{
-		Array arr = { ca_context.contextId };
-		EngineDebugger::get_singleton()->send_message("game_view:set_context_id", arr);
+		{
+			Array arr = { ca_context.contextId };
+			EngineDebugger::get_singleton()->send_message("game_view:set_context_id", arr);
+		}
 	}
 }
 
@@ -238,6 +279,10 @@ DisplayServerEmbedded::~DisplayServerEmbedded() {
 		rendering_context = nullptr;
 	}
 #endif
+
+	if (layer_owned) {
+		layer = nullptr;
+	}
 }
 
 DisplayServer *DisplayServerEmbedded::create_func(const String &p_rendering_driver, WindowMode p_mode, DisplayServer::VSyncMode p_vsync_mode, uint32_t p_flags, const Vector2i *p_position, const Vector2i &p_resolution, int p_screen, Context p_context, int64_t /* p_parent_window */, Error &r_error) {
@@ -438,6 +483,76 @@ void DisplayServerEmbedded::_window_callback(const Callable &p_callable, const V
 	}
 }
 
+void DisplayServerEmbedded::perform_event(const Ref<InputEvent> &p_event) {
+	Input::get_singleton()->parse_input_event(p_event);
+}
+
+void DisplayServerEmbedded::resize_window(Size2i p_size, WindowID p_id) {
+	Size2i scaled_size = Size2i(int32_t(p_size.x * content_scale), int32_t(p_size.y * content_scale));
+	_window_set_size(scaled_size, p_id);
+}
+
+void DisplayServerEmbedded::set_content_scale(float p_content_scale) {
+	if (Math::is_equal_approx(content_scale, p_content_scale)) {
+		return;
+	}
+	content_scale = p_content_scale;
+	state.screen_window_scale = p_content_scale;
+}
+
+void DisplayServerEmbedded::touch_press(int p_idx, int p_x, int p_y, bool p_pressed, bool p_double_click, DisplayServer::WindowID p_window) {
+	Ref<InputEventScreenTouch> ev;
+	ev.instantiate();
+	ev->set_window_id(p_window);
+	ev->set_index(p_idx);
+	ev->set_pressed(p_pressed);
+	ev->set_position(Vector2(p_x, p_y));
+	ev->set_double_tap(p_double_click);
+	perform_event(ev);
+}
+
+void DisplayServerEmbedded::touch_drag(int p_idx, int p_prev_x, int p_prev_y, int p_x, int p_y, float p_pressure, Vector2 p_tilt, DisplayServer::WindowID p_window) {
+	Ref<InputEventScreenDrag> ev;
+	ev.instantiate();
+	ev->set_window_id(p_window);
+	ev->set_index(p_idx);
+	ev->set_pressure(p_pressure);
+	ev->set_tilt(p_tilt);
+	ev->set_position(Vector2(p_x, p_y));
+	ev->set_relative(Vector2(p_x - p_prev_x, p_y - p_prev_y));
+	ev->set_relative_screen_position(ev->get_relative());
+	perform_event(ev);
+}
+
+void DisplayServerEmbedded::touches_canceled(int p_idx, DisplayServer::WindowID p_window) {
+	touch_press(p_idx, -1, -1, false, false, p_window);
+}
+
+void DisplayServerEmbedded::key(Key p_key, char32_t p_char, Key p_unshifted, Key p_physical, BitField<KeyModifierMask> p_modifiers, bool p_pressed, DisplayServer::WindowID p_window) {
+	Ref<InputEventKey> ev;
+	ev.instantiate();
+	ev->set_window_id(p_window);
+	ev->set_echo(false);
+	ev->set_pressed(p_pressed);
+	ev->set_keycode(fix_keycode(p_char, p_key));
+	if (p_key != Key::SHIFT) {
+		ev->set_shift_pressed(p_modifiers.has_flag(KeyModifierMask::SHIFT));
+	}
+	if (p_key != Key::CTRL) {
+		ev->set_ctrl_pressed(p_modifiers.has_flag(KeyModifierMask::CTRL));
+	}
+	if (p_key != Key::ALT) {
+		ev->set_alt_pressed(p_modifiers.has_flag(KeyModifierMask::ALT));
+	}
+	if (p_key != Key::META) {
+		ev->set_meta_pressed(p_modifiers.has_flag(KeyModifierMask::META));
+	}
+	ev->set_key_label(p_unshifted);
+	ev->set_physical_keycode(p_physical);
+	ev->set_unicode(fix_unicode(p_char));
+	perform_event(ev);
+}
+
 // MARK: -
 
 bool DisplayServerEmbedded::has_feature(Feature p_feature) const {
@@ -621,7 +736,7 @@ Size2i DisplayServerEmbedded::window_get_min_size(WindowID p_window) const {
 }
 
 void DisplayServerEmbedded::window_set_size(const Size2i p_size, WindowID p_window) {
-	print_line("Embedded window can't be resized.");
+	_window_set_size(p_size, p_window);
 }
 
 void DisplayServerEmbedded::_window_set_size(const Size2i p_size, WindowID p_window) {

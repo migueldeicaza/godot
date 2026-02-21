@@ -1,5 +1,5 @@
 /**************************************************************************/
-/*  register_driver_types.cpp                                             */
+/*  rendering_native_surface.cpp                                          */
 /**************************************************************************/
 /*                         This file is part of:                          */
 /*                             GODOT ENGINE                               */
@@ -28,39 +28,13 @@
 /* SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.                 */
 /**************************************************************************/
 
-#include "register_driver_types.h"
+#include "rendering_native_surface.h"
 
-#include "drivers/png/image_loader_png.h"
-#include "drivers/png/resource_saver_png.h"
-#if defined(MACOS_ENABLED) || defined(APPLE_EMBEDDED_ENABLED)
-#include "drivers/apple/rendering_native_surface_apple.h"
-#endif
-
-static Ref<ImageLoaderPNG> image_loader_png;
-static Ref<ResourceSaverPNG> resource_saver_png;
-
-void register_core_driver_types() {
-#if defined(MACOS_ENABLED) || defined(APPLE_EMBEDDED_ENABLED)
-	GDREGISTER_ABSTRACT_CLASS(RenderingNativeSurfaceApple);
-#endif
-
-	image_loader_png.instantiate();
-	ImageLoader::add_image_format_loader(image_loader_png);
-
-	resource_saver_png.instantiate();
-	ResourceSaver::add_resource_format_saver(resource_saver_png);
+void RenderingNativeSurface::_bind_methods() {
 }
 
-void unregister_core_driver_types() {
-	ImageLoader::remove_image_format_loader(image_loader_png);
-	image_loader_png.unref();
-
-	ResourceSaver::remove_resource_format_saver(resource_saver_png);
-	resource_saver_png.unref();
+RenderingNativeSurface::RenderingNativeSurface() {
 }
 
-void register_driver_types() {
-}
-
-void unregister_driver_types() {
+RenderingNativeSurface::~RenderingNativeSurface() {
 }
