@@ -10,7 +10,6 @@ env:
     module_text_server_fb_enabled=yes
     tests=no
     debug_symbols=no
-    library_type=static_library
     vulkan=no
     metal=yes
     disable_path_overrides=no
