@@ -12,6 +12,7 @@ ios_lib = [
     "display_layer_ios.mm",
     "display_server_ios.mm",
     "godot_view_ios.mm",
+    "libgodot_ios.mm",
     "main_ios.mm",
     "os_ios.mm",
 ]
