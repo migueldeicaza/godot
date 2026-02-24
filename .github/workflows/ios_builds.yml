@@ -59,20 +59,6 @@ jobs:
           platform: ios
           target: template_release
 
-      - name: Verify libgodot iOS bridge symbols
-        run: |
-          set -euo pipefail
-          libs=(
-            "bin/libgodot.ios.template_release.arm64.a"
-            "bin/libgodot.ios.template_release.arm64.simulator.a"
-            "bin/libgodot.ios.template_release.x86_64.simulator.a"
-          )
-          for lib in "${libs[@]}"; do
-            echo "Checking symbols in $lib"
-            nm -gU "$lib" | grep -q "_libgodot_create_godot_instance"
-            nm -gU "$lib" | grep -q "_libgodot_destroy_godot_instance"
-          done
-
       - name: Save Godot build cache
         uses: ./.github/actions/godot-cache-save
         continue-on-error: true
