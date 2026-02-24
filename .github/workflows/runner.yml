@@ -35,7 +35,7 @@ jobs:
     runs-on: macos-latest
     permissions:
       contents: write
-    if: ${{ needs.ios-build.result == 'success' && needs.macos-build.result == 'success' }}
+    if: ${{ always() && needs['ios-build'].result == 'success' && needs['macos-build'].result == 'success' }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
