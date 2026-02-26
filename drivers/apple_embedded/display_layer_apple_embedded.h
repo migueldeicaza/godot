@@ -30,7 +30,10 @@
 
 #pragma once
 
+#import <OpenGLES/ES1/gl.h>
 #import <QuartzCore/CAMetalLayer.h>
+
+#include "servers/rendering/gles_context.h"
 
 @protocol GDTDisplayLayer <NSObject>
 
@@ -38,5 +41,6 @@
 - (void)stopRenderDisplayLayer;
 - (void)initializeDisplayLayer;
 - (void)layoutDisplayLayer;
+- (void)setupContext:(GLESContext *)context withSurface:(Ref<RenderingNativeSurface> *)surface;
 
 @end

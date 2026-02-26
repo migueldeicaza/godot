@@ -893,6 +893,7 @@ void Main::test_cleanup() {
 	GDExtensionManager::get_singleton()->deinitialize_extensions(GDExtension::INITIALIZATION_LEVEL_SERVERS);
 	uninitialize_modules(MODULE_INITIALIZATION_LEVEL_SERVERS);
 	unregister_server_types();
+	unregister_core_server_types();
 
 	EngineDebugger::deinitialize();
 	OS::get_singleton()->finalize();
@@ -2838,6 +2839,9 @@ Error Main::setup(const char *execpath, int argc, char *argv[], bool p_second_ph
 	Engine::get_singleton()->set_frame_delay(frame_delay);
 
 	message_queue = memnew(MessageQueue);
+
+	// Register Core Server Types
+	register_core_server_types();
 
 	Thread::release_main_thread(); // If setup2() is called from another thread, that one will become main thread, so preventively release this one.
 	set_current_thread_safe_for_nodes(false);
@@ -5178,6 +5182,7 @@ void Main::cleanup(bool p_force) {
 	GDExtensionManager::get_singleton()->deinitialize_extensions(GDExtension::INITIALIZATION_LEVEL_SERVERS);
 	uninitialize_modules(MODULE_INITIALIZATION_LEVEL_SERVERS);
 	unregister_server_types();
+	unregister_core_server_types();
 
 	EngineDebugger::deinitialize();
 

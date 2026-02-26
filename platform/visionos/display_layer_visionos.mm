@@ -44,4 +44,7 @@
 - (void)stopRenderDisplayLayer {
 }
 
+- (void)setupContext:(GLESContext *)context withSurface:(Ref<RenderingNativeSurface> *)surface {
+}
+
 @end
