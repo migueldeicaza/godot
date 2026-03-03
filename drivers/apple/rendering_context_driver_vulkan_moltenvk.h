@@ -1,5 +1,5 @@
 /**************************************************************************/
-/*  rendering_native_surface.h                                            */
+/*  rendering_context_driver_vulkan_moltenvk.h                            */
 /**************************************************************************/
 /*                         This file is part of:                          */
 /*                             GODOT ENGINE                               */
@@ -28,23 +28,33 @@
 /* SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.                 */
 /**************************************************************************/
 
-#pragma once
+#ifndef RENDERING_CONTEXT_DRIVER_VULKAN_MOLTENVK_H
+#define RENDERING_CONTEXT_DRIVER_VULKAN_MOLTENVK_H
 
-#include "core/object/class_db.h"
-#include "core/object/ref_counted.h"
+#ifdef __APPLE__
+#ifdef VULKAN_ENABLED
 
-class RenderingContextDriver;
-class GLESContext;
+#include "drivers/vulkan/rendering_context_driver_vulkan.h"
 
-class RenderingNativeSurface : public RefCounted {
-	GDCLASS(RenderingNativeSurface, RefCounted);
+#ifdef __OBJC__
+@class CAMetalLayer;
+#else
+typedef void CAMetalLayer;
+#endif
 
-	static void _bind_methods();
+class RenderingContextDriverVulkanMoltenVk : public RenderingContextDriverVulkan {
+private:
+	virtual const char *_get_platform_surface_extension() const override final;
+
+protected:
+	SurfaceID surface_create(Ref<RenderingNativeSurface> p_native_surface) override final;
 
 public:
-	RenderingNativeSurface();
-	~RenderingNativeSurface();
-	
-	virtual RenderingContextDriver *create_rendering_context(const String &p_driver_name) = 0;
-	virtual GLESContext *create_gles_context() { return nullptr; }
+	RenderingContextDriverVulkanMoltenVk();
+	~RenderingContextDriverVulkanMoltenVk();
 };
+
+#endif // VULKAN_ENABLED
+#endif // __APPLE__
+
+#endif // RENDERING_CONTEXT_DRIVER_VULKAN_MOLTENVK_H

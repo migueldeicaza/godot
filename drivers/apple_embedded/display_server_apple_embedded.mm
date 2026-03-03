@@ -32,6 +32,7 @@
 
 #import "app_delegate_service.h"
 #import "apple_embedded.h"
+#import "display_layer_apple_embedded.h"
 #import "godot_keyboard_input_view.h"
 #import "godot_view_apple_embedded.h"
 #import "godot_view_controller.h"
@@ -41,6 +42,7 @@
 
 #include "core/config/project_settings.h"
 #include "core/io/file_access_pack.h"
+#include "drivers/apple/rendering_native_surface_apple.h"
 
 #import <GameController/GameController.h>
 
@@ -69,6 +71,8 @@ DisplayServerAppleEmbedded::DisplayServerAppleEmbedded(const String &p_rendering
 	rendering_device = nullptr;
 
 	CALayer *layer = nullptr;
+	
+	Ref<RenderingNativeSurfaceApple> apple_surface;
 
 	union {
 #ifdef VULKAN_ENABLED
@@ -79,7 +83,7 @@ DisplayServerAppleEmbedded::DisplayServerAppleEmbedded(const String &p_rendering
 		// Eliminate "RenderingContextDriverMetal is only available on iOS 14.0 or newer".
 		RenderingContextDriverMetal::WindowPlatformData metal;
 		GODOT_CLANG_WARNING_POP
-#endif
+#endif  METAL_ENABLED 
 	} wpd;
 
 #if defined(VULKAN_ENABLED)
@@ -88,23 +92,23 @@ DisplayServerAppleEmbedded::DisplayServerAppleEmbedded(const String &p_rendering
 		if (!layer) {
 			ERR_FAIL_MSG("Failed to create iOS Vulkan rendering layer.");
 		}
-		wpd.vulkan.layer_ptr = (CAMetalLayer *const *)&layer;
-		rendering_context = memnew(RenderingContextDriverVulkanAppleEmbedded);
+		apple_surface = RenderingNativeSurfaceApple::create((__bridge void *)layer);
+		rendering_context = apple_surface->create_rendering_context(rendering_driver);
 	}
-#endif
+#endif  defined(VULKAN_ENABLED) 
 #ifdef METAL_ENABLED
 	if (rendering_driver == "metal") {
 		if (@available(iOS 14.0, *)) {
 			layer = [GDTAppDelegateService.viewController.godotView initializeRenderingForDriver:@"metal"];
-			wpd.metal.layer = (CAMetalLayer *)layer;
-			rendering_context = memnew(RenderingContextDriverMetal);
+			apple_surface = RenderingNativeSurfaceApple::create((__bridge void *)layer);
+			rendering_context = apple_surface->create_rendering_context(rendering_driver);
 		} else {
 			OS::get_singleton()->alert("Metal is only supported on iOS 14.0 and later.");
 			r_error = ERR_UNAVAILABLE;
 			return;
 		}
 	}
-#endif
+#endif  METAL_ENABLED 
 	if (rendering_context) {
 		if (rendering_context->initialize() != OK) {
 			memdelete(rendering_context);
@@ -117,7 +121,7 @@ DisplayServerAppleEmbedded::DisplayServerAppleEmbedded(const String &p_rendering
 				OS::get_singleton()->set_current_rendering_method("gl_compatibility");
 				OS::get_singleton()->set_current_rendering_driver_name(rendering_driver);
 			} else
-#endif
+#endif  defined(GLES3_ENABLED) 
 			{
 				ERR_PRINT(vformat("Failed to initialize %s context", rendering_driver));
 				r_error = ERR_UNAVAILABLE;
@@ -127,7 +131,7 @@ DisplayServerAppleEmbedded::DisplayServerAppleEmbedded(const String &p_rendering
 	}
 
 	if (rendering_context) {
-		if (rendering_context->window_create(MAIN_WINDOW_ID, &wpd) != OK) {
+		if (rendering_context->window_create(MAIN_WINDOW_ID, apple_surface) != OK) {
 			ERR_PRINT(vformat("Failed to create %s window.", rendering_driver));
 			memdelete(rendering_context);
 			rendering_context = nullptr;
@@ -152,7 +156,7 @@ DisplayServerAppleEmbedded::DisplayServerAppleEmbedded(const String &p_rendering
 		RendererCompositorRD::make_current();
 		has_made_render_compositor_current = true;
 	}
-#endif
+#endif  defined(RD_ENABLED) 
 
 #if defined(GLES3_ENABLED)
 	if (rendering_driver == "opengl3") {
@@ -165,7 +169,7 @@ DisplayServerAppleEmbedded::DisplayServerAppleEmbedded(const String &p_rendering
 		RasterizerGLES3::make_current(false);
 		has_made_render_compositor_current = true;
 	}
-#endif
+#endif  defined(GLES3_ENABLED) 
 
 	ERR_FAIL_COND_MSG(!has_made_render_compositor_current, vformat("Failed to make RendererCompositor current for rendering driver %s", rendering_driver));
 
@@ -195,7 +199,7 @@ DisplayServerAppleEmbedded::~DisplayServerAppleEmbedded() {
 		memdelete(rendering_context);
 		rendering_context = nullptr;
 	}
-#endif
+#endif  defined(RD_ENABLED) 
 }
 
 Vector<String> DisplayServerAppleEmbedded::get_rendering_drivers_func() {

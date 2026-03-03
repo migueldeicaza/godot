@@ -1,5 +1,5 @@
 /**************************************************************************/
-/*  rendering_native_surface.h                                            */
+/*  gles_context.h                                                        */
 /**************************************************************************/
 /*                         This file is part of:                          */
 /*                             GODOT ENGINE                               */
@@ -28,23 +28,24 @@
 /* SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.                 */
 /**************************************************************************/
 
-#pragma once
+#ifndef GLES_CONTEXT_H
+#define GLES_CONTEXT_H
 
 #include "core/object/class_db.h"
 #include "core/object/ref_counted.h"
+#include "servers/display/display_server.h"
+#include "servers/rendering/rendering_native_surface.h"
 
-class RenderingContextDriver;
-class GLESContext;
-
-class RenderingNativeSurface : public RefCounted {
-	GDCLASS(RenderingNativeSurface, RefCounted);
-
-	static void _bind_methods();
-
+class GLESContext {
 public:
-	RenderingNativeSurface();
-	~RenderingNativeSurface();
-	
-	virtual RenderingContextDriver *create_rendering_context(const String &p_driver_name) = 0;
-	virtual GLESContext *create_gles_context() { return nullptr; }
+	virtual void initialize() = 0;
+	virtual bool create_framebuffer(DisplayServer::WindowID p_id, Ref<RenderingNativeSurface> p_native_surface) = 0;
+	virtual void resized(DisplayServer::WindowID p_id) = 0;
+	virtual void begin_rendering(DisplayServer::WindowID p_id) = 0;
+	virtual void end_rendering(DisplayServer::WindowID p_id) = 0;
+	virtual bool destroy_framebuffer(DisplayServer::WindowID p_id) = 0;
+	virtual void deinitialize() = 0;
+	virtual uint64_t get_fbo(DisplayServer::WindowID p_id) const = 0;
 };
+
+#endif // GLES_CONTEXT_H

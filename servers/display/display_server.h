@@ -36,6 +36,7 @@
 #include "core/os/os.h"
 #include "core/variant/callable.h"
 #include "servers/display/native_menu.h"
+#include "servers/rendering/rendering_native_surface.h"
 
 class Texture2D;
 class AccessibilityDriver;
@@ -84,6 +85,7 @@ public:
 		OPENGL_CONTEXT,
 		EGL_DISPLAY,
 		EGL_CONFIG,
+		OPENGL_FBO,
 	};
 
 	enum Context {
@@ -169,6 +171,7 @@ public:
 		FEATURE_NATIVE_COLOR_PICKER,
 		FEATURE_SELF_FITTING_WINDOWS,
 		FEATURE_ACCESSIBILITY_SCREEN_READER,
+		FEATURE_NATIVE_WINDOWS,
 	};
 
 	virtual bool has_feature(Feature p_feature) const = 0;
@@ -437,6 +440,10 @@ public:
 	virtual WindowID create_sub_window(WindowMode p_mode, VSyncMode p_vsync_mode, uint32_t p_flags, const Rect2i &p_rect = Rect2i(), bool p_exclusive = false, WindowID p_transient_parent = INVALID_WINDOW_ID);
 	virtual void show_window(WindowID p_id);
 	virtual void delete_sub_window(WindowID p_id);
+
+	virtual WindowID create_native_window(Ref<RenderingNativeSurface> p_native_window);
+	virtual bool is_native_window(WindowID p_id);
+	virtual void delete_native_window(WindowID p_id);
 
 	virtual WindowID window_get_active_popup() const { return INVALID_WINDOW_ID; }
 	virtual void window_set_popup_safe_rect(WindowID p_window, const Rect2i &p_rect) {}

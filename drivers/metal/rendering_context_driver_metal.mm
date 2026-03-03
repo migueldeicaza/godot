@@ -30,6 +30,7 @@
 
 #import "rendering_context_driver_metal.h"
 
+#include "drivers/apple/rendering_native_surface_apple.h"
 #import "rendering_device_driver_metal.h"
 
 #include "core/templates/sort_array.h"
@@ -60,7 +61,19 @@ RenderingContextDriverMetal::RenderingContextDriverMetal() {
 RenderingContextDriverMetal::~RenderingContextDriverMetal() {
 }
 
+void mvkDispatchToMainAndWait(dispatch_block_t block) {
+	if (NSThread.isMainThread) {
+		block();
+	} else {
+		dispatch_sync(dispatch_get_main_queue(), block);
+	}
+}
+
 Error RenderingContextDriverMetal::initialize() {
+	mvkDispatchToMainAndWait(^{
+		metal_device = MTLCreateSystemDefaultDevice();
+	});
+	
 	if (OS::get_singleton()->get_environment("MTL_CAPTURE_ENABLED") == "1") {
 		capture_available = true;
 	}
@@ -115,6 +128,8 @@ public:
 		layer.opaque = OS::get_singleton()->is_layered_allowed() ? NO : YES;
 		layer.pixelFormat = get_pixel_format();
 		layer.device = p_device;
+		layer.minificationFilter = kCAFilterNearest;
+		layer.magnificationFilter = kCAFilterNearest;
 	}
 
 	~SurfaceLayer() override {
@@ -149,7 +164,7 @@ public:
 				layer.displaySyncEnabled = NO;
 				break;
 		}
-#endif
+#endif  TARGET_OS_OSX 
 		drawables.resize(p_desired_framebuffer_count);
 		frame_buffers.resize(p_desired_framebuffer_count);
 		for (uint32_t i = 0; i < p_desired_framebuffer_count; i++) {
@@ -301,14 +316,14 @@ public:
 	}
 };
 
-RenderingContextDriver::SurfaceID RenderingContextDriverMetal::surface_create(const void *p_platform_data) {
-	const WindowPlatformData *wpd = (const WindowPlatformData *)(p_platform_data);
-	Surface *surface;
-	if (String v = OS::get_singleton()->get_environment("GODOT_MTL_OFF_SCREEN"); v == U"1") {
-		surface = memnew(SurfaceOffscreen(wpd->layer, metal_device));
-	} else {
-		surface = memnew(SurfaceLayer(wpd->layer, metal_device));
-	}
+RenderingContextDriver::SurfaceID RenderingContextDriverMetal::surface_create(Ref<RenderingNativeSurface> p_native_surface) {
+	Ref<RenderingNativeSurfaceApple> apple_native_surface = Object::cast_to<RenderingNativeSurfaceApple>(*p_native_surface);
+	ERR_FAIL_COND_V(apple_native_surface.is_null(), SurfaceID());
+
+	__block Surface *surface = nullptr;
+	mvkDispatchToMainAndWait(^{
+		surface = memnew(SurfaceLayer((__bridge CAMetalLayer *)(void *)apple_native_surface->get_layer(), metal_device));
+	});
 
 	return SurfaceID(surface);
 }

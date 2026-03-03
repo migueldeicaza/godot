@@ -30,26 +30,28 @@
 
 #pragma once
 
+#include "core/variant/native_ptr.h"
 #include "servers/rendering/rendering_native_surface.h"
 
 class RenderingNativeSurfaceApple : public RenderingNativeSurface {
 	GDCLASS(RenderingNativeSurfaceApple, RenderingNativeSurface);
 
-	static void _bind_methods();
-
-	uint64_t layer = 0;
-
 public:
-	static Ref<RenderingNativeSurfaceApple> create_api(uint64_t p_layer);
+	// TODO: Remove workaround when SwiftGodot starts to support const void * arguments.
+	static Ref<RenderingNativeSurfaceApple> create_api(/* GDExtensionConstPtr<const void> */ uint64_t p_layer);
 
-	void set_layer(uint64_t p_layer) {
-		layer = p_layer;
-	}
+	static Ref<RenderingNativeSurfaceApple> create(void *p_layer);
 
-	uint64_t get_layer() const {
-		return layer;
-	}
+	uint64_t get_layer();
+
+	RenderingContextDriver *create_rendering_context(const String &p_driver_name) override;
+	GLESContext *create_gles_context() override;
 
 	RenderingNativeSurfaceApple();
 	~RenderingNativeSurfaceApple();
+
+private:
+	static void _bind_methods();
+
+	void *layer = nullptr;
 };
