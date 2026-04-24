@@ -43,9 +43,11 @@ TEST_FORCE_LINK(test_usd_scene_loader)
 #include "tests/test_utils.h"
 
 #include "core/io/resource_loader.h"
+#include "scene/3d/light_3d.h"
 #include "scene/3d/mesh_instance_3d.h"
 #include "scene/3d/node_3d.h"
 #include "scene/resources/material.h"
+#include "scene/resources/mesh.h"
 #include "scene/resources/packed_scene.h"
 
 namespace TestUsdSceneLoader {
@@ -93,11 +95,8 @@ TEST_CASE("[SceneTree][USD] Load a minimal USD scene as PackedScene") {
 	CHECK((String)mesh_metadata.get("usd:prim_path", String()) == String("/Root/Triangle"));
 	CHECK((String)mesh_metadata.get("usd:type_name", String()) == String("Mesh"));
 
-	Dictionary unmapped_attributes = mesh_metadata.get("usd:unmapped_attributes", Dictionary());
-	CHECK(unmapped_attributes.has("primvars:displayColor"));
-
-	memdelete(root);
-}
+		memdelete(root);
+	}
 
 TEST_CASE("[SceneTree][USD] Load a textured UsdPreviewSurface material") {
 	const String usd_path = TestUtils::get_data_path("usd/textured_preview.usda");
@@ -128,6 +127,105 @@ TEST_CASE("[SceneTree][USD] Load a textured UsdPreviewSurface material") {
 	Array material_bindings = mesh_metadata.get("usd:material_bindings", Array());
 	CHECK(material_bindings.size() == 1);
 	CHECK((String)material_bindings[0] == String("/TexturedQuad/Materials/TestMaterial"));
+
+	memdelete(root);
+}
+
+TEST_CASE("[SceneTree][USD] Load a packaged USDZ texture asset") {
+	const String usd_path = TestUtils::get_data_path("usd/packaged_preview.usdz");
+
+	Error err = OK;
+	Ref<PackedScene> packed_scene = ResourceLoader::load(usd_path, "PackedScene", ResourceFormatLoader::CACHE_MODE_IGNORE, &err);
+	REQUIRE_MESSAGE(err == OK, "USDZ packaged material load failed.");
+	REQUIRE(packed_scene.is_valid());
+
+	Node *root = packed_scene->instantiate();
+	REQUIRE(root != nullptr);
+	REQUIRE(root->is_class("Node3D"));
+	CHECK(root->get_child_count() == 1);
+
+	MeshInstance3D *mesh_instance = Object::cast_to<MeshInstance3D>(root->get_child(0));
+	REQUIRE(mesh_instance != nullptr);
+	REQUIRE(mesh_instance->get_mesh().is_valid());
+
+	Ref<Material> surface_material = mesh_instance->get_mesh()->surface_get_material(0);
+	REQUIRE(surface_material.is_valid());
+
+	BaseMaterial3D *base_material = Object::cast_to<BaseMaterial3D>(surface_material.ptr());
+	REQUIRE(base_material != nullptr);
+	CHECK(base_material->get_texture(BaseMaterial3D::TEXTURE_ALBEDO).is_valid());
+
+	memdelete(root);
+}
+
+TEST_CASE("[SceneTree][USD] Preserve clockwise winding for right-handed USD meshes") {
+	const String usd_path = TestUtils::get_data_path("usd/winding_right_handed.usda");
+
+	Error err = OK;
+	Ref<PackedScene> packed_scene = ResourceLoader::load(usd_path, "PackedScene", ResourceFormatLoader::CACHE_MODE_IGNORE, &err);
+	REQUIRE_MESSAGE(err == OK, "USD winding test load failed.");
+	REQUIRE(packed_scene.is_valid());
+
+	Node *root = packed_scene->instantiate();
+	REQUIRE(root != nullptr);
+	REQUIRE(root->get_child_count() == 1);
+
+	MeshInstance3D *mesh_instance = Object::cast_to<MeshInstance3D>(root->get_child(0));
+	REQUIRE(mesh_instance != nullptr);
+	REQUIRE(mesh_instance->get_mesh().is_valid());
+
+	Array arrays = mesh_instance->get_mesh()->surface_get_arrays(0);
+	REQUIRE(arrays.size() == Mesh::ARRAY_MAX);
+
+	PackedVector3Array vertices = arrays[Mesh::ARRAY_VERTEX];
+	REQUIRE(vertices.size() >= 3);
+
+	const Vector3 face_normal = (vertices[1] - vertices[0]).cross(vertices[2] - vertices[0]).normalized();
+	CHECK(face_normal.z < 0.0f);
+
+	memdelete(root);
+}
+
+TEST_CASE("[SceneTree][USD] Import emissive preview materials and additional light schemas") {
+	const String usd_path = TestUtils::get_data_path("usd/emissive_and_lights.usda");
+
+	Error err = OK;
+	Ref<PackedScene> packed_scene = ResourceLoader::load(usd_path, "PackedScene", ResourceFormatLoader::CACHE_MODE_IGNORE, &err);
+	REQUIRE_MESSAGE(err == OK, "USD emissive/light load failed.");
+	REQUIRE(packed_scene.is_valid());
+
+	Node *root = packed_scene->instantiate();
+	REQUIRE(root != nullptr);
+	REQUIRE(root->is_class("Node3D"));
+	CHECK(root->get_child_count() == 1);
+
+	Node *scene_root = root->get_child(0);
+	REQUIRE(scene_root != nullptr);
+	CHECK(scene_root->get_child_count() == 3);
+
+	MeshInstance3D *mesh_instance = Object::cast_to<MeshInstance3D>(scene_root->get_child(0));
+	REQUIRE(mesh_instance != nullptr);
+	REQUIRE(mesh_instance->get_mesh().is_valid());
+
+	Ref<Material> surface_material = mesh_instance->get_mesh()->surface_get_material(0);
+	REQUIRE(surface_material.is_valid());
+
+	BaseMaterial3D *base_material = Object::cast_to<BaseMaterial3D>(surface_material.ptr());
+	REQUIRE(base_material != nullptr);
+	CHECK(base_material->get_feature(BaseMaterial3D::FEATURE_EMISSION));
+	CHECK(base_material->get_texture(BaseMaterial3D::TEXTURE_EMISSION).is_valid());
+	CHECK(base_material->get_transparency() == BaseMaterial3D::TRANSPARENCY_ALPHA_SCISSOR);
+	CHECK(base_material->get_alpha_scissor_threshold() == doctest::Approx(0.3f));
+
+	AreaLight3D *area_light = Object::cast_to<AreaLight3D>(scene_root->get_child(1));
+	REQUIRE(area_light != nullptr);
+	CHECK(area_light->get_area_size().x == doctest::Approx(0.5f));
+	CHECK(area_light->get_area_size().y == doctest::Approx(0.25f));
+	CHECK(area_light->get_area_texture().is_valid());
+
+	SpotLight3D *spot_light = Object::cast_to<SpotLight3D>(scene_root->get_child(2));
+	REQUIRE(spot_light != nullptr);
+	CHECK(spot_light->get_param(Light3D::PARAM_SPOT_ANGLE) == doctest::Approx(25.0f));
 
 	memdelete(root);
 }

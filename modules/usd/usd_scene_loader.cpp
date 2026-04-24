@@ -81,7 +81,11 @@
 #include <pxr/usd/usdGeom/subset.h>
 #include <pxr/usd/usdGeom/tokens.h>
 #include <pxr/usd/usdGeom/xformable.h>
+#include <pxr/usd/usdLux/cylinderLight.h>
+#include <pxr/usd/usdLux/diskLight.h>
 #include <pxr/usd/usdLux/distantLight.h>
+#include <pxr/usd/usdLux/rectLight.h>
+#include <pxr/usd/usdLux/shapingAPI.h>
 #include <pxr/usd/usdLux/sphereLight.h>
 #include <pxr/usd/usdShade/connectableAPI.h>
 #include <pxr/usd/usdShade/material.h>
@@ -399,21 +403,20 @@ class UsdSceneBuilder {
 		return image;
 	}
 
-	Ref<Texture2D> _load_texture_from_shader(const UsdShadeShader &p_shader, Dictionary *r_mapping_notes) const {
-		UsdShadeInput file_input = p_shader.GetInput(TfToken("file"));
-		if (!file_input) {
+	Ref<Texture2D> _load_texture_from_asset_attribute(const UsdAttribute &p_asset_attribute, Dictionary *r_mapping_notes) const {
+		if (!p_asset_attribute) {
 			return Ref<Texture2D>();
 		}
 
 		SdfAssetPath asset_path;
-		if (!file_input.Get(&asset_path, time)) {
-			(*r_mapping_notes)["usd:texture_status"] = "UsdUVTexture was found, but its file input could not be read.";
+		if (!p_asset_attribute.Get(&asset_path, time)) {
+			(*r_mapping_notes)["usd:texture_status"] = vformat("Texture asset input could not be read: %s", _to_godot_string(p_asset_attribute.GetName().GetString()));
 			return Ref<Texture2D>();
 		}
 
-		const String resolved_path = _resolve_asset_path(file_input.GetAttr(), asset_path);
+		const String resolved_path = _resolve_asset_path(p_asset_attribute, asset_path);
 		if (resolved_path.is_empty()) {
-			(*r_mapping_notes)["usd:texture_status"] = "UsdUVTexture was found, but its asset path could not be resolved.";
+			(*r_mapping_notes)["usd:texture_status"] = "Texture asset path could not be resolved.";
 			return Ref<Texture2D>();
 		}
 
@@ -468,6 +471,43 @@ class UsdSceneBuilder {
 		return texture;
 	}
 
+	Ref<Texture2D> _load_texture_from_shader(const UsdShadeShader &p_shader, Dictionary *r_mapping_notes) const {
+		UsdShadeInput file_input = p_shader.GetInput(TfToken("file"));
+		if (!file_input) {
+			return Ref<Texture2D>();
+		}
+
+		return _load_texture_from_asset_attribute(file_input.GetAttr(), r_mapping_notes);
+	}
+
+	UsdShadeShader _get_connected_texture_shader(const UsdShadeInput &p_input) const {
+		if (!p_input || !p_input.HasConnectedSource()) {
+			return UsdShadeShader();
+		}
+
+		const UsdShadeInput::SourceInfoVector sources = p_input.GetConnectedSources();
+		if (sources.empty()) {
+			return UsdShadeShader();
+		}
+
+		UsdPrim source_prim = stage->GetPrimAtPath(sources[0].source.GetPath());
+		if (!source_prim) {
+			return UsdShadeShader();
+		}
+
+		UsdShadeShader texture_shader(source_prim);
+		if (!texture_shader) {
+			return UsdShadeShader();
+		}
+
+		TfToken shader_id;
+		if (!texture_shader.GetPrim().GetAttribute(TfToken("info:id")).Get(&shader_id, time) || shader_id != TfToken("UsdUVTexture")) {
+			return UsdShadeShader();
+		}
+
+		return texture_shader;
+	}
+
 	Ref<Material> _build_material_from_usd_material(const UsdShadeMaterial &p_material, Dictionary *r_mapping_notes) const {
 		if (!p_material) {
 			return Ref<Material>();
@@ -501,29 +541,24 @@ class UsdSceneBuilder {
 			Ref<StandardMaterial3D> material;
 			material.instantiate();
 
-			UsdShadeInput diffuse_input = preview_surface.GetInput(TfToken("diffuseColor"));
-			if (diffuse_input) {
-				GfVec3f diffuse_color(1.0f, 1.0f, 1.0f);
-				diffuse_input.Get(&diffuse_color, time);
-				material->set_albedo(Color(diffuse_color[0], diffuse_color[1], diffuse_color[2], 1.0f));
+				UsdShadeInput diffuse_input = preview_surface.GetInput(TfToken("diffuseColor"));
+				if (diffuse_input) {
+					GfVec3f diffuse_color(1.0f, 1.0f, 1.0f);
+					diffuse_input.Get(&diffuse_color, time);
+					material->set_albedo(Color(diffuse_color[0], diffuse_color[1], diffuse_color[2], 1.0f));
 
 					if (diffuse_input.HasConnectedSource()) {
-						const UsdShadeInput::SourceInfoVector sources = diffuse_input.GetConnectedSources();
-						if (!sources.empty()) {
-							UsdShadeShader texture_shader(stage->GetPrimAtPath(sources[0].source.GetPath()));
-							TfToken texture_shader_id;
-							texture_shader.GetPrim().GetAttribute(TfToken("info:id")).Get(&texture_shader_id, time);
-							if (texture_shader && texture_shader_id == TfToken("UsdUVTexture")) {
-								Ref<Texture2D> texture = _load_texture_from_shader(texture_shader, r_mapping_notes);
-								if (texture.is_valid()) {
-									material->set_texture(BaseMaterial3D::TEXTURE_ALBEDO, texture);
-								}
-							} else {
-								(*r_mapping_notes)["usd:material_status"] = vformat("Material %s uses an unsupported diffuseColor source shader.", material_path);
+						UsdShadeShader texture_shader = _get_connected_texture_shader(diffuse_input);
+						if (texture_shader) {
+							Ref<Texture2D> texture = _load_texture_from_shader(texture_shader, r_mapping_notes);
+							if (texture.is_valid()) {
+								material->set_texture(BaseMaterial3D::TEXTURE_ALBEDO, texture);
 							}
+						} else {
+							(*r_mapping_notes)["usd:material_status"] = vformat("Material %s uses an unsupported diffuseColor source shader.", material_path);
+						}
 					}
 				}
-			}
 
 			float metallic = 0.0f;
 			UsdShadeInput metallic_input = preview_surface.GetInput(TfToken("metallic"));
@@ -537,27 +572,53 @@ class UsdSceneBuilder {
 				material->set_roughness(roughness);
 			}
 
-			float opacity = 1.0f;
-			UsdShadeInput opacity_input = preview_surface.GetInput(TfToken("opacity"));
-			if (opacity_input && opacity_input.Get(&opacity, time) && opacity < 0.999f) {
-				Color albedo = material->get_albedo();
-				albedo.a = opacity;
-				material->set_albedo(albedo);
-				material->set_transparency(BaseMaterial3D::TRANSPARENCY_ALPHA);
-			}
-
-			GfVec3f emission(0.0f, 0.0f, 0.0f);
-			UsdShadeInput emission_input = preview_surface.GetInput(TfToken("emissiveColor"));
-			if (emission_input && emission_input.Get(&emission, time)) {
-				const Color emission_color(emission[0], emission[1], emission[2], 1.0f);
-				if (emission_color.r > 0.0f || emission_color.g > 0.0f || emission_color.b > 0.0f) {
-					material->set_emission(emission_color);
-					material->set_feature(BaseMaterial3D::FEATURE_EMISSION, true);
+				float opacity = 1.0f;
+				UsdShadeInput opacity_input = preview_surface.GetInput(TfToken("opacity"));
+				if (opacity_input && opacity_input.Get(&opacity, time) && opacity < 0.999f) {
+					Color albedo = material->get_albedo();
+					albedo.a = opacity;
+					material->set_albedo(albedo);
+					material->set_transparency(BaseMaterial3D::TRANSPARENCY_ALPHA);
 				}
-			}
 
-			material_cache.insert(material_path, material);
-			return material;
+				float opacity_threshold = 0.0f;
+				UsdShadeInput opacity_threshold_input = preview_surface.GetInput(TfToken("opacityThreshold"));
+				if (opacity_threshold_input && opacity_threshold_input.Get(&opacity_threshold, time) && opacity_threshold > 0.0f) {
+					material->set_transparency(BaseMaterial3D::TRANSPARENCY_ALPHA_SCISSOR);
+					material->set_alpha_scissor_threshold(CLAMP(opacity_threshold, 0.0f, 1.0f));
+				}
+
+				GfVec3f emission(0.0f, 0.0f, 0.0f);
+				UsdShadeInput emission_input = preview_surface.GetInput(TfToken("emissiveColor"));
+				bool has_emission = false;
+				if (emission_input) {
+					if (emission_input.Get(&emission, time)) {
+						const Color emission_color(emission[0], emission[1], emission[2], 1.0f);
+						if (emission_color.r > 0.0f || emission_color.g > 0.0f || emission_color.b > 0.0f) {
+							material->set_emission(emission_color);
+							has_emission = true;
+						}
+					}
+					if (emission_input.HasConnectedSource()) {
+						UsdShadeShader texture_shader = _get_connected_texture_shader(emission_input);
+						if (texture_shader) {
+							Ref<Texture2D> emission_texture = _load_texture_from_shader(texture_shader, r_mapping_notes);
+							if (emission_texture.is_valid()) {
+								material->set_texture(BaseMaterial3D::TEXTURE_EMISSION, emission_texture);
+								has_emission = true;
+							}
+						} else {
+							(*r_mapping_notes)["usd:material_status"] = vformat("Material %s uses an unsupported emissiveColor source shader.", material_path);
+						}
+					}
+				}
+				if (has_emission) {
+					material->set_feature(BaseMaterial3D::FEATURE_EMISSION, true);
+					material->set_emission_energy_multiplier(1.0f);
+				}
+
+				material_cache.insert(material_path, material);
+				return material;
 #ifdef USD_SCENE_LOADER_HAS_EXCEPTIONS
 		} catch (const std::exception &e) {
 			const String error_text = String::utf8(e.what());
@@ -839,6 +900,29 @@ class UsdSceneBuilder {
 		r_handled_attributes->insert("inputs:normalize");
 	}
 
+	bool _apply_shaping_to_spot_light(const UsdPrim &p_prim, SpotLight3D *p_target, HashSet<String> *r_handled_attributes) const {
+		if (!p_prim.HasAPI<UsdLuxShapingAPI>()) {
+			return false;
+		}
+
+		UsdLuxShapingAPI shaping_api(p_prim);
+		if (!shaping_api) {
+			return false;
+		}
+
+		float cone_angle = 90.0f;
+		shaping_api.GetShapingConeAngleAttr().Get(&cone_angle, time);
+		p_target->set_param(Light3D::PARAM_SPOT_ANGLE, CLAMP(cone_angle, 0.1f, 90.0f));
+
+		float cone_softness = 0.0f;
+		shaping_api.GetShapingConeSoftnessAttr().Get(&cone_softness, time);
+		p_target->set_param(Light3D::PARAM_SPOT_ATTENUATION, MAX(0.01f, 1.0f - CLAMP(cone_softness, 0.0f, 1.0f)));
+
+		r_handled_attributes->insert("inputs:shaping:cone:angle");
+		r_handled_attributes->insert("inputs:shaping:cone:softness");
+		return true;
+	}
+
 	void _store_unmapped_properties(const UsdPrim &p_prim, Object *p_target, const HashSet<String> &p_handled_attributes) const {
 		Dictionary unmapped_attributes;
 		const UsdAttributeVector authored_attributes = p_prim.GetAuthoredAttributes();
@@ -1031,17 +1115,86 @@ class UsdSceneBuilder {
 			node = light;
 		} else if (p_prim.IsA<UsdLuxSphereLight>()) {
 			UsdLuxSphereLight sphere_light(p_prim);
-			OmniLight3D *light = memnew(OmniLight3D);
-			_apply_light_attributes(sphere_light, light, &handled_attributes);
-
 			float radius = 0.5f;
 			sphere_light.GetRadiusAttr().Get(&radius, time);
-			light->set_param(Light3D::PARAM_SIZE, radius);
-			light->set_param(Light3D::PARAM_RANGE, MAX(radius * 10.0f, 1.0f));
 			handled_attributes.insert("inputs:radius");
 			handled_attributes.insert("treatAsPoint");
 
+			SpotLight3D *spot_light = memnew(SpotLight3D);
+			if (_apply_shaping_to_spot_light(p_prim, spot_light, &handled_attributes)) {
+				_apply_light_attributes(sphere_light, spot_light, &handled_attributes);
+				spot_light->set_param(Light3D::PARAM_SIZE, radius);
+				spot_light->set_param(Light3D::PARAM_RANGE, MAX(radius * 20.0f, 1.0f));
+				mapping_notes["usd:light_mapping"] = "UsdLuxSphereLight with ShapingAPI was approximated as SpotLight3D.";
+				node = spot_light;
+			} else {
+				memdelete(spot_light);
+				OmniLight3D *light = memnew(OmniLight3D);
+				_apply_light_attributes(sphere_light, light, &handled_attributes);
+				light->set_param(Light3D::PARAM_SIZE, radius);
+				light->set_param(Light3D::PARAM_RANGE, MAX(radius * 10.0f, 1.0f));
+				node = light;
+			}
+		} else if (p_prim.IsA<UsdLuxRectLight>()) {
+			UsdLuxRectLight rect_light(p_prim);
+			AreaLight3D *light = memnew(AreaLight3D);
+			_apply_light_attributes(rect_light, light, &handled_attributes);
+
+			float width = 1.0f;
+			float height = 1.0f;
+			rect_light.GetWidthAttr().Get(&width, time);
+			rect_light.GetHeightAttr().Get(&height, time);
+			light->set_area_size(Vector2(width, height));
+			light->set_param(Light3D::PARAM_RANGE, MAX(MAX(width, height) * 10.0f, 1.0f));
+			handled_attributes.insert("inputs:width");
+			handled_attributes.insert("inputs:height");
+
+			Ref<Texture2D> area_texture = _load_texture_from_asset_attribute(rect_light.GetTextureFileAttr(), &mapping_notes);
+			if (area_texture.is_valid()) {
+				light->set_area_texture(area_texture);
+				handled_attributes.insert("inputs:texture:file");
+			}
+
 			node = light;
+		} else if (p_prim.IsA<UsdLuxDiskLight>()) {
+			UsdLuxDiskLight disk_light(p_prim);
+			AreaLight3D *light = memnew(AreaLight3D);
+			_apply_light_attributes(disk_light, light, &handled_attributes);
+
+			float radius = 0.5f;
+			disk_light.GetRadiusAttr().Get(&radius, time);
+			light->set_area_size(Vector2(radius * 2.0f, radius * 2.0f));
+			light->set_param(Light3D::PARAM_RANGE, MAX(radius * 10.0f, 1.0f));
+			handled_attributes.insert("inputs:radius");
+			mapping_notes["usd:light_mapping"] = "UsdLuxDiskLight was approximated as AreaLight3D.";
+
+			node = light;
+		} else if (p_prim.IsA<UsdLuxCylinderLight>()) {
+			UsdLuxCylinderLight cylinder_light(p_prim);
+			float radius = 0.5f;
+			float length = 1.0f;
+			cylinder_light.GetRadiusAttr().Get(&radius, time);
+			cylinder_light.GetLengthAttr().Get(&length, time);
+			handled_attributes.insert("inputs:radius");
+			handled_attributes.insert("inputs:length");
+			handled_attributes.insert("treatAsLine");
+
+			SpotLight3D *spot_light = memnew(SpotLight3D);
+			if (_apply_shaping_to_spot_light(p_prim, spot_light, &handled_attributes)) {
+				_apply_light_attributes(cylinder_light, spot_light, &handled_attributes);
+				spot_light->set_param(Light3D::PARAM_SIZE, radius);
+				spot_light->set_param(Light3D::PARAM_RANGE, MAX(length * 10.0f, 1.0f));
+				mapping_notes["usd:light_mapping"] = "UsdLuxCylinderLight with ShapingAPI was approximated as SpotLight3D.";
+				node = spot_light;
+			} else {
+				memdelete(spot_light);
+				OmniLight3D *light = memnew(OmniLight3D);
+				_apply_light_attributes(cylinder_light, light, &handled_attributes);
+				light->set_param(Light3D::PARAM_SIZE, radius);
+				light->set_param(Light3D::PARAM_RANGE, MAX(MAX(length, radius) * 10.0f, 1.0f));
+				mapping_notes["usd:light_mapping"] = "UsdLuxCylinderLight was approximated as OmniLight3D.";
+				node = light;
+			}
 		} else if (p_prim.IsA<UsdGeomMesh>()) {
 			UsdGeomMesh usd_mesh(p_prim);
 			MeshInstance3D *mesh_instance = memnew(MeshInstance3D);
