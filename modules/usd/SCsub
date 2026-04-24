@@ -1,0 +1,54 @@
+#!/usr/bin/env python
+from misc.utility.scons_hints import *
+
+import os
+
+Import("env")
+Import("env_modules")
+
+env_usd = env_modules.Clone()
+
+usd_sdk_path = os.path.expanduser(os.environ.get("USD_SDK_PATH", "/tmp/openusd-build/install"))
+usd_include_path = os.path.join(usd_sdk_path, "include")
+usd_library_path = os.path.join(usd_sdk_path, "lib")
+
+if not os.path.isdir(usd_include_path) or not os.path.isdir(usd_library_path):
+    raise RuntimeError(
+        "OpenUSD SDK not found. Set USD_SDK_PATH to an install prefix containing include/ and lib/."
+    )
+
+env_usd.Prepend(CPPPATH=[usd_include_path])
+env_usd.Prepend(LIBPATH=[usd_library_path])
+
+usd_libs = [
+    "usd_usdLux",
+    "usd_usdShade",
+    "usd_usdSkel",
+    "usd_usdGeom",
+    "usd_usd",
+    "usd_kind",
+    "usd_pcp",
+    "usd_sdf",
+    "usd_ar",
+    "usd_plug",
+    "usd_ts",
+    "usd_vt",
+    "usd_work",
+    "usd_pegtl",
+    "usd_gf",
+    "usd_trace",
+    "usd_js",
+    "usd_tf",
+    "usd_arch",
+    "tbb",
+]
+
+env_usd.Append(LIBS=usd_libs)
+env.Prepend(LIBPATH=[usd_library_path])
+env.Append(LIBS=usd_libs)
+
+if env["platform"] in ("linuxbsd", "macos"):
+    env_usd.Append(LINKFLAGS=[f"-Wl,-rpath,{usd_library_path}"])
+    env.Append(LINKFLAGS=[f"-Wl,-rpath,{usd_library_path}"])
+
+env_usd.add_source_files(env.modules_sources, "*.cpp")
