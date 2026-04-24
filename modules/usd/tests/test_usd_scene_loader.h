@@ -42,6 +42,7 @@ TEST_FORCE_LINK(test_usd_scene_loader)
 
 #include "tests/test_utils.h"
 
+#include "core/io/image.h"
 #include "core/io/resource_loader.h"
 #include "scene/3d/light_3d.h"
 #include "scene/3d/mesh_instance_3d.h"
@@ -170,7 +171,11 @@ TEST_CASE("[SceneTree][USD] Preserve clockwise winding for right-handed USD mesh
 	REQUIRE(root != nullptr);
 	REQUIRE(root->get_child_count() == 1);
 
-	MeshInstance3D *mesh_instance = Object::cast_to<MeshInstance3D>(root->get_child(0));
+	Node *scene_root = root->get_child(0);
+	REQUIRE(scene_root != nullptr);
+	REQUIRE(scene_root->get_child_count() == 1);
+
+	MeshInstance3D *mesh_instance = Object::cast_to<MeshInstance3D>(scene_root->get_child(0));
 	REQUIRE(mesh_instance != nullptr);
 	REQUIRE(mesh_instance->get_mesh().is_valid());
 
@@ -182,6 +187,39 @@ TEST_CASE("[SceneTree][USD] Preserve clockwise winding for right-handed USD mesh
 
 	const Vector3 face_normal = (vertices[1] - vertices[0]).cross(vertices[2] - vertices[0]).normalized();
 	CHECK(face_normal.z < 0.0f);
+
+	memdelete(root);
+}
+
+TEST_CASE("[SceneTree][USD] Import face-varying primvars:normals") {
+	const String usd_path = TestUtils::get_data_path("usd/primvar_normals.usda");
+
+	Error err = OK;
+	Ref<PackedScene> packed_scene = ResourceLoader::load(usd_path, "PackedScene", ResourceFormatLoader::CACHE_MODE_IGNORE, &err);
+	REQUIRE_MESSAGE(err == OK, "USD primvar normals load failed.");
+	REQUIRE(packed_scene.is_valid());
+
+	Node *root = packed_scene->instantiate();
+	REQUIRE(root != nullptr);
+	REQUIRE(root->get_child_count() == 1);
+
+	Node *scene_root = root->get_child(0);
+	REQUIRE(scene_root != nullptr);
+	REQUIRE(scene_root->get_child_count() == 1);
+
+	MeshInstance3D *mesh_instance = Object::cast_to<MeshInstance3D>(scene_root->get_child(0));
+	REQUIRE(mesh_instance != nullptr);
+	REQUIRE(mesh_instance->get_mesh().is_valid());
+
+	Array arrays = mesh_instance->get_mesh()->surface_get_arrays(0);
+	REQUIRE(arrays.size() == Mesh::ARRAY_MAX);
+
+	PackedVector3Array vertices = arrays[Mesh::ARRAY_VERTEX];
+	PackedVector3Array normals = arrays[Mesh::ARRAY_NORMAL];
+	REQUIRE(vertices.size() == 6);
+	REQUIRE(normals.size() == 6);
+	CHECK(normals[0].z == doctest::Approx(1.0f));
+	CHECK(normals[5].z == doctest::Approx(1.0f));
 
 	memdelete(root);
 }
@@ -226,6 +264,53 @@ TEST_CASE("[SceneTree][USD] Import emissive preview materials and additional lig
 	SpotLight3D *spot_light = Object::cast_to<SpotLight3D>(scene_root->get_child(2));
 	REQUIRE(spot_light != nullptr);
 	CHECK(spot_light->get_param(Light3D::PARAM_SPOT_ANGLE) == doctest::Approx(25.0f));
+
+	memdelete(root);
+}
+
+TEST_CASE("[SceneTree][USD] Import preview texture channels and UV transforms") {
+	const String usd_path = TestUtils::get_data_path("usd/preview_texture_channels.usda");
+
+	Error err = OK;
+	Ref<PackedScene> packed_scene = ResourceLoader::load(usd_path, "PackedScene", ResourceFormatLoader::CACHE_MODE_IGNORE, &err);
+	REQUIRE_MESSAGE(err == OK, "USD preview texture channel load failed.");
+	REQUIRE(packed_scene.is_valid());
+
+	Node *root = packed_scene->instantiate();
+	REQUIRE(root != nullptr);
+	REQUIRE(root->is_class("Node3D"));
+	CHECK(root->get_child_count() == 1);
+
+	Node *scene_root = root->get_child(0);
+	REQUIRE(scene_root != nullptr);
+	CHECK(scene_root->get_child_count() == 1);
+
+	MeshInstance3D *mesh_instance = Object::cast_to<MeshInstance3D>(scene_root->get_child(0));
+	REQUIRE(mesh_instance != nullptr);
+	REQUIRE(mesh_instance->get_mesh().is_valid());
+
+	Ref<Material> surface_material = mesh_instance->get_mesh()->surface_get_material(0);
+	REQUIRE(surface_material.is_valid());
+
+	BaseMaterial3D *base_material = Object::cast_to<BaseMaterial3D>(surface_material.ptr());
+	REQUIRE(base_material != nullptr);
+	CHECK(base_material->get_texture(BaseMaterial3D::TEXTURE_ALBEDO).is_valid());
+	CHECK(base_material->get_texture(BaseMaterial3D::TEXTURE_METALLIC).is_valid());
+	CHECK(base_material->get_texture(BaseMaterial3D::TEXTURE_ROUGHNESS).is_valid());
+	CHECK(base_material->get_texture(BaseMaterial3D::TEXTURE_NORMAL).is_valid());
+	CHECK(base_material->get_feature(BaseMaterial3D::FEATURE_NORMAL_MAPPING));
+	CHECK(base_material->get_normal_scale() == doctest::Approx(1.0f));
+	CHECK(base_material->get_metallic_texture_channel() == BaseMaterial3D::TEXTURE_CHANNEL_GREEN);
+	CHECK(base_material->get_roughness_texture_channel() == BaseMaterial3D::TEXTURE_CHANNEL_BLUE);
+	CHECK(base_material->get_transparency() == BaseMaterial3D::TRANSPARENCY_ALPHA);
+	CHECK(base_material->get_uv1_scale().x == doctest::Approx(2.0f));
+	CHECK(base_material->get_uv1_scale().y == doctest::Approx(3.0f));
+	CHECK(base_material->get_uv1_offset().x == doctest::Approx(0.25f));
+	CHECK(base_material->get_uv1_offset().y == doctest::Approx(-2.1f));
+
+	Ref<Image> albedo_image = base_material->get_texture(BaseMaterial3D::TEXTURE_ALBEDO)->get_image();
+	REQUIRE(albedo_image.is_valid());
+	CHECK(albedo_image->detect_alpha() != Image::ALPHA_NONE);
 
 	memdelete(root);
 }

@@ -240,8 +240,21 @@ class UsdSceneBuilder {
 	const UsdTimeCode time = UsdTimeCode::Default();
 	const double meters_per_unit = 1.0;
 	const TfToken up_axis;
+	mutable HashMap<String, Ref<Image>> image_cache;
 	mutable HashMap<String, Ref<Texture2D>> texture_cache;
 	mutable HashMap<String, Ref<Material>> material_cache;
+
+	struct UsdShaderConnection {
+		UsdShadeShader shader;
+		TfToken output_name;
+
+		UsdShaderConnection() = default;
+		UsdShaderConnection(const UsdShadeShader &p_shader, const TfToken &p_output_name) :
+				shader(p_shader),
+				output_name(p_output_name) {}
+
+		explicit operator bool() const { return shader.GetPrim().IsValid(); }
+	};
 
 	static String _node_name_for_prim(const UsdPrim &p_prim) {
 		return _to_godot_string(p_prim.GetName().GetString());
@@ -403,25 +416,28 @@ class UsdSceneBuilder {
 		return image;
 	}
 
-	Ref<Texture2D> _load_texture_from_asset_attribute(const UsdAttribute &p_asset_attribute, Dictionary *r_mapping_notes) const {
+	Ref<Image> _load_image_from_asset_attribute(const UsdAttribute &p_asset_attribute, String *r_resolved_path, Dictionary *r_mapping_notes) const {
 		if (!p_asset_attribute) {
-			return Ref<Texture2D>();
+			return Ref<Image>();
 		}
 
 		SdfAssetPath asset_path;
 		if (!p_asset_attribute.Get(&asset_path, time)) {
 			(*r_mapping_notes)["usd:texture_status"] = vformat("Texture asset input could not be read: %s", _to_godot_string(p_asset_attribute.GetName().GetString()));
-			return Ref<Texture2D>();
+			return Ref<Image>();
 		}
 
 		const String resolved_path = _resolve_asset_path(p_asset_attribute, asset_path);
 		if (resolved_path.is_empty()) {
 			(*r_mapping_notes)["usd:texture_status"] = "Texture asset path could not be resolved.";
-			return Ref<Texture2D>();
+			return Ref<Image>();
+		}
+		if (r_resolved_path != nullptr) {
+			*r_resolved_path = resolved_path;
 		}
 
-		if (texture_cache.has(resolved_path)) {
-			return texture_cache[resolved_path];
+		if (image_cache.has(resolved_path)) {
+			return image_cache[resolved_path];
 		}
 
 		ArResolvedPath usd_resolved_path(resolved_path.utf8().get_data());
@@ -432,13 +448,13 @@ class UsdSceneBuilder {
 		}
 		if (!usd_resolved_path) {
 			(*r_mapping_notes)["usd:texture_status"] = vformat("Failed to resolve texture asset: %s", resolved_path);
-			return Ref<Texture2D>();
+			return Ref<Image>();
 		}
 
 		std::shared_ptr<ArAsset> usd_asset = ArGetResolver().OpenAsset(usd_resolved_path);
 		if (!usd_asset) {
 			(*r_mapping_notes)["usd:texture_status"] = vformat("Failed to open texture asset: %s", _to_godot_string(usd_resolved_path.GetPathString()));
-			return Ref<Texture2D>();
+			return Ref<Image>();
 		}
 
 		Vector<uint8_t> asset_bytes;
@@ -452,7 +468,7 @@ class UsdSceneBuilder {
 				const size_t bytes_read = usd_asset->Read(asset_bytes.ptrw(), asset_size, 0);
 				if (bytes_read != asset_size) {
 					(*r_mapping_notes)["usd:texture_status"] = vformat("Failed to read texture asset bytes: %s", _to_godot_string(usd_resolved_path.GetPathString()));
-					return Ref<Texture2D>();
+					return Ref<Image>();
 				}
 			}
 		}
@@ -463,12 +479,89 @@ class UsdSceneBuilder {
 			if (!r_mapping_notes->has("usd:texture_status")) {
 				(*r_mapping_notes)["usd:texture_status"] = vformat("Failed to load texture asset: %s", display_asset_path);
 			}
-			return Ref<Texture2D>();
+			return Ref<Image>();
 		}
 
-		Ref<ImageTexture> texture = ImageTexture::create_from_image(image);
-		texture_cache.insert(resolved_path, texture);
+		image_cache.insert(resolved_path, image);
+		return image;
+	}
+
+	Ref<Texture2D> _texture_from_image(const Ref<Image> &p_image) const {
+		if (p_image.is_null()) {
+			return Ref<Texture2D>();
+		}
+		return ImageTexture::create_from_image(p_image);
+	}
+
+	Ref<Texture2D> _load_texture_from_asset_attribute(const UsdAttribute &p_asset_attribute, Dictionary *r_mapping_notes) const {
+		String resolved_path;
+		Ref<Image> image = _load_image_from_asset_attribute(p_asset_attribute, &resolved_path, r_mapping_notes);
+		if (image.is_null()) {
+			return Ref<Texture2D>();
+		}
+		if (texture_cache.has(resolved_path)) {
+			return texture_cache[resolved_path];
+		}
+
+		Ref<Texture2D> texture = _texture_from_image(image);
+		if (texture.is_valid()) {
+			texture_cache.insert(resolved_path, texture);
+		}
 		return texture;
+	}
+
+	UsdShaderConnection _get_connected_shader(const UsdShadeInput &p_input) const {
+		if (!p_input || !p_input.HasConnectedSource()) {
+			return UsdShaderConnection();
+		}
+
+		const UsdShadeInput::SourceInfoVector sources = p_input.GetConnectedSources();
+		if (sources.empty()) {
+			return UsdShaderConnection();
+		}
+
+		UsdPrim source_prim = stage->GetPrimAtPath(sources[0].source.GetPath());
+		if (!source_prim) {
+			return UsdShaderConnection();
+		}
+
+		UsdShadeShader shader(source_prim);
+		if (!shader) {
+			return UsdShaderConnection();
+		}
+
+		return UsdShaderConnection(shader, sources[0].sourceName);
+	}
+
+	bool _get_shader_id(const UsdShadeShader &p_shader, TfToken *r_shader_id) const {
+		if (!p_shader || r_shader_id == nullptr) {
+			return false;
+		}
+
+		return p_shader.GetPrim().GetAttribute(TfToken("info:id")).Get(r_shader_id, time);
+	}
+
+	UsdShaderConnection _get_connected_texture_shader(const UsdShadeInput &p_input) const {
+		const UsdShaderConnection connection = _get_connected_shader(p_input);
+		if (!connection) {
+			return UsdShaderConnection();
+		}
+
+		TfToken shader_id;
+		if (!_get_shader_id(connection.shader, &shader_id) || shader_id != TfToken("UsdUVTexture")) {
+			return UsdShaderConnection();
+		}
+
+		return connection;
+	}
+
+	Ref<Image> _load_image_from_shader(const UsdShadeShader &p_shader, String *r_resolved_path, Dictionary *r_mapping_notes) const {
+		UsdShadeInput file_input = p_shader.GetInput(TfToken("file"));
+		if (!file_input) {
+			return Ref<Image>();
+		}
+
+		return _load_image_from_asset_attribute(file_input.GetAttr(), r_resolved_path, r_mapping_notes);
 	}
 
 	Ref<Texture2D> _load_texture_from_shader(const UsdShadeShader &p_shader, Dictionary *r_mapping_notes) const {
@@ -480,32 +573,148 @@ class UsdSceneBuilder {
 		return _load_texture_from_asset_attribute(file_input.GetAttr(), r_mapping_notes);
 	}
 
-	UsdShadeShader _get_connected_texture_shader(const UsdShadeInput &p_input) const {
-		if (!p_input || !p_input.HasConnectedSource()) {
-			return UsdShadeShader();
+	BaseMaterial3D::TextureChannel _get_texture_channel_for_output(const TfToken &p_output_name) const {
+		if (p_output_name == TfToken("r") || p_output_name == TfToken("red")) {
+			return BaseMaterial3D::TEXTURE_CHANNEL_RED;
+		}
+		if (p_output_name == TfToken("g") || p_output_name == TfToken("green")) {
+			return BaseMaterial3D::TEXTURE_CHANNEL_GREEN;
+		}
+		if (p_output_name == TfToken("b") || p_output_name == TfToken("blue")) {
+			return BaseMaterial3D::TEXTURE_CHANNEL_BLUE;
+		}
+		if (p_output_name == TfToken("a") || p_output_name == TfToken("alpha")) {
+			return BaseMaterial3D::TEXTURE_CHANNEL_ALPHA;
+		}
+		return BaseMaterial3D::TEXTURE_CHANNEL_GRAYSCALE;
+	}
+
+	float _get_channel_value(const Color &p_color, BaseMaterial3D::TextureChannel p_channel) const {
+		switch (p_channel) {
+			case BaseMaterial3D::TEXTURE_CHANNEL_RED:
+				return p_color.r;
+			case BaseMaterial3D::TEXTURE_CHANNEL_GREEN:
+				return p_color.g;
+			case BaseMaterial3D::TEXTURE_CHANNEL_BLUE:
+				return p_color.b;
+			case BaseMaterial3D::TEXTURE_CHANNEL_ALPHA:
+				return p_color.a;
+			case BaseMaterial3D::TEXTURE_CHANNEL_GRAYSCALE:
+			default:
+				return p_color.get_luminance();
+		}
+	}
+
+	Ref<Image> _make_opacity_composited_albedo(const Ref<Texture2D> &p_albedo_texture, const Ref<Image> &p_opacity_image, BaseMaterial3D::TextureChannel p_opacity_channel) const {
+		if (p_opacity_image.is_null()) {
+			return Ref<Image>();
 		}
 
-		const UsdShadeInput::SourceInfoVector sources = p_input.GetConnectedSources();
-		if (sources.empty()) {
-			return UsdShadeShader();
+		Ref<Image> opacity_image = p_opacity_image->duplicate(true);
+		if (opacity_image.is_null()) {
+			return Ref<Image>();
+		}
+		if (opacity_image->is_compressed()) {
+			opacity_image->decompress();
+		}
+		opacity_image->convert(Image::FORMAT_RGBA8);
+
+		Ref<Image> albedo_image;
+		if (p_albedo_texture.is_valid()) {
+			albedo_image = p_albedo_texture->get_image();
 		}
 
-		UsdPrim source_prim = stage->GetPrimAtPath(sources[0].source.GetPath());
-		if (!source_prim) {
-			return UsdShadeShader();
+		if (albedo_image.is_valid()) {
+			albedo_image = albedo_image->duplicate(true);
+			if (albedo_image->is_compressed()) {
+				albedo_image->decompress();
+			}
+			albedo_image->convert(Image::FORMAT_RGBA8);
+		} else {
+			albedo_image = Image::create_empty(opacity_image->get_width(), opacity_image->get_height(), false, Image::FORMAT_RGBA8);
+			albedo_image->fill(Color(1, 1, 1, 1));
 		}
 
-		UsdShadeShader texture_shader(source_prim);
-		if (!texture_shader) {
-			return UsdShadeShader();
+		if (opacity_image->get_width() != albedo_image->get_width() || opacity_image->get_height() != albedo_image->get_height()) {
+			opacity_image->resize(albedo_image->get_width(), albedo_image->get_height(), Image::INTERPOLATE_BILINEAR);
+		}
+
+		for (int y = 0; y < albedo_image->get_height(); y++) {
+			for (int x = 0; x < albedo_image->get_width(); x++) {
+				Color albedo = albedo_image->get_pixelv(Point2i(x, y));
+				const Color opacity_sample = opacity_image->get_pixelv(Point2i(x, y));
+				albedo.a = CLAMP(_get_channel_value(opacity_sample, p_opacity_channel), 0.0f, 1.0f);
+				albedo_image->set_pixelv(Point2i(x, y), albedo);
+			}
+		}
+
+		return albedo_image;
+	}
+
+	bool _extract_texture_uv_transform(const UsdShadeShader &p_texture_shader, Vector3 *r_uv_scale, Vector3 *r_uv_offset, Dictionary *r_mapping_notes) const {
+		if (!p_texture_shader || r_uv_scale == nullptr || r_uv_offset == nullptr) {
+			return false;
+		}
+
+		UsdShadeInput st_input = p_texture_shader.GetInput(TfToken("st"));
+		const UsdShaderConnection st_connection = _get_connected_shader(st_input);
+		if (!st_connection) {
+			return false;
 		}
 
 		TfToken shader_id;
-		if (!texture_shader.GetPrim().GetAttribute(TfToken("info:id")).Get(&shader_id, time) || shader_id != TfToken("UsdUVTexture")) {
-			return UsdShadeShader();
+		if (!_get_shader_id(st_connection.shader, &shader_id) || shader_id != TfToken("UsdTransform2d")) {
+			return false;
 		}
 
-		return texture_shader;
+		GfVec2f scale(1.0f, 1.0f);
+		if (UsdShadeInput scale_input = st_connection.shader.GetInput(TfToken("scale"))) {
+			scale_input.Get(&scale, time);
+		}
+
+		GfVec2f translation(0.0f, 0.0f);
+		if (UsdShadeInput translation_input = st_connection.shader.GetInput(TfToken("translation"))) {
+			translation_input.Get(&translation, time);
+		}
+
+		float rotation = 0.0f;
+		if (UsdShadeInput rotation_input = st_connection.shader.GetInput(TfToken("rotation"))) {
+			rotation_input.Get(&rotation, time);
+		}
+
+		if (!Math::is_zero_approx(rotation)) {
+			(*r_mapping_notes)["usd:material_uv_transform"] = "UsdTransform2d rotation is not supported by StandardMaterial3D; only scale and translation were applied.";
+		}
+
+		*r_uv_scale = Vector3((real_t)scale[0], (real_t)scale[1], 1.0f);
+		*r_uv_offset = Vector3((real_t)translation[0], (real_t)(1.0f - scale[1] - translation[1]), 0.0f);
+		return true;
+	}
+
+	void _merge_material_uv_transform(const UsdShadeShader &p_texture_shader, StandardMaterial3D *p_material, bool *r_has_uv_transform, Vector3 *r_uv_scale, Vector3 *r_uv_offset, Dictionary *r_mapping_notes) const {
+		ERR_FAIL_NULL(p_material);
+		ERR_FAIL_NULL(r_has_uv_transform);
+		ERR_FAIL_NULL(r_uv_scale);
+		ERR_FAIL_NULL(r_uv_offset);
+
+		Vector3 uv_scale;
+		Vector3 uv_offset;
+		if (!_extract_texture_uv_transform(p_texture_shader, &uv_scale, &uv_offset, r_mapping_notes)) {
+			return;
+		}
+
+		if (!*r_has_uv_transform) {
+			*r_has_uv_transform = true;
+			*r_uv_scale = uv_scale;
+			*r_uv_offset = uv_offset;
+			p_material->set_uv1_scale(uv_scale);
+			p_material->set_uv1_offset(uv_offset);
+			return;
+		}
+
+		if (!r_uv_scale->is_equal_approx(uv_scale) || !r_uv_offset->is_equal_approx(uv_offset)) {
+			(*r_mapping_notes)["usd:material_uv_transform"] = "Multiple incompatible UsdTransform2d nodes were found; the first transform was kept.";
+		}
 	}
 
 	Ref<Material> _build_material_from_usd_material(const UsdShadeMaterial &p_material, Dictionary *r_mapping_notes) const {
@@ -540,30 +749,47 @@ class UsdSceneBuilder {
 
 			Ref<StandardMaterial3D> material;
 			material.instantiate();
+			bool has_uv_transform = false;
+			Vector3 uv_scale;
+			Vector3 uv_offset;
 
-				UsdShadeInput diffuse_input = preview_surface.GetInput(TfToken("diffuseColor"));
-				if (diffuse_input) {
-					GfVec3f diffuse_color(1.0f, 1.0f, 1.0f);
-					diffuse_input.Get(&diffuse_color, time);
-					material->set_albedo(Color(diffuse_color[0], diffuse_color[1], diffuse_color[2], 1.0f));
+			UsdShadeInput diffuse_input = preview_surface.GetInput(TfToken("diffuseColor"));
+			if (diffuse_input) {
+				GfVec3f diffuse_color(1.0f, 1.0f, 1.0f);
+				diffuse_input.Get(&diffuse_color, time);
+				material->set_albedo(Color(diffuse_color[0], diffuse_color[1], diffuse_color[2], 1.0f));
 
-					if (diffuse_input.HasConnectedSource()) {
-						UsdShadeShader texture_shader = _get_connected_texture_shader(diffuse_input);
-						if (texture_shader) {
-							Ref<Texture2D> texture = _load_texture_from_shader(texture_shader, r_mapping_notes);
-							if (texture.is_valid()) {
-								material->set_texture(BaseMaterial3D::TEXTURE_ALBEDO, texture);
-							}
-						} else {
-							(*r_mapping_notes)["usd:material_status"] = vformat("Material %s uses an unsupported diffuseColor source shader.", material_path);
+				if (diffuse_input.HasConnectedSource()) {
+					const UsdShaderConnection texture_connection = _get_connected_texture_shader(diffuse_input);
+					if (texture_connection) {
+						Ref<Texture2D> texture = _load_texture_from_shader(texture_connection.shader, r_mapping_notes);
+						if (texture.is_valid()) {
+							material->set_texture(BaseMaterial3D::TEXTURE_ALBEDO, texture);
+							_merge_material_uv_transform(texture_connection.shader, material.ptr(), &has_uv_transform, &uv_scale, &uv_offset, r_mapping_notes);
 						}
+					} else {
+						(*r_mapping_notes)["usd:material_status"] = vformat("Material %s uses an unsupported diffuseColor source shader.", material_path);
 					}
 				}
+			}
 
 			float metallic = 0.0f;
 			UsdShadeInput metallic_input = preview_surface.GetInput(TfToken("metallic"));
 			if (metallic_input && metallic_input.Get(&metallic, time)) {
 				material->set_metallic(metallic);
+			}
+			if (metallic_input && metallic_input.HasConnectedSource()) {
+				const UsdShaderConnection texture_connection = _get_connected_texture_shader(metallic_input);
+				if (texture_connection) {
+					Ref<Texture2D> texture = _load_texture_from_shader(texture_connection.shader, r_mapping_notes);
+					if (texture.is_valid()) {
+						material->set_texture(BaseMaterial3D::TEXTURE_METALLIC, texture);
+						material->set_metallic_texture_channel(_get_texture_channel_for_output(texture_connection.output_name));
+						_merge_material_uv_transform(texture_connection.shader, material.ptr(), &has_uv_transform, &uv_scale, &uv_offset, r_mapping_notes);
+					}
+				} else {
+					(*r_mapping_notes)["usd:material_status"] = vformat("Material %s uses an unsupported metallic source shader.", material_path);
+				}
 			}
 
 			float roughness = 1.0f;
@@ -571,54 +797,101 @@ class UsdSceneBuilder {
 			if (roughness_input && roughness_input.Get(&roughness, time)) {
 				material->set_roughness(roughness);
 			}
-
-				float opacity = 1.0f;
-				UsdShadeInput opacity_input = preview_surface.GetInput(TfToken("opacity"));
-				if (opacity_input && opacity_input.Get(&opacity, time) && opacity < 0.999f) {
-					Color albedo = material->get_albedo();
-					albedo.a = opacity;
-					material->set_albedo(albedo);
-					material->set_transparency(BaseMaterial3D::TRANSPARENCY_ALPHA);
+			if (roughness_input && roughness_input.HasConnectedSource()) {
+				const UsdShaderConnection texture_connection = _get_connected_texture_shader(roughness_input);
+				if (texture_connection) {
+					Ref<Texture2D> texture = _load_texture_from_shader(texture_connection.shader, r_mapping_notes);
+					if (texture.is_valid()) {
+						material->set_texture(BaseMaterial3D::TEXTURE_ROUGHNESS, texture);
+						material->set_roughness_texture_channel(_get_texture_channel_for_output(texture_connection.output_name));
+						_merge_material_uv_transform(texture_connection.shader, material.ptr(), &has_uv_transform, &uv_scale, &uv_offset, r_mapping_notes);
+					}
+				} else {
+					(*r_mapping_notes)["usd:material_status"] = vformat("Material %s uses an unsupported roughness source shader.", material_path);
 				}
+			}
 
-				float opacity_threshold = 0.0f;
-				UsdShadeInput opacity_threshold_input = preview_surface.GetInput(TfToken("opacityThreshold"));
-				if (opacity_threshold_input && opacity_threshold_input.Get(&opacity_threshold, time) && opacity_threshold > 0.0f) {
-					material->set_transparency(BaseMaterial3D::TRANSPARENCY_ALPHA_SCISSOR);
-					material->set_alpha_scissor_threshold(CLAMP(opacity_threshold, 0.0f, 1.0f));
+			UsdShadeInput normal_input = preview_surface.GetInput(TfToken("normal"));
+			if (normal_input && normal_input.HasConnectedSource()) {
+				const UsdShaderConnection texture_connection = _get_connected_texture_shader(normal_input);
+				if (texture_connection) {
+					Ref<Texture2D> texture = _load_texture_from_shader(texture_connection.shader, r_mapping_notes);
+					if (texture.is_valid()) {
+						material->set_texture(BaseMaterial3D::TEXTURE_NORMAL, texture);
+						material->set_feature(BaseMaterial3D::FEATURE_NORMAL_MAPPING, true);
+						material->set_normal_scale(1.0f);
+						_merge_material_uv_transform(texture_connection.shader, material.ptr(), &has_uv_transform, &uv_scale, &uv_offset, r_mapping_notes);
+					}
+				} else {
+					(*r_mapping_notes)["usd:material_status"] = vformat("Material %s uses an unsupported normal source shader.", material_path);
 				}
+			}
 
-				GfVec3f emission(0.0f, 0.0f, 0.0f);
-				UsdShadeInput emission_input = preview_surface.GetInput(TfToken("emissiveColor"));
-				bool has_emission = false;
-				if (emission_input) {
-					if (emission_input.Get(&emission, time)) {
-						const Color emission_color(emission[0], emission[1], emission[2], 1.0f);
-						if (emission_color.r > 0.0f || emission_color.g > 0.0f || emission_color.b > 0.0f) {
-							material->set_emission(emission_color);
+			float opacity = 1.0f;
+			UsdShadeInput opacity_input = preview_surface.GetInput(TfToken("opacity"));
+			if (opacity_input && opacity_input.Get(&opacity, time) && opacity < 0.999f) {
+				Color albedo = material->get_albedo();
+				albedo.a = opacity;
+				material->set_albedo(albedo);
+				material->set_transparency(BaseMaterial3D::TRANSPARENCY_ALPHA);
+			}
+			if (opacity_input && opacity_input.HasConnectedSource()) {
+				const UsdShaderConnection texture_connection = _get_connected_texture_shader(opacity_input);
+				if (texture_connection) {
+					String opacity_resolved_path;
+					Ref<Image> opacity_image = _load_image_from_shader(texture_connection.shader, &opacity_resolved_path, r_mapping_notes);
+					if (opacity_image.is_valid()) {
+						const Ref<Image> composited_albedo = _make_opacity_composited_albedo(material->get_texture(BaseMaterial3D::TEXTURE_ALBEDO), opacity_image, _get_texture_channel_for_output(texture_connection.output_name));
+						if (composited_albedo.is_valid()) {
+							material->set_texture(BaseMaterial3D::TEXTURE_ALBEDO, _texture_from_image(composited_albedo));
+							material->set_transparency(BaseMaterial3D::TRANSPARENCY_ALPHA);
+						}
+						_merge_material_uv_transform(texture_connection.shader, material.ptr(), &has_uv_transform, &uv_scale, &uv_offset, r_mapping_notes);
+					}
+				} else {
+					(*r_mapping_notes)["usd:material_status"] = vformat("Material %s uses an unsupported opacity source shader.", material_path);
+				}
+			}
+
+			float opacity_threshold = 0.0f;
+			UsdShadeInput opacity_threshold_input = preview_surface.GetInput(TfToken("opacityThreshold"));
+			if (opacity_threshold_input && opacity_threshold_input.Get(&opacity_threshold, time) && opacity_threshold > 0.0f) {
+				material->set_transparency(BaseMaterial3D::TRANSPARENCY_ALPHA_SCISSOR);
+				material->set_alpha_scissor_threshold(CLAMP(opacity_threshold, 0.0f, 1.0f));
+			}
+
+			GfVec3f emission(0.0f, 0.0f, 0.0f);
+			UsdShadeInput emission_input = preview_surface.GetInput(TfToken("emissiveColor"));
+			bool has_emission = false;
+			if (emission_input) {
+				if (emission_input.Get(&emission, time)) {
+					const Color emission_color(emission[0], emission[1], emission[2], 1.0f);
+					if (emission_color.r > 0.0f || emission_color.g > 0.0f || emission_color.b > 0.0f) {
+						material->set_emission(emission_color);
+						has_emission = true;
+					}
+				}
+				if (emission_input.HasConnectedSource()) {
+					const UsdShaderConnection texture_connection = _get_connected_texture_shader(emission_input);
+					if (texture_connection) {
+						Ref<Texture2D> emission_texture = _load_texture_from_shader(texture_connection.shader, r_mapping_notes);
+						if (emission_texture.is_valid()) {
+							material->set_texture(BaseMaterial3D::TEXTURE_EMISSION, emission_texture);
 							has_emission = true;
+							_merge_material_uv_transform(texture_connection.shader, material.ptr(), &has_uv_transform, &uv_scale, &uv_offset, r_mapping_notes);
 						}
-					}
-					if (emission_input.HasConnectedSource()) {
-						UsdShadeShader texture_shader = _get_connected_texture_shader(emission_input);
-						if (texture_shader) {
-							Ref<Texture2D> emission_texture = _load_texture_from_shader(texture_shader, r_mapping_notes);
-							if (emission_texture.is_valid()) {
-								material->set_texture(BaseMaterial3D::TEXTURE_EMISSION, emission_texture);
-								has_emission = true;
-							}
-						} else {
-							(*r_mapping_notes)["usd:material_status"] = vformat("Material %s uses an unsupported emissiveColor source shader.", material_path);
-						}
+					} else {
+						(*r_mapping_notes)["usd:material_status"] = vformat("Material %s uses an unsupported emissiveColor source shader.", material_path);
 					}
 				}
-				if (has_emission) {
-					material->set_feature(BaseMaterial3D::FEATURE_EMISSION, true);
-					material->set_emission_energy_multiplier(1.0f);
-				}
+			}
+			if (has_emission) {
+				material->set_feature(BaseMaterial3D::FEATURE_EMISSION, true);
+				material->set_emission_energy_multiplier(1.0f);
+			}
 
-				material_cache.insert(material_path, material);
-				return material;
+			material_cache.insert(material_path, material);
+			return material;
 #ifdef USD_SCENE_LOADER_HAS_EXCEPTIONS
 		} catch (const std::exception &e) {
 			const String error_text = String::utf8(e.what());
@@ -658,6 +931,16 @@ class UsdSceneBuilder {
 		return UsdGeomPrimvar();
 	}
 
+	UsdGeomPrimvar _find_normals_primvar(const UsdGeomMesh &p_mesh) const {
+		UsdGeomPrimvarsAPI primvars_api(p_mesh.GetPrim());
+		UsdGeomPrimvar normals_primvar = primvars_api.FindPrimvarWithInheritance(TfToken("normals"));
+		if (normals_primvar && normals_primvar.HasValue()) {
+			return normals_primvar;
+		}
+
+		return UsdGeomPrimvar();
+	}
+
 	void _mark_primvar_handled(const UsdGeomPrimvar &p_primvar, HashSet<String> *r_handled_attributes) const {
 		if (!p_primvar) {
 			return;
@@ -688,6 +971,9 @@ class UsdSceneBuilder {
 		gprim.GetOrientationAttr().Get(&orientation, time);
 
 		UsdGeomPrimvar normals_primvar(p_mesh.GetNormalsAttr());
+		if (!normals_primvar || !normals_primvar.HasValue()) {
+			normals_primvar = _find_normals_primvar(p_mesh);
+		}
 		VtArray<GfVec3f> normals;
 		TfToken normals_interpolation = UsdGeomTokens->vertex;
 		const bool has_normals = normals_primvar && normals_primvar.ComputeFlattened(&normals, time);
