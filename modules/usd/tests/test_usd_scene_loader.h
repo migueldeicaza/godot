@@ -659,6 +659,203 @@ TEST_CASE("[SceneTree][USD] Round-trip typed unmapped USD attributes and relatio
 	memdelete(root);
 }
 
+TEST_CASE("[SceneTree][USD] Save per-surface materials as USD material subsets and load them back") {
+	PreviewLightingModeScope preview_lighting_mode_scope;
+	preview_lighting_mode_scope.set(0);
+
+	Array first_surface;
+	first_surface.resize(Mesh::ARRAY_MAX);
+	{
+		PackedVector3Array vertices;
+		vertices.push_back(Vector3(0.0f, 0.0f, 0.0f));
+		vertices.push_back(Vector3(1.0f, 0.0f, 0.0f));
+		vertices.push_back(Vector3(0.0f, 1.0f, 0.0f));
+		first_surface[Mesh::ARRAY_VERTEX] = vertices;
+
+		PackedVector3Array normals;
+		normals.push_back(Vector3(0.0f, 0.0f, 1.0f));
+		normals.push_back(Vector3(0.0f, 0.0f, 1.0f));
+		normals.push_back(Vector3(0.0f, 0.0f, 1.0f));
+		first_surface[Mesh::ARRAY_NORMAL] = normals;
+
+		PackedInt32Array indices;
+		indices.push_back(0);
+		indices.push_back(1);
+		indices.push_back(2);
+		first_surface[Mesh::ARRAY_INDEX] = indices;
+	}
+
+	Array second_surface;
+	second_surface.resize(Mesh::ARRAY_MAX);
+	{
+		PackedVector3Array vertices;
+		vertices.push_back(Vector3(1.0f, 0.0f, 0.0f));
+		vertices.push_back(Vector3(1.0f, 1.0f, 0.0f));
+		vertices.push_back(Vector3(0.0f, 1.0f, 0.0f));
+		second_surface[Mesh::ARRAY_VERTEX] = vertices;
+
+		PackedVector3Array normals;
+		normals.push_back(Vector3(0.0f, 0.0f, 1.0f));
+		normals.push_back(Vector3(0.0f, 0.0f, 1.0f));
+		normals.push_back(Vector3(0.0f, 0.0f, 1.0f));
+		second_surface[Mesh::ARRAY_NORMAL] = normals;
+
+		PackedInt32Array indices;
+		indices.push_back(0);
+		indices.push_back(1);
+		indices.push_back(2);
+		second_surface[Mesh::ARRAY_INDEX] = indices;
+	}
+
+	Ref<ArrayMesh> mesh;
+	mesh.instantiate();
+	mesh->add_surface_from_arrays(Mesh::PRIMITIVE_TRIANGLES, first_surface);
+	mesh->add_surface_from_arrays(Mesh::PRIMITIVE_TRIANGLES, second_surface);
+
+	Ref<StandardMaterial3D> red_material;
+	red_material.instantiate();
+	red_material->set_name("Red");
+	red_material->set_albedo(Color(0.8f, 0.1f, 0.1f));
+	mesh->surface_set_material(0, red_material);
+
+	Ref<StandardMaterial3D> blue_material;
+	blue_material.instantiate();
+	blue_material->set_name("Blue");
+	blue_material->set_albedo(Color(0.1f, 0.1f, 0.8f));
+	mesh->surface_set_material(1, blue_material);
+
+	Node3D *scene_root = memnew(Node3D);
+	scene_root->set_name("Root");
+
+	MeshInstance3D *mesh_instance = memnew(MeshInstance3D);
+	mesh_instance->set_name("Quad");
+	mesh_instance->set_mesh(mesh);
+	scene_root->add_child(mesh_instance);
+	mesh_instance->set_owner(scene_root);
+
+	Ref<PackedScene> source_scene;
+	source_scene.instantiate();
+	REQUIRE(source_scene->pack(scene_root) == OK);
+
+	const String save_path = TestUtils::get_temp_path("usd_subset_material_roundtrip.usda");
+	REQUIRE(ResourceSaver::save(source_scene, save_path) == OK);
+
+	Error err = OK;
+	Ref<PackedScene> loaded_scene = ResourceLoader::load(save_path, "PackedScene", ResourceFormatLoader::CACHE_MODE_IGNORE, &err);
+	REQUIRE_MESSAGE(err == OK, "USD subset material round-trip load failed.");
+	REQUIRE(loaded_scene.is_valid());
+
+	Node *loaded_root = loaded_scene->instantiate();
+	REQUIRE(loaded_root != nullptr);
+	REQUIRE(loaded_root->get_child_count() == 1);
+
+	MeshInstance3D *loaded_mesh = Object::cast_to<MeshInstance3D>(loaded_root->get_child(0)->get_child(0));
+	REQUIRE(loaded_mesh != nullptr);
+	REQUIRE(loaded_mesh->get_mesh().is_valid());
+	CHECK(loaded_mesh->get_mesh()->get_surface_count() == 2);
+
+	BaseMaterial3D *loaded_first_material = Object::cast_to<BaseMaterial3D>(loaded_mesh->get_mesh()->surface_get_material(0).ptr());
+	BaseMaterial3D *loaded_second_material = Object::cast_to<BaseMaterial3D>(loaded_mesh->get_mesh()->surface_get_material(1).ptr());
+	REQUIRE(loaded_first_material != nullptr);
+	REQUIRE(loaded_second_material != nullptr);
+	CHECK(loaded_first_material->get_albedo().r == doctest::Approx(0.8f));
+	CHECK(loaded_first_material->get_albedo().b == doctest::Approx(0.1f));
+	CHECK(loaded_second_material->get_albedo().r == doctest::Approx(0.1f));
+	CHECK(loaded_second_material->get_albedo().b == doctest::Approx(0.8f));
+
+	Dictionary mesh_metadata = loaded_mesh->get_meta(StringName("usd"), Dictionary());
+	const Array material_bindings = mesh_metadata.get("usd:material_bindings", Array());
+	CHECK(material_bindings.size() == 2);
+
+	memdelete(loaded_root);
+	memdelete(scene_root);
+}
+
+TEST_CASE("[SceneTree][USD] Reuse authored USD materials when multiple surfaces share one Godot material") {
+	PreviewLightingModeScope preview_lighting_mode_scope;
+	preview_lighting_mode_scope.set(0);
+
+	Ref<ArrayMesh> mesh;
+	mesh.instantiate();
+	for (int surface_index = 0; surface_index < 3; surface_index++) {
+		Array surface;
+		surface.resize(Mesh::ARRAY_MAX);
+
+		PackedVector3Array vertices;
+		vertices.push_back(Vector3((real_t)surface_index, 0.0f, 0.0f));
+		vertices.push_back(Vector3((real_t)surface_index + 0.5f, 0.0f, 0.0f));
+		vertices.push_back(Vector3((real_t)surface_index, 0.5f, 0.0f));
+		surface[Mesh::ARRAY_VERTEX] = vertices;
+
+		PackedVector3Array normals;
+		normals.push_back(Vector3(0.0f, 0.0f, 1.0f));
+		normals.push_back(Vector3(0.0f, 0.0f, 1.0f));
+		normals.push_back(Vector3(0.0f, 0.0f, 1.0f));
+		surface[Mesh::ARRAY_NORMAL] = normals;
+
+		PackedInt32Array indices;
+		indices.push_back(0);
+		indices.push_back(1);
+		indices.push_back(2);
+		surface[Mesh::ARRAY_INDEX] = indices;
+
+		mesh->add_surface_from_arrays(Mesh::PRIMITIVE_TRIANGLES, surface);
+	}
+
+	Ref<StandardMaterial3D> shared_material;
+	shared_material.instantiate();
+	shared_material->set_name("SharedRed");
+	shared_material->set_albedo(Color(0.8f, 0.1f, 0.1f));
+
+	Ref<StandardMaterial3D> unique_material;
+	unique_material.instantiate();
+	unique_material->set_name("UniqueBlue");
+	unique_material->set_albedo(Color(0.1f, 0.1f, 0.8f));
+
+	mesh->surface_set_material(0, shared_material);
+	mesh->surface_set_material(1, unique_material);
+	mesh->surface_set_material(2, shared_material);
+
+	Node3D *scene_root = memnew(Node3D);
+	scene_root->set_name("Root");
+
+	MeshInstance3D *mesh_instance = memnew(MeshInstance3D);
+	mesh_instance->set_name("TriStrip");
+	mesh_instance->set_mesh(mesh);
+	scene_root->add_child(mesh_instance);
+	mesh_instance->set_owner(scene_root);
+
+	Ref<PackedScene> source_scene;
+	source_scene.instantiate();
+	REQUIRE(source_scene->pack(scene_root) == OK);
+
+	const String save_path = TestUtils::get_temp_path("usd_subset_material_reuse.usda");
+	REQUIRE(ResourceSaver::save(source_scene, save_path) == OK);
+
+	Error err = OK;
+	Ref<PackedScene> loaded_scene = ResourceLoader::load(save_path, "PackedScene", ResourceFormatLoader::CACHE_MODE_IGNORE, &err);
+	REQUIRE_MESSAGE(err == OK, "USD shared subset material round-trip load failed.");
+	REQUIRE(loaded_scene.is_valid());
+
+	Node *loaded_root = loaded_scene->instantiate();
+	REQUIRE(loaded_root != nullptr);
+	REQUIRE(loaded_root->get_child_count() == 1);
+
+	MeshInstance3D *loaded_mesh = Object::cast_to<MeshInstance3D>(loaded_root->get_child(0)->get_child(0));
+	REQUIRE(loaded_mesh != nullptr);
+	REQUIRE(loaded_mesh->get_mesh().is_valid());
+	CHECK(loaded_mesh->get_mesh()->get_surface_count() == 3);
+
+	Dictionary mesh_metadata = loaded_mesh->get_meta(StringName("usd"), Dictionary());
+	const Array material_bindings = mesh_metadata.get("usd:material_bindings", Array());
+	REQUIRE(material_bindings.size() == 3);
+	CHECK((String)material_bindings[0] == (String)material_bindings[2]);
+	CHECK((String)material_bindings[0] != (String)material_bindings[1]);
+
+	memdelete(loaded_root);
+	memdelete(scene_root);
+}
+
 TEST_CASE("[SceneTree][USD] Skip synthetic preview lighting when saving USDA") {
 	const String source_path = TestUtils::get_data_path("usd/basic.usda");
 	const String save_path = TestUtils::get_temp_path("usd_skip_preview_nodes.usda");
