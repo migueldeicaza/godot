@@ -856,6 +856,50 @@ TEST_CASE("[SceneTree][USD] Reuse authored USD materials when multiple surfaces 
 	memdelete(scene_root);
 }
 
+TEST_CASE("[SceneTree][USD] Preserve authored material subset names across USD round-trip") {
+	PreviewLightingModeScope preview_lighting_mode_scope;
+	preview_lighting_mode_scope.set(0);
+
+	const String source_path = TestUtils::get_data_path("usd/named_material_subsets.usda");
+	const String save_path = TestUtils::get_temp_path("usd_named_material_subsets_saved.usda");
+
+	Error err = OK;
+	Ref<PackedScene> loaded_scene = ResourceLoader::load(source_path, "PackedScene", ResourceFormatLoader::CACHE_MODE_IGNORE, &err);
+	REQUIRE_MESSAGE(err == OK, "USD named subset source load failed.");
+	REQUIRE(loaded_scene.is_valid());
+	REQUIRE(ResourceSaver::save(loaded_scene, save_path) == OK);
+
+	Ref<PackedScene> reloaded_scene = ResourceLoader::load(save_path, "PackedScene", ResourceFormatLoader::CACHE_MODE_IGNORE, &err);
+	REQUIRE_MESSAGE(err == OK, "USD named subset reload failed.");
+	REQUIRE(reloaded_scene.is_valid());
+
+	Node *root = reloaded_scene->instantiate();
+	REQUIRE(root != nullptr);
+	REQUIRE(root->get_child_count() == 1);
+
+	MeshInstance3D *mesh_instance = Object::cast_to<MeshInstance3D>(root->get_child(0)->get_child(0));
+	REQUIRE(mesh_instance != nullptr);
+	REQUIRE(mesh_instance->get_mesh().is_valid());
+	CHECK(mesh_instance->get_mesh()->get_surface_count() == 2);
+
+	Dictionary mesh_metadata = mesh_instance->get_meta(StringName("usd"), Dictionary());
+	const Array subset_descriptions = mesh_metadata.get("usd:material_subsets", Array());
+	REQUIRE(subset_descriptions.size() == 2);
+
+	const Dictionary first_description = subset_descriptions[0];
+	const Dictionary second_description = subset_descriptions[1];
+	CHECK((String)first_description.get("binding_kind", String()) == String("mesh"));
+	CHECK((String)second_description.get("binding_kind", String()) == String("subset"));
+	CHECK((String)second_description.get("subset_name", String()) == String("Trim"));
+	CHECK((String)second_description.get("family_name", String()) == String("materialBind"));
+	const Array material_bindings = mesh_metadata.get("usd:material_bindings", Array());
+	REQUIRE(material_bindings.size() == 2);
+	CHECK((String)material_bindings[0] == String("/Root/Looks/Base"));
+	CHECK((String)material_bindings[1] == String("/Root/Looks/Accent"));
+
+	memdelete(root);
+}
+
 TEST_CASE("[SceneTree][USD] Skip synthetic preview lighting when saving USDA") {
 	const String source_path = TestUtils::get_data_path("usd/basic.usda");
 	const String save_path = TestUtils::get_temp_path("usd_skip_preview_nodes.usda");

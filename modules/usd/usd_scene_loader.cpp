@@ -399,11 +399,16 @@ struct UsdSurfaceAccumulator {
 	PackedColorArray colors;
 	Ref<Material> material;
 	String usd_material_path;
+	String binding_kind;
+	String subset_name;
+	String family_name;
+	String family_type;
 };
 
 struct UsdMeshBuildResult {
 	Ref<ArrayMesh> mesh;
 	Array material_paths;
+	Array material_subsets;
 };
 
 struct UsdMeshSurfaceFaceRange {
@@ -1248,6 +1253,7 @@ class UsdSceneBuilder {
 
 		Vector<UsdSurfaceAccumulator> surfaces;
 		surfaces.push_back(UsdSurfaceAccumulator());
+		surfaces.write[0].binding_kind = "mesh";
 
 		UsdShadeMaterialBindingAPI mesh_binding_api(p_mesh.GetPrim());
 		UsdShadeMaterial default_material = mesh_binding_api.ComputeBoundMaterial();
@@ -1266,6 +1272,14 @@ class UsdSceneBuilder {
 			}
 
 			UsdSurfaceAccumulator subset_surface;
+			subset_surface.binding_kind = "subset";
+			subset_surface.subset_name = _to_godot_string(subset.GetPrim().GetName().GetString());
+			TfToken family_name;
+			subset.GetFamilyNameAttr().Get(&family_name, time);
+			subset_surface.family_name = _to_godot_string(family_name.GetString());
+			if (!family_name.IsEmpty()) {
+				subset_surface.family_type = _to_godot_string(UsdGeomSubset::GetFamilyType(UsdGeomImageable(p_mesh.GetPrim()), family_name).GetString());
+			}
 			UsdShadeMaterial subset_material = UsdShadeMaterialBindingAPI(subset.GetPrim()).ComputeBoundMaterial();
 			if (subset_material) {
 				subset_surface.material = _build_material_from_usd_material(subset_material, r_mapping_notes);
@@ -1387,6 +1401,22 @@ class UsdSceneBuilder {
 			if (!surface.usd_material_path.is_empty()) {
 				result.material_paths.push_back(surface.usd_material_path);
 			}
+
+			Dictionary surface_description;
+			surface_description["binding_kind"] = surface.binding_kind;
+			if (!surface.subset_name.is_empty()) {
+				surface_description["subset_name"] = surface.subset_name;
+			}
+			if (!surface.family_name.is_empty()) {
+				surface_description["family_name"] = surface.family_name;
+			}
+			if (!surface.family_type.is_empty()) {
+				surface_description["family_type"] = surface.family_type;
+			}
+			if (!surface.usd_material_path.is_empty()) {
+				surface_description["material_path"] = surface.usd_material_path;
+			}
+			result.material_subsets.push_back(surface_description);
 		}
 
 		result.mesh = mesh->get_surface_count() > 0 ? mesh : Ref<ArrayMesh>();
@@ -1732,6 +1762,9 @@ class UsdSceneBuilder {
 				mesh_instance->set_mesh(mesh_result.mesh);
 				if (!mesh_result.material_paths.is_empty()) {
 					mapping_notes["usd:material_bindings"] = mesh_result.material_paths;
+				}
+				if (!mesh_result.material_subsets.is_empty()) {
+					mapping_notes["usd:material_subsets"] = mesh_result.material_subsets;
 				}
 			} else {
 				mapping_notes["usd:mesh_status"] = "Mesh geometry was detected, but no triangulated surface could be generated.";
@@ -2281,7 +2314,7 @@ class UsdSceneSaver {
 		}
 	}
 
-	static bool _write_preview_material(const UsdStageRefPtr &p_stage, const Ref<Material> &p_material, const SdfPath &p_mesh_path, const String &p_save_path, const String &p_material_key, UsdShadeMaterial *r_material) {
+	static bool _write_preview_material(const UsdStageRefPtr &p_stage, const Ref<Material> &p_material, const SdfPath &p_mesh_path, const String &p_save_path, const String &p_material_key, const String &p_preferred_material_path, UsdShadeMaterial *r_material) {
 		ERR_FAIL_NULL_V(r_material, false);
 		*r_material = UsdShadeMaterial();
 
@@ -2291,7 +2324,13 @@ class UsdSceneSaver {
 		}
 
 		const String material_name = _make_valid_identifier(p_material_key.is_empty() ? (p_material->get_name().is_empty() ? String("Material") : p_material->get_name()) : p_material_key);
-		const SdfPath material_path = p_mesh_path.AppendChild(TfToken(GODOT_MATERIAL_SCOPE_NAME)).AppendChild(TfToken(material_name.utf8().get_data()));
+		SdfPath material_path = p_mesh_path.AppendChild(TfToken(GODOT_MATERIAL_SCOPE_NAME)).AppendChild(TfToken(material_name.utf8().get_data()));
+		if (!p_preferred_material_path.is_empty()) {
+			const SdfPath preferred_material_path(p_preferred_material_path.utf8().get_data());
+			if (preferred_material_path.IsAbsolutePath() && preferred_material_path.IsPrimPath()) {
+				material_path = preferred_material_path;
+			}
+		}
 		UsdShadeMaterial usd_material = UsdShadeMaterial::Define(p_stage, material_path);
 		UsdShadeShader preview_surface = UsdShadeShader::Define(p_stage, material_path.AppendChild(TfToken("PreviewSurface")));
 		preview_surface.CreateIdAttr(VtValue(TfToken("UsdPreviewSurface")));
@@ -2363,7 +2402,7 @@ class UsdSceneSaver {
 
 		HashMap<ObjectID, UsdShadeMaterial> material_cache;
 		HashMap<String, int> material_name_counts;
-		const auto resolve_usd_material = [&](const Ref<Material> &p_material) -> UsdShadeMaterial {
+		const auto resolve_usd_material = [&](const Ref<Material> &p_material, const String &p_preferred_material_path = String()) -> UsdShadeMaterial {
 			if (p_material.is_null()) {
 				return UsdShadeMaterial();
 			}
@@ -2379,7 +2418,7 @@ class UsdSceneSaver {
 			const String material_key = name_count == 0 ? base_name : vformat("%s_%d", base_name, name_count + 1);
 
 			UsdShadeMaterial usd_material;
-			if (_write_preview_material(p_stage, p_material, p_mesh_path, p_save_path, material_key, &usd_material) && usd_material) {
+			if (_write_preview_material(p_stage, p_material, p_mesh_path, p_save_path, material_key, p_preferred_material_path, &usd_material) && usd_material) {
 				material_cache.insert(material_id, usd_material);
 				return usd_material;
 			}
@@ -2387,8 +2426,85 @@ class UsdSceneSaver {
 			return UsdShadeMaterial();
 		};
 
+		const Dictionary usd_metadata = _get_usd_metadata(p_mesh_instance);
+		const Array surface_descriptions = usd_metadata.get("usd:material_subsets", Array());
+		const bool has_surface_descriptions = surface_descriptions.size() == mesh->get_surface_count();
+
+		auto get_surface_description = [&](int p_surface_index) -> Dictionary {
+			if (!has_surface_descriptions) {
+				return Dictionary();
+			}
+			if (surface_descriptions[p_surface_index].get_type() != Variant::DICTIONARY) {
+				return Dictionary();
+			}
+			return surface_descriptions[p_surface_index];
+		};
+
+		bool preserve_subset_structure = false;
+		if (has_surface_descriptions) {
+			for (int surface_index = 0; surface_index < surface_descriptions.size(); surface_index++) {
+				const Dictionary description = get_surface_description(surface_index);
+				if ((String)description.get("binding_kind", String()) == String("subset")) {
+					preserve_subset_structure = true;
+					break;
+				}
+			}
+		}
+
+		if (preserve_subset_structure) {
+			UsdShadeMaterialBindingAPI::Apply(p_usd_mesh.GetPrim());
+			for (int surface_index = 0; surface_index < mesh->get_surface_count(); surface_index++) {
+				const UsdMeshSurfaceFaceRange &surface_range = p_surface_face_ranges[surface_index];
+				if (surface_range.face_count <= 0) {
+					continue;
+				}
+
+				const Ref<Material> surface_material = p_mesh_instance->get_active_material(surface_index);
+				if (surface_material.is_null()) {
+					continue;
+				}
+
+				const Dictionary description = get_surface_description(surface_index);
+				const String binding_kind = description.get("binding_kind", String("mesh"));
+				const String preferred_material_path = description.get("material_path", String());
+				const UsdShadeMaterial usd_material = resolve_usd_material(surface_material, preferred_material_path);
+				if (!usd_material) {
+					continue;
+				}
+
+				if (binding_kind != "subset") {
+					UsdShadeMaterialBindingAPI::Apply(p_usd_mesh.GetPrim()).Bind(usd_material);
+					continue;
+				}
+
+				VtIntArray subset_faces;
+				subset_faces.reserve(surface_range.face_count);
+				for (int face_index = 0; face_index < surface_range.face_count; face_index++) {
+					subset_faces.push_back(surface_range.face_start + face_index);
+				}
+
+				const String subset_name = _make_valid_identifier(description.get("subset_name", vformat("Surface_%d", surface_index)));
+				const String family_name_string = description.get("family_name", String("materialBind"));
+				const String family_type_string = description.get("family_type", String("nonOverlapping"));
+				const TfToken family_name = TfToken(family_name_string.utf8().get_data());
+				const TfToken family_type = TfToken(family_type_string.utf8().get_data());
+
+				UsdGeomSubset subset = UsdGeomSubset::CreateUniqueGeomSubset(p_usd_mesh, TfToken(subset_name.utf8().get_data()), UsdGeomTokens->face, subset_faces, family_name, family_type);
+				UsdShadeMaterialBindingAPI::Apply(subset.GetPrim()).Bind(usd_material);
+			}
+			return;
+		}
+
 		if (can_use_shared_binding && shared_material.is_valid()) {
-			const UsdShadeMaterial usd_material = resolve_usd_material(shared_material);
+			String preferred_material_path;
+			for (int surface_index = 0; surface_index < mesh->get_surface_count(); surface_index++) {
+				const Dictionary description = get_surface_description(surface_index);
+				preferred_material_path = description.get("material_path", String());
+				if (!preferred_material_path.is_empty()) {
+					break;
+				}
+			}
+			const UsdShadeMaterial usd_material = resolve_usd_material(shared_material, preferred_material_path);
 			if (usd_material) {
 				UsdShadeMaterialBindingAPI::Apply(p_usd_mesh.GetPrim()).Bind(usd_material);
 			}
@@ -2416,7 +2532,9 @@ class UsdSceneSaver {
 			const String subset_name = _make_valid_identifier(vformat("Surface_%d", surface_index));
 			UsdGeomSubset subset = UsdGeomSubset::CreateUniqueGeomSubset(p_usd_mesh, TfToken(subset_name.utf8().get_data()), UsdGeomTokens->face, subset_faces, UsdShadeTokens->materialBind, UsdGeomTokens->nonOverlapping);
 
-			const UsdShadeMaterial usd_material = resolve_usd_material(surface_material);
+			const Dictionary description = get_surface_description(surface_index);
+			const String preferred_material_path = description.get("material_path", String());
+			const UsdShadeMaterial usd_material = resolve_usd_material(surface_material, preferred_material_path);
 			if (usd_material) {
 				UsdShadeMaterialBindingAPI::Apply(subset.GetPrim()).Bind(usd_material);
 			}
