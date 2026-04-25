@@ -399,6 +399,7 @@ struct UsdSurfaceAccumulator {
 	PackedColorArray colors;
 	Ref<Material> material;
 	String usd_material_path;
+	bool has_material_binding = false;
 	String binding_kind;
 	String subset_name;
 	String family_name;
@@ -1256,10 +1257,13 @@ class UsdSceneBuilder {
 		surfaces.write[0].binding_kind = "mesh";
 
 		UsdShadeMaterialBindingAPI mesh_binding_api(p_mesh.GetPrim());
+		const UsdRelationship mesh_binding_relationship = p_mesh.GetPrim().GetRelationship(TfToken("material:binding"));
+		const bool mesh_has_authored_binding = mesh_binding_relationship && mesh_binding_relationship.HasAuthoredTargets();
 		UsdShadeMaterial default_material = mesh_binding_api.ComputeBoundMaterial();
 		if (default_material) {
 			surfaces.write[0].material = _build_material_from_usd_material(default_material, r_mapping_notes);
 			surfaces.write[0].usd_material_path = _to_godot_string(default_material.GetPath().GetString());
+			surfaces.write[0].has_material_binding = mesh_has_authored_binding;
 			r_handled_attributes->insert("material:binding");
 		}
 
@@ -1280,10 +1284,18 @@ class UsdSceneBuilder {
 			if (!family_name.IsEmpty()) {
 				subset_surface.family_type = _to_godot_string(UsdGeomSubset::GetFamilyType(UsdGeomImageable(p_mesh.GetPrim()), family_name).GetString());
 			}
+			const UsdRelationship subset_binding_relationship = subset.GetPrim().GetRelationship(TfToken("material:binding"));
+			const bool subset_has_authored_binding = subset_binding_relationship && subset_binding_relationship.HasAuthoredTargets();
 			UsdShadeMaterial subset_material = UsdShadeMaterialBindingAPI(subset.GetPrim()).ComputeBoundMaterial();
-			if (subset_material) {
+			if (subset_material && subset_has_authored_binding) {
 				subset_surface.material = _build_material_from_usd_material(subset_material, r_mapping_notes);
 				subset_surface.usd_material_path = _to_godot_string(subset_material.GetPath().GetString());
+				subset_surface.has_material_binding = true;
+			} else if (default_material) {
+				// Preserve the authored subset structure while still displaying the
+				// effective mesh-bound material on the imported Godot surface.
+				subset_surface.material = surfaces[0].material;
+				subset_surface.usd_material_path = surfaces[0].usd_material_path;
 			}
 
 			const int surface_index = surfaces.size();
@@ -1404,6 +1416,7 @@ class UsdSceneBuilder {
 
 			Dictionary surface_description;
 			surface_description["binding_kind"] = surface.binding_kind;
+			surface_description["has_material_binding"] = surface.has_material_binding;
 			if (!surface.subset_name.is_empty()) {
 				surface_description["subset_name"] = surface.subset_name;
 			}
@@ -2459,20 +2472,26 @@ class UsdSceneSaver {
 					continue;
 				}
 
-				const Ref<Material> surface_material = p_mesh_instance->get_active_material(surface_index);
-				if (surface_material.is_null()) {
-					continue;
-				}
-
 				const Dictionary description = get_surface_description(surface_index);
 				const String binding_kind = description.get("binding_kind", String("mesh"));
+				const bool has_material_binding = description.get("has_material_binding", true);
 				const String preferred_material_path = description.get("material_path", String());
-				const UsdShadeMaterial usd_material = resolve_usd_material(surface_material, preferred_material_path);
-				if (!usd_material) {
-					continue;
-				}
 
 				if (binding_kind != "subset") {
+					if (!has_material_binding) {
+						continue;
+					}
+
+					const Ref<Material> surface_material = p_mesh_instance->get_active_material(surface_index);
+					if (surface_material.is_null()) {
+						continue;
+					}
+
+					const UsdShadeMaterial usd_material = resolve_usd_material(surface_material, preferred_material_path);
+					if (!usd_material) {
+						continue;
+					}
+
 					UsdShadeMaterialBindingAPI::Apply(p_usd_mesh.GetPrim()).Bind(usd_material);
 					continue;
 				}
@@ -2490,6 +2509,20 @@ class UsdSceneSaver {
 				const TfToken family_type = TfToken(family_type_string.utf8().get_data());
 
 				UsdGeomSubset subset = UsdGeomSubset::CreateUniqueGeomSubset(p_usd_mesh, TfToken(subset_name.utf8().get_data()), UsdGeomTokens->face, subset_faces, family_name, family_type);
+				if (!has_material_binding) {
+					continue;
+				}
+
+				const Ref<Material> surface_material = p_mesh_instance->get_active_material(surface_index);
+				if (surface_material.is_null()) {
+					continue;
+				}
+
+				const UsdShadeMaterial usd_material = resolve_usd_material(surface_material, preferred_material_path);
+				if (!usd_material) {
+					continue;
+				}
+
 				UsdShadeMaterialBindingAPI::Apply(subset.GetPrim()).Bind(usd_material);
 			}
 			return;

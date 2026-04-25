@@ -900,6 +900,68 @@ TEST_CASE("[SceneTree][USD] Preserve authored material subset names across USD r
 	memdelete(root);
 }
 
+TEST_CASE("[SceneTree][USD] Preserve subsets that inherit the mesh material binding across USD round-trip") {
+	PreviewLightingModeScope preview_lighting_mode_scope;
+	preview_lighting_mode_scope.set(0);
+
+	const String source_path = TestUtils::get_data_path("usd/inherited_material_subset.usda");
+	const String save_path = TestUtils::get_temp_path("usd_inherited_material_subset_saved.usda");
+
+	Error err = OK;
+	Ref<PackedScene> loaded_scene = ResourceLoader::load(source_path, "PackedScene", ResourceFormatLoader::CACHE_MODE_IGNORE, &err);
+	REQUIRE_MESSAGE(err == OK, "USD inherited subset source load failed.");
+	REQUIRE(loaded_scene.is_valid());
+
+	Node *loaded_root = loaded_scene->instantiate();
+	REQUIRE(loaded_root != nullptr);
+	MeshInstance3D *loaded_mesh = Object::cast_to<MeshInstance3D>(loaded_root->get_child(0)->get_child(0));
+	REQUIRE(loaded_mesh != nullptr);
+	REQUIRE(loaded_mesh->get_mesh().is_valid());
+	CHECK(loaded_mesh->get_mesh()->get_surface_count() == 2);
+
+	BaseMaterial3D *first_surface_material = Object::cast_to<BaseMaterial3D>(loaded_mesh->get_mesh()->surface_get_material(0).ptr());
+	BaseMaterial3D *second_surface_material = Object::cast_to<BaseMaterial3D>(loaded_mesh->get_mesh()->surface_get_material(1).ptr());
+	REQUIRE(first_surface_material != nullptr);
+	REQUIRE(second_surface_material != nullptr);
+	CHECK(second_surface_material->get_albedo().r == doctest::Approx(first_surface_material->get_albedo().r));
+	CHECK(second_surface_material->get_albedo().g == doctest::Approx(first_surface_material->get_albedo().g));
+	CHECK(second_surface_material->get_albedo().b == doctest::Approx(first_surface_material->get_albedo().b));
+
+	Dictionary mesh_metadata = loaded_mesh->get_meta(StringName("usd"), Dictionary());
+	Array subset_descriptions = mesh_metadata.get("usd:material_subsets", Array());
+	REQUIRE(subset_descriptions.size() == 2);
+	Dictionary inherited_subset_description = subset_descriptions[1];
+	CHECK((String)inherited_subset_description.get("binding_kind", String()) == String("subset"));
+	CHECK((bool)inherited_subset_description.get("has_material_binding", true) == false);
+	CHECK((String)inherited_subset_description.get("subset_name", String()) == String("Trim"));
+	memdelete(loaded_root);
+
+	REQUIRE(ResourceSaver::save(loaded_scene, save_path) == OK);
+	Ref<PackedScene> reloaded_scene = ResourceLoader::load(save_path, "PackedScene", ResourceFormatLoader::CACHE_MODE_IGNORE, &err);
+	REQUIRE_MESSAGE(err == OK, "USD inherited subset reload failed.");
+	REQUIRE(reloaded_scene.is_valid());
+
+	Node *reloaded_root = reloaded_scene->instantiate();
+	REQUIRE(reloaded_root != nullptr);
+	MeshInstance3D *reloaded_mesh = Object::cast_to<MeshInstance3D>(reloaded_root->get_child(0)->get_child(0));
+	REQUIRE(reloaded_mesh != nullptr);
+
+	mesh_metadata = reloaded_mesh->get_meta(StringName("usd"), Dictionary());
+	subset_descriptions = mesh_metadata.get("usd:material_subsets", Array());
+	REQUIRE(subset_descriptions.size() == 2);
+	inherited_subset_description = subset_descriptions[1];
+	CHECK((String)inherited_subset_description.get("binding_kind", String()) == String("subset"));
+	CHECK((bool)inherited_subset_description.get("has_material_binding", true) == false);
+	CHECK((String)inherited_subset_description.get("subset_name", String()) == String("Trim"));
+
+	const Array material_bindings = mesh_metadata.get("usd:material_bindings", Array());
+	REQUIRE(material_bindings.size() == 2);
+	CHECK((String)material_bindings[0] == String("/Root/Looks/Base"));
+	CHECK((String)material_bindings[1] == String("/Root/Looks/Base"));
+
+	memdelete(reloaded_root);
+}
+
 TEST_CASE("[SceneTree][USD] Skip synthetic preview lighting when saving USDA") {
 	const String source_path = TestUtils::get_data_path("usd/basic.usda");
 	const String save_path = TestUtils::get_temp_path("usd_skip_preview_nodes.usda");
