@@ -962,6 +962,27 @@ TEST_CASE("[SceneTree][USD] Preserve subsets that inherit the mesh material bind
 	memdelete(reloaded_root);
 }
 
+TEST_CASE("[SceneTree][USD] Preserve sparse authored subset face indices across USD round-trip") {
+	PreviewLightingModeScope preview_lighting_mode_scope;
+	preview_lighting_mode_scope.set(0);
+
+	const String source_path = TestUtils::get_data_path("usd/sparse_material_subset.usda");
+	const String save_path = TestUtils::get_temp_path("usd_sparse_material_subset_saved.usda");
+
+	Error err = OK;
+	Ref<PackedScene> loaded_scene = ResourceLoader::load(source_path, "PackedScene", ResourceFormatLoader::CACHE_MODE_IGNORE, &err);
+	REQUIRE_MESSAGE(err == OK, "USD sparse subset source load failed.");
+	REQUIRE(loaded_scene.is_valid());
+	REQUIRE(ResourceSaver::save(loaded_scene, save_path) == OK);
+
+	Ref<FileAccess> saved_file = FileAccess::open(save_path, FileAccess::READ);
+	REQUIRE(saved_file.is_valid());
+	const String saved_text = saved_file->get_as_text();
+	CHECK(saved_text.contains("def GeomSubset \"OddFaces\""));
+	CHECK(saved_text.contains("int[] indices = [1, 3]"));
+	CHECK(saved_text.contains("rel material:binding = </Root/Looks/Accent>"));
+}
+
 TEST_CASE("[SceneTree][USD] Skip synthetic preview lighting when saving USDA") {
 	const String source_path = TestUtils::get_data_path("usd/basic.usda");
 	const String save_path = TestUtils::get_temp_path("usd_skip_preview_nodes.usda");

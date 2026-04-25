@@ -397,6 +397,7 @@ struct UsdSurfaceAccumulator {
 	PackedVector3Array normals;
 	PackedVector2Array uvs;
 	PackedColorArray colors;
+	PackedInt32Array authored_face_indices;
 	Ref<Material> material;
 	String usd_material_path;
 	bool has_material_binding = false;
@@ -415,6 +416,7 @@ struct UsdMeshBuildResult {
 struct UsdMeshSurfaceFaceRange {
 	int face_start = 0;
 	int face_count = 0;
+	Vector<int> saved_face_indices;
 };
 
 class UsdSceneBuilder {
@@ -1363,6 +1365,7 @@ class UsdSceneBuilder {
 					append_corner(corner);
 					append_corner(corner + 1);
 				}
+				surface.authored_face_indices.push_back(face);
 			}
 
 			face_vertex_cursor += count;
@@ -1428,6 +1431,9 @@ class UsdSceneBuilder {
 			}
 			if (!surface.usd_material_path.is_empty()) {
 				surface_description["material_path"] = surface.usd_material_path;
+			}
+			if (!surface.authored_face_indices.is_empty()) {
+				surface_description["authored_face_indices"] = surface.authored_face_indices;
 			}
 			result.material_subsets.push_back(surface_description);
 		}
@@ -2413,6 +2419,22 @@ class UsdSceneSaver {
 			return;
 		}
 
+		const auto make_subset_faces = [&](const UsdMeshSurfaceFaceRange &p_surface_range) {
+			VtIntArray subset_faces;
+			if (!p_surface_range.saved_face_indices.is_empty()) {
+				subset_faces.reserve(p_surface_range.saved_face_indices.size());
+				for (int i = 0; i < p_surface_range.saved_face_indices.size(); i++) {
+					subset_faces.push_back(p_surface_range.saved_face_indices[i]);
+				}
+			} else {
+				subset_faces.reserve(p_surface_range.face_count);
+				for (int face_index = 0; face_index < p_surface_range.face_count; face_index++) {
+					subset_faces.push_back(p_surface_range.face_start + face_index);
+				}
+			}
+			return subset_faces;
+		};
+
 		HashMap<ObjectID, UsdShadeMaterial> material_cache;
 		HashMap<String, int> material_name_counts;
 		const auto resolve_usd_material = [&](const Ref<Material> &p_material, const String &p_preferred_material_path = String()) -> UsdShadeMaterial {
@@ -2496,11 +2518,7 @@ class UsdSceneSaver {
 					continue;
 				}
 
-				VtIntArray subset_faces;
-				subset_faces.reserve(surface_range.face_count);
-				for (int face_index = 0; face_index < surface_range.face_count; face_index++) {
-					subset_faces.push_back(surface_range.face_start + face_index);
-				}
+				VtIntArray subset_faces = make_subset_faces(surface_range);
 
 				const String subset_name = _make_valid_identifier(description.get("subset_name", vformat("Surface_%d", surface_index)));
 				const String family_name_string = description.get("family_name", String("materialBind"));
@@ -2556,11 +2574,7 @@ class UsdSceneSaver {
 				continue;
 			}
 
-			VtIntArray subset_faces;
-			subset_faces.reserve(surface_range.face_count);
-			for (int face_index = 0; face_index < surface_range.face_count; face_index++) {
-				subset_faces.push_back(surface_range.face_start + face_index);
-			}
+			VtIntArray subset_faces = make_subset_faces(surface_range);
 
 			const String subset_name = _make_valid_identifier(vformat("Surface_%d", surface_index));
 			UsdGeomSubset subset = UsdGeomSubset::CreateUniqueGeomSubset(p_usd_mesh, TfToken(subset_name.utf8().get_data()), UsdGeomTokens->face, subset_faces, UsdShadeTokens->materialBind, UsdGeomTokens->nonOverlapping);
@@ -2574,7 +2588,25 @@ class UsdSceneSaver {
 		}
 	}
 
-	static bool _write_mesh_geometry(const Ref<Mesh> &p_mesh, UsdGeomMesh p_usd_mesh, Vector<UsdMeshSurfaceFaceRange> *r_surface_face_ranges = nullptr) {
+	struct UsdPendingFace {
+		int authored_face_index = -1;
+		int insertion_index = -1;
+		int surface_index = -1;
+		int32_t i0 = 0;
+		int32_t i1 = 0;
+		int32_t i2 = 0;
+	};
+
+	struct UsdPendingFaceComparator {
+		_FORCE_INLINE_ bool operator()(const UsdPendingFace &p_a, const UsdPendingFace &p_b) const {
+			if (p_a.authored_face_index == p_b.authored_face_index) {
+				return p_a.insertion_index < p_b.insertion_index;
+			}
+			return p_a.authored_face_index < p_b.authored_face_index;
+		}
+	};
+
+	static bool _write_mesh_geometry(const Ref<Mesh> &p_mesh, UsdGeomMesh p_usd_mesh, const Dictionary *p_usd_metadata = nullptr, Vector<UsdMeshSurfaceFaceRange> *r_surface_face_ranges = nullptr) {
 		ERR_FAIL_COND_V(p_mesh.is_null(), false);
 
 		VtArray<GfVec3f> points;
@@ -2582,12 +2614,19 @@ class UsdSceneSaver {
 		VtArray<int> face_vertex_indices;
 		VtArray<GfVec3f> normals;
 		VtArray<GfVec2f> uvs;
+		Vector<UsdPendingFace> pending_faces;
 		bool have_normals = true;
 		bool have_uvs = true;
-		int current_face_index = 0;
 
 		if (r_surface_face_ranges != nullptr) {
 			r_surface_face_ranges->resize(p_mesh->get_surface_count());
+		}
+
+		Array surface_descriptions;
+		bool has_surface_descriptions = false;
+		if (p_usd_metadata != nullptr) {
+			surface_descriptions = p_usd_metadata->get("usd:material_subsets", Array());
+			has_surface_descriptions = surface_descriptions.size() == p_mesh->get_surface_count();
 		}
 
 		for (int surface_index = 0; surface_index < p_mesh->get_surface_count(); surface_index++) {
@@ -2604,6 +2643,11 @@ class UsdSceneSaver {
 			const PackedVector3Array surface_normals = arrays[Mesh::ARRAY_NORMAL];
 			const PackedVector2Array surface_uvs = arrays[Mesh::ARRAY_TEX_UV];
 			const PackedInt32Array indices = arrays[Mesh::ARRAY_INDEX];
+			PackedInt32Array authored_face_indices;
+			if (has_surface_descriptions && surface_descriptions[surface_index].get_type() == Variant::DICTIONARY) {
+				const Dictionary surface_description = surface_descriptions[surface_index];
+				authored_face_indices = surface_description.get("authored_face_indices", PackedInt32Array());
+			}
 			const int32_t vertex_offset = (int32_t)points.size();
 			int emitted_faces = 0;
 
@@ -2632,32 +2676,69 @@ class UsdSceneSaver {
 
 			if (!indices.is_empty()) {
 				for (int i = 0; i + 2 < indices.size(); i += 3) {
-					face_vertex_counts.push_back(3);
-					face_vertex_indices.push_back(vertex_offset + indices[i]);
-					face_vertex_indices.push_back(vertex_offset + indices[i + 2]);
-					face_vertex_indices.push_back(vertex_offset + indices[i + 1]);
+					UsdPendingFace pending_face;
+					pending_face.surface_index = surface_index;
+					pending_face.insertion_index = pending_faces.size();
+					pending_face.authored_face_index = emitted_faces < authored_face_indices.size() ? authored_face_indices[emitted_faces] : -1;
+					pending_face.i0 = vertex_offset + indices[i];
+					pending_face.i1 = vertex_offset + indices[i + 2];
+					pending_face.i2 = vertex_offset + indices[i + 1];
+					pending_faces.push_back(pending_face);
 					emitted_faces++;
 				}
 			} else {
 				for (int i = 0; i + 2 < vertices.size(); i += 3) {
-					face_vertex_counts.push_back(3);
-					face_vertex_indices.push_back(vertex_offset + i);
-					face_vertex_indices.push_back(vertex_offset + i + 2);
-					face_vertex_indices.push_back(vertex_offset + i + 1);
+					UsdPendingFace pending_face;
+					pending_face.surface_index = surface_index;
+					pending_face.insertion_index = pending_faces.size();
+					pending_face.authored_face_index = emitted_faces < authored_face_indices.size() ? authored_face_indices[emitted_faces] : -1;
+					pending_face.i0 = vertex_offset + i;
+					pending_face.i1 = vertex_offset + i + 2;
+					pending_face.i2 = vertex_offset + i + 1;
+					pending_faces.push_back(pending_face);
 					emitted_faces++;
 				}
 			}
 
 			if (r_surface_face_ranges != nullptr) {
 				UsdMeshSurfaceFaceRange &range = r_surface_face_ranges->write[surface_index];
-				range.face_start = current_face_index;
 				range.face_count = emitted_faces;
+				range.saved_face_indices.clear();
 			}
-			current_face_index += emitted_faces;
 		}
 
-		if (points.empty() || face_vertex_counts.empty() || face_vertex_indices.empty()) {
+		if (points.empty() || pending_faces.is_empty()) {
 			return false;
+		}
+
+		bool preserve_authored_face_order = true;
+		for (int i = 0; i < pending_faces.size(); i++) {
+			if (pending_faces[i].authored_face_index < 0) {
+				preserve_authored_face_order = false;
+				break;
+			}
+		}
+		if (preserve_authored_face_order) {
+			pending_faces.sort_custom<UsdPendingFaceComparator>();
+		}
+
+		for (int face_index = 0; face_index < pending_faces.size(); face_index++) {
+			const UsdPendingFace &pending_face = pending_faces[face_index];
+			face_vertex_counts.push_back(3);
+			face_vertex_indices.push_back(pending_face.i0);
+			face_vertex_indices.push_back(pending_face.i1);
+			face_vertex_indices.push_back(pending_face.i2);
+			if (r_surface_face_ranges != nullptr && pending_face.surface_index >= 0 && pending_face.surface_index < r_surface_face_ranges->size()) {
+				r_surface_face_ranges->write[pending_face.surface_index].saved_face_indices.push_back(face_index);
+			}
+		}
+
+		if (r_surface_face_ranges != nullptr) {
+			for (int surface_index = 0; surface_index < r_surface_face_ranges->size(); surface_index++) {
+				UsdMeshSurfaceFaceRange &range = r_surface_face_ranges->write[surface_index];
+				range.face_count = range.saved_face_indices.size();
+				range.face_start = range.face_count > 0 ? range.saved_face_indices[0] : 0;
+			}
 		}
 
 		p_usd_mesh.CreatePointsAttr().Set(points);
@@ -2752,7 +2833,8 @@ class UsdSceneSaver {
 		if (MeshInstance3D *mesh_instance = Object::cast_to<MeshInstance3D>(p_node)) {
 			UsdGeomMesh usd_mesh = UsdGeomMesh::Define(p_stage, p_path);
 			Vector<UsdMeshSurfaceFaceRange> surface_face_ranges;
-			if (!_write_mesh_geometry(mesh_instance->get_mesh(), usd_mesh, &surface_face_ranges)) {
+			const Dictionary usd_metadata = _get_usd_metadata(mesh_instance);
+			if (!_write_mesh_geometry(mesh_instance->get_mesh(), usd_mesh, &usd_metadata, &surface_face_ranges)) {
 				UsdGeomXform usd_xform = UsdGeomXform::Define(p_stage, p_path);
 				if (r_supports_transform != nullptr) {
 					*r_supports_transform = true;
