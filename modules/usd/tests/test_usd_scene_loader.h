@@ -47,6 +47,8 @@ TEST_FORCE_LINK(test_usd_scene_loader)
 #include "scene/3d/light_3d.h"
 #include "scene/3d/mesh_instance_3d.h"
 #include "scene/3d/node_3d.h"
+#include "scene/3d/world_environment.h"
+#include "scene/resources/environment.h"
 #include "scene/resources/material.h"
 #include "scene/resources/mesh.h"
 #include "scene/resources/packed_scene.h"
@@ -67,11 +69,13 @@ TEST_CASE("[SceneTree][USD] Load a minimal USD scene as PackedScene") {
 	REQUIRE(root != nullptr);
 	REQUIRE(root->is_class("Node3D"));
 	CHECK(root->get_name() == "basic");
-	CHECK(root->get_child_count() == 1);
+	CHECK(root->get_child_count() >= 1);
 
 	Dictionary root_metadata = root->get_meta(StringName("usd"), Dictionary());
 	CHECK((bool)root_metadata.get("usd:read_only_loader", false));
 	CHECK((String)root_metadata.get("usd:default_prim_path", String()) == String("/Root"));
+	CHECK((bool)root_metadata.get("usd:has_authored_lights", true) == false);
+	CHECK((bool)root_metadata.get("usd:has_preview_lighting", false));
 
 	Node *usd_root = root->get_child(0);
 	REQUIRE(usd_root != nullptr);
@@ -110,7 +114,7 @@ TEST_CASE("[SceneTree][USD] Load a textured UsdPreviewSurface material") {
 	Node *root = packed_scene->instantiate();
 	REQUIRE(root != nullptr);
 	REQUIRE(root->is_class("Node3D"));
-	CHECK(root->get_child_count() == 1);
+	CHECK(root->get_child_count() >= 1);
 
 	MeshInstance3D *mesh_instance = Object::cast_to<MeshInstance3D>(root->get_child(0));
 	REQUIRE(mesh_instance != nullptr);
@@ -143,7 +147,7 @@ TEST_CASE("[SceneTree][USD] Load a packaged USDZ texture asset") {
 	Node *root = packed_scene->instantiate();
 	REQUIRE(root != nullptr);
 	REQUIRE(root->is_class("Node3D"));
-	CHECK(root->get_child_count() == 1);
+	CHECK(root->get_child_count() >= 1);
 
 	MeshInstance3D *mesh_instance = Object::cast_to<MeshInstance3D>(root->get_child(0));
 	REQUIRE(mesh_instance != nullptr);
@@ -169,7 +173,7 @@ TEST_CASE("[SceneTree][USD] Preserve clockwise winding for right-handed USD mesh
 
 	Node *root = packed_scene->instantiate();
 	REQUIRE(root != nullptr);
-	REQUIRE(root->get_child_count() == 1);
+	REQUIRE(root->get_child_count() >= 1);
 
 	Node *scene_root = root->get_child(0);
 	REQUIRE(scene_root != nullptr);
@@ -201,7 +205,7 @@ TEST_CASE("[SceneTree][USD] Import face-varying primvars:normals") {
 
 	Node *root = packed_scene->instantiate();
 	REQUIRE(root != nullptr);
-	REQUIRE(root->get_child_count() == 1);
+	REQUIRE(root->get_child_count() >= 1);
 
 	Node *scene_root = root->get_child(0);
 	REQUIRE(scene_root != nullptr);
@@ -235,7 +239,7 @@ TEST_CASE("[SceneTree][USD] Import emissive preview materials and additional lig
 	Node *root = packed_scene->instantiate();
 	REQUIRE(root != nullptr);
 	REQUIRE(root->is_class("Node3D"));
-	CHECK(root->get_child_count() == 1);
+	CHECK(root->get_child_count() >= 1);
 
 	Node *scene_root = root->get_child(0);
 	REQUIRE(scene_root != nullptr);
@@ -268,6 +272,49 @@ TEST_CASE("[SceneTree][USD] Import emissive preview materials and additional lig
 	memdelete(root);
 }
 
+TEST_CASE("[SceneTree][USD] Add preview sun and environment when a stage has no authored lights") {
+	const String usd_path = TestUtils::get_data_path("usd/basic.usda");
+
+	Error err = OK;
+	Ref<PackedScene> packed_scene = ResourceLoader::load(usd_path, "PackedScene", ResourceFormatLoader::CACHE_MODE_IGNORE, &err);
+	REQUIRE_MESSAGE(err == OK, "USD preview lighting load failed.");
+	REQUIRE(packed_scene.is_valid());
+
+	Node *root = packed_scene->instantiate();
+	REQUIRE(root != nullptr);
+	REQUIRE(root->is_class("Node3D"));
+	REQUIRE(root->get_child_count() == 3);
+
+	Node *authored_root = root->get_child(0);
+	REQUIRE(authored_root != nullptr);
+	CHECK(authored_root->get_name() == "Root");
+
+	WorldEnvironment *world_environment = Object::cast_to<WorldEnvironment>(root->get_child(1));
+	REQUIRE(world_environment != nullptr);
+	CHECK(world_environment->get_name() == "USDPreviewEnvironment");
+	REQUIRE(world_environment->get_environment().is_valid());
+	CHECK(world_environment->get_environment()->get_background() == Environment::BG_COLOR);
+
+	DirectionalLight3D *preview_sun = Object::cast_to<DirectionalLight3D>(root->get_child(2));
+	REQUIRE(preview_sun != nullptr);
+	CHECK(preview_sun->get_name() == "USDPreviewSun");
+	CHECK(preview_sun->has_shadow());
+
+	Dictionary root_metadata = root->get_meta(StringName("usd"), Dictionary());
+	CHECK((bool)root_metadata.get("usd:has_authored_lights", true) == false);
+	CHECK((bool)root_metadata.get("usd:has_preview_lighting", false));
+
+	Dictionary environment_metadata = world_environment->get_meta(StringName("usd"), Dictionary());
+	CHECK((bool)environment_metadata.get("usd:generated_preview", false));
+	CHECK((String)environment_metadata.get("usd:generated_preview_kind", String()) == String("world_environment"));
+
+	Dictionary light_metadata = preview_sun->get_meta(StringName("usd"), Dictionary());
+	CHECK((bool)light_metadata.get("usd:generated_preview", false));
+	CHECK((String)light_metadata.get("usd:generated_preview_kind", String()) == String("directional_light"));
+
+	memdelete(root);
+}
+
 TEST_CASE("[SceneTree][USD] Import preview texture channels and UV transforms") {
 	const String usd_path = TestUtils::get_data_path("usd/preview_texture_channels.usda");
 
@@ -279,7 +326,7 @@ TEST_CASE("[SceneTree][USD] Import preview texture channels and UV transforms") 
 	Node *root = packed_scene->instantiate();
 	REQUIRE(root != nullptr);
 	REQUIRE(root->is_class("Node3D"));
-	CHECK(root->get_child_count() == 1);
+	CHECK(root->get_child_count() >= 1);
 
 	Node *scene_root = root->get_child(0);
 	REQUIRE(scene_root != nullptr);

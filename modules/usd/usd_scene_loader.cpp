@@ -40,8 +40,10 @@
 #include "scene/3d/light_3d.h"
 #include "scene/3d/mesh_instance_3d.h"
 #include "scene/3d/node_3d.h"
+#include "scene/3d/world_environment.h"
 #include "scene/main/node.h"
 #include "scene/resources/3d/primitive_meshes.h"
+#include "scene/resources/environment.h"
 #include "scene/resources/image_texture.h"
 #include "scene/resources/material.h"
 #include "scene/resources/mesh.h"
@@ -64,6 +66,7 @@
 #include <pxr/usd/usd/property.h>
 #include <pxr/usd/usd/attribute.h>
 #include <pxr/usd/usd/prim.h>
+#include <pxr/usd/usd/primRange.h>
 #include <pxr/usd/usd/relationship.h>
 #include <pxr/usd/usd/stage.h>
 #include <pxr/usd/usdGeom/camera.h>
@@ -84,6 +87,7 @@
 #include <pxr/usd/usdLux/cylinderLight.h>
 #include <pxr/usd/usdLux/diskLight.h>
 #include <pxr/usd/usdLux/distantLight.h>
+#include <pxr/usd/usdLux/lightAPI.h>
 #include <pxr/usd/usdLux/rectLight.h>
 #include <pxr/usd/usdLux/shapingAPI.h>
 #include <pxr/usd/usdLux/sphereLight.h>
@@ -941,6 +945,50 @@ class UsdSceneBuilder {
 		return UsdGeomPrimvar();
 	}
 
+	bool _stage_has_authored_lights() const {
+		for (const UsdPrim &prim : stage->Traverse()) {
+			if (prim.HasAPI<UsdLuxLightAPI>()) {
+				return true;
+			}
+		}
+		return false;
+	}
+
+	void _append_preview_lighting(Node3D *p_root) const {
+		ERR_FAIL_NULL(p_root);
+
+		Dictionary preview_metadata;
+		preview_metadata["usd:generated_preview"] = true;
+		preview_metadata["usd:preview_only"] = true;
+		preview_metadata["usd:generated_preview_reason"] = "No authored UsdLux lights were found on the USD stage.";
+
+		Ref<Environment> preview_environment;
+		preview_environment.instantiate();
+		preview_environment->set_background(Environment::BG_COLOR);
+		preview_environment->set_bg_color(Color(0.09f, 0.10f, 0.12f));
+		preview_environment->set_ambient_source(Environment::AMBIENT_SOURCE_COLOR);
+		preview_environment->set_ambient_light_color(Color(0.42f, 0.44f, 0.48f));
+		preview_environment->set_ambient_light_energy(0.7f);
+		preview_environment->set_ambient_light_sky_contribution(0.0f);
+
+		WorldEnvironment *world_environment = memnew(WorldEnvironment);
+		world_environment->set_name("USDPreviewEnvironment");
+		world_environment->set_environment(preview_environment);
+		_set_usd_metadata_entries(world_environment, preview_metadata);
+		_set_usd_metadata(world_environment, "usd:generated_preview_kind", "world_environment");
+		p_root->add_child(world_environment);
+
+		DirectionalLight3D *preview_sun = memnew(DirectionalLight3D);
+		preview_sun->set_name("USDPreviewSun");
+		preview_sun->set_rotation_degrees(Vector3(-50.0f, 30.0f, 0.0f));
+		preview_sun->set_color(Color(1.0f, 0.97f, 0.92f));
+		preview_sun->set_param(Light3D::PARAM_INTENSITY, 40000.0f);
+		preview_sun->set_shadow(true);
+		_set_usd_metadata_entries(preview_sun, preview_metadata);
+		_set_usd_metadata(preview_sun, "usd:generated_preview_kind", "directional_light");
+		p_root->add_child(preview_sun);
+	}
+
 	void _mark_primvar_handled(const UsdGeomPrimvar &p_primvar, HashSet<String> *r_handled_attributes) const {
 		if (!p_primvar) {
 			return;
@@ -1570,6 +1618,9 @@ public:
 		stage_metadata["usd:up_axis"] = _to_godot_string(up_axis.GetString());
 		stage_metadata["usd:meters_per_unit"] = meters_per_unit;
 		stage_metadata["usd:read_only_loader"] = true;
+		const bool has_authored_lights = _stage_has_authored_lights();
+		stage_metadata["usd:has_authored_lights"] = has_authored_lights;
+		stage_metadata["usd:has_preview_lighting"] = !has_authored_lights;
 		if (UsdPrim default_prim = stage->GetDefaultPrim()) {
 			stage_metadata["usd:default_prim_path"] = _to_godot_string(default_prim.GetPath().GetString());
 		}
@@ -1582,6 +1633,10 @@ public:
 			Node *child_node = _build_node_for_prim(child_prim);
 			root->add_child(child_node);
 			_append_children(child_prim, child_node);
+		}
+
+		if (!has_authored_lights) {
+			_append_preview_lighting(root);
 		}
 
 		return root;
