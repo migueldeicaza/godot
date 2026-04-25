@@ -64,6 +64,7 @@
 #include <pxr/base/vt/value.h>
 #include <pxr/usd/sdf/assetPath.h>
 #include <pxr/usd/sdf/path.h>
+#include <pxr/usd/sdf/types.h>
 #include <pxr/usd/usd/property.h>
 #include <pxr/usd/usd/attribute.h>
 #include <pxr/usd/usd/prim.h>
@@ -213,6 +214,113 @@ Dictionary _serialize_attribute(const UsdAttribute &p_attribute, const UsdTimeCo
 	VtValue value;
 	if (p_attribute.Get(&value, p_time)) {
 		description["value"] = _to_godot_string(TfStringify(value));
+
+		const SdfValueTypeName type_name = p_attribute.GetTypeName();
+		if (type_name == SdfValueTypeNames->Bool) {
+			description["typed_value_kind"] = "bool";
+			description["typed_value"] = value.UncheckedGet<bool>();
+		} else if (type_name == SdfValueTypeNames->Int) {
+			description["typed_value_kind"] = "int";
+			description["typed_value"] = value.UncheckedGet<int>();
+		} else if (type_name == SdfValueTypeNames->Int64) {
+			description["typed_value_kind"] = "int64";
+			description["typed_value"] = (int64_t)value.UncheckedGet<int64_t>();
+		} else if (type_name == SdfValueTypeNames->Float) {
+			description["typed_value_kind"] = "float";
+			description["typed_value"] = value.UncheckedGet<float>();
+		} else if (type_name == SdfValueTypeNames->Double) {
+			description["typed_value_kind"] = "double";
+			description["typed_value"] = value.UncheckedGet<double>();
+		} else if (type_name == SdfValueTypeNames->String) {
+			description["typed_value_kind"] = "string";
+			description["typed_value"] = _to_godot_string(value.UncheckedGet<std::string>());
+		} else if (type_name == SdfValueTypeNames->Token) {
+			description["typed_value_kind"] = "token";
+			description["typed_value"] = _to_godot_string(value.UncheckedGet<TfToken>().GetString());
+		} else if (type_name == SdfValueTypeNames->Asset) {
+			description["typed_value_kind"] = "asset";
+			description["typed_value"] = _to_godot_string(value.UncheckedGet<SdfAssetPath>().GetAssetPath());
+		} else if (type_name == SdfValueTypeNames->Float2 || type_name == SdfValueTypeNames->TexCoord2f) {
+			const GfVec2f vec = value.UncheckedGet<GfVec2f>();
+			description["typed_value_kind"] = "vector2";
+			description["typed_value"] = Vector2(vec[0], vec[1]);
+		} else if (type_name == SdfValueTypeNames->Float3 || type_name == SdfValueTypeNames->Color3f || type_name == SdfValueTypeNames->Normal3f || type_name == SdfValueTypeNames->Point3f || type_name == SdfValueTypeNames->Vector3f) {
+			const GfVec3f vec = value.UncheckedGet<GfVec3f>();
+			description["typed_value_kind"] = "vector3";
+			description["typed_value"] = Vector3(vec[0], vec[1], vec[2]);
+		} else if (type_name == SdfValueTypeNames->BoolArray) {
+			const VtArray<bool> values = value.UncheckedGet<VtArray<bool>>();
+			Array serialized_values;
+			for (size_t i = 0; i < values.size(); i++) {
+				serialized_values.push_back(values[i]);
+			}
+			description["typed_value_kind"] = "bool_array";
+			description["typed_value"] = serialized_values;
+		} else if (type_name == SdfValueTypeNames->IntArray) {
+			const VtArray<int> values = value.UncheckedGet<VtArray<int>>();
+			Array serialized_values;
+			for (size_t i = 0; i < values.size(); i++) {
+				serialized_values.push_back(values[i]);
+			}
+			description["typed_value_kind"] = "int_array";
+			description["typed_value"] = serialized_values;
+		} else if (type_name == SdfValueTypeNames->Int64Array) {
+			const VtArray<int64_t> values = value.UncheckedGet<VtArray<int64_t>>();
+			Array serialized_values;
+			for (size_t i = 0; i < values.size(); i++) {
+				serialized_values.push_back((int64_t)values[i]);
+			}
+			description["typed_value_kind"] = "int64_array";
+			description["typed_value"] = serialized_values;
+		} else if (type_name == SdfValueTypeNames->FloatArray) {
+			const VtArray<float> values = value.UncheckedGet<VtArray<float>>();
+			Array serialized_values;
+			for (size_t i = 0; i < values.size(); i++) {
+				serialized_values.push_back(values[i]);
+			}
+			description["typed_value_kind"] = "float_array";
+			description["typed_value"] = serialized_values;
+		} else if (type_name == SdfValueTypeNames->DoubleArray) {
+			const VtArray<double> values = value.UncheckedGet<VtArray<double>>();
+			Array serialized_values;
+			for (size_t i = 0; i < values.size(); i++) {
+				serialized_values.push_back(values[i]);
+			}
+			description["typed_value_kind"] = "double_array";
+			description["typed_value"] = serialized_values;
+		} else if (type_name == SdfValueTypeNames->StringArray) {
+			const VtArray<std::string> values = value.UncheckedGet<VtArray<std::string>>();
+			Array serialized_values;
+			for (size_t i = 0; i < values.size(); i++) {
+				serialized_values.push_back(_to_godot_string(values[i]));
+			}
+			description["typed_value_kind"] = "string_array";
+			description["typed_value"] = serialized_values;
+		} else if (type_name == SdfValueTypeNames->TokenArray) {
+			const VtArray<TfToken> values = value.UncheckedGet<VtArray<TfToken>>();
+			Array serialized_values;
+			for (size_t i = 0; i < values.size(); i++) {
+				serialized_values.push_back(_to_godot_string(values[i].GetString()));
+			}
+			description["typed_value_kind"] = "token_array";
+			description["typed_value"] = serialized_values;
+		} else if (type_name == SdfValueTypeNames->Float2Array || type_name == SdfValueTypeNames->TexCoord2fArray) {
+			const VtArray<GfVec2f> values = value.UncheckedGet<VtArray<GfVec2f>>();
+			Array serialized_values;
+			for (size_t i = 0; i < values.size(); i++) {
+				serialized_values.push_back(Vector2(values[i][0], values[i][1]));
+			}
+			description["typed_value_kind"] = "vector2_array";
+			description["typed_value"] = serialized_values;
+		} else if (type_name == SdfValueTypeNames->Float3Array || type_name == SdfValueTypeNames->Color3fArray || type_name == SdfValueTypeNames->Normal3fArray || type_name == SdfValueTypeNames->Point3fArray || type_name == SdfValueTypeNames->Vector3fArray) {
+			const VtArray<GfVec3f> values = value.UncheckedGet<VtArray<GfVec3f>>();
+			Array serialized_values;
+			for (size_t i = 0; i < values.size(); i++) {
+				serialized_values.push_back(Vector3(values[i][0], values[i][1], values[i][2]));
+			}
+			description["typed_value_kind"] = "vector3_array";
+			description["typed_value"] = serialized_values;
+		}
 	}
 
 	return description;
@@ -230,7 +338,10 @@ Dictionary _serialize_relationships(const UsdPrim &p_prim) {
 			target_paths.push_back(_to_godot_string(target.GetString()));
 		}
 
-		relationships[_to_godot_string(relationship.GetName().GetString())] = target_paths;
+		Dictionary relationship_description;
+		relationship_description["is_custom"] = relationship.IsCustom();
+		relationship_description["targets"] = target_paths;
+		relationships[_to_godot_string(relationship.GetName().GetString())] = relationship_description;
 	}
 	return relationships;
 }
@@ -1730,6 +1841,8 @@ class UsdSceneSaver {
 		String default_prim_path;
 	};
 
+	static constexpr const char *GODOT_MATERIAL_SCOPE_NAME = "__GodotMaterials";
+
 	static bool _is_generated_preview_node(const Node *p_node) {
 		const Dictionary metadata = _get_usd_metadata(p_node);
 		return (bool)metadata.get("usd:generated_preview", false);
@@ -1808,6 +1921,437 @@ class UsdSceneSaver {
 		p_usd_light.CreateColorAttr().Set(GfVec3f(p_light->get_color().r, p_light->get_color().g, p_light->get_color().b));
 		p_usd_light.CreateIntensityAttr().Set((float)p_light->get_param(Light3D::PARAM_INTENSITY));
 		p_usd_light.CreateExposureAttr().Set(0.0f);
+	}
+
+	static String _make_relative_asset_path(const String &p_save_path, const String &p_asset_path) {
+		if (p_asset_path.is_empty()) {
+			return String();
+		}
+
+		const String absolute_asset_path = _get_absolute_path(p_asset_path);
+		if (!absolute_asset_path.is_absolute_path()) {
+			return absolute_asset_path;
+		}
+
+		const String save_dir = _get_absolute_path(p_save_path).get_base_dir();
+		if (save_dir.is_empty()) {
+			return absolute_asset_path;
+		}
+
+		return save_dir.path_to_file(absolute_asset_path);
+	}
+
+	static String _get_texture_asset_path(const Ref<Texture2D> &p_texture, const String &p_save_path) {
+		if (p_texture.is_null()) {
+			return String();
+		}
+
+		const String texture_path = p_texture->get_path();
+		if (texture_path.is_empty() || texture_path.contains("::")) {
+			return String();
+		}
+
+		return _make_relative_asset_path(p_save_path, texture_path);
+	}
+
+	static TfToken _get_usd_texture_output_for_channel(BaseMaterial3D::TextureChannel p_channel) {
+		switch (p_channel) {
+			case BaseMaterial3D::TEXTURE_CHANNEL_RED:
+				return TfToken("r");
+			case BaseMaterial3D::TEXTURE_CHANNEL_GREEN:
+				return TfToken("g");
+			case BaseMaterial3D::TEXTURE_CHANNEL_BLUE:
+				return TfToken("b");
+			case BaseMaterial3D::TEXTURE_CHANNEL_ALPHA:
+				return TfToken("a");
+			case BaseMaterial3D::TEXTURE_CHANNEL_GRAYSCALE:
+			default:
+				return TfToken("rgb");
+		}
+	}
+
+	static SdfValueTypeName _get_usd_output_type_for_channel(BaseMaterial3D::TextureChannel p_channel) {
+		if (p_channel == BaseMaterial3D::TEXTURE_CHANNEL_GRAYSCALE) {
+			return SdfValueTypeNames->Float3;
+		}
+		return SdfValueTypeNames->Float;
+	}
+
+	static bool _write_texture_uv_transform(const UsdStageRefPtr &p_stage, const BaseMaterial3D *p_material, UsdShadeShader p_texture_shader, const SdfPath &p_shader_path) {
+		ERR_FAIL_NULL_V(p_material, false);
+		if (!p_texture_shader) {
+			return false;
+		}
+
+		const Vector3 uv_scale = p_material->get_uv1_scale();
+		const Vector3 uv_offset = p_material->get_uv1_offset();
+		if (uv_scale.is_equal_approx(Vector3(1.0f, 1.0f, 1.0f)) && uv_offset.is_equal_approx(Vector3())) {
+			return false;
+		}
+
+		UsdShadeShader uv_transform = UsdShadeShader::Define(p_stage, p_shader_path.AppendChild(TfToken("UVTransform")));
+		uv_transform.CreateIdAttr(VtValue(TfToken("UsdTransform2d")));
+		uv_transform.CreateInput(TfToken("scale"), SdfValueTypeNames->Float2).Set(GfVec2f(uv_scale.x, uv_scale.y));
+		uv_transform.CreateInput(TfToken("translation"), SdfValueTypeNames->Float2).Set(GfVec2f(uv_offset.x, 1.0f - uv_scale.y - uv_offset.y));
+		uv_transform.CreateInput(TfToken("rotation"), SdfValueTypeNames->Float).Set(0.0f);
+
+		UsdShadeOutput uv_output = uv_transform.CreateOutput(TfToken("result"), SdfValueTypeNames->Float2);
+		p_texture_shader.CreateInput(TfToken("st"), SdfValueTypeNames->Float2).ConnectToSource(uv_output);
+		return true;
+	}
+
+	static bool _connect_preview_texture(const UsdStageRefPtr &p_stage, const String &p_save_path, const BaseMaterial3D *p_material, const Ref<Texture2D> &p_texture, const SdfPath &p_material_path, const char *p_shader_name, const char *p_input_name, const SdfValueTypeName &p_input_type, const TfToken &p_output_name, const SdfValueTypeName &p_output_type) {
+		ERR_FAIL_NULL_V(p_material, false);
+		if (p_texture.is_null()) {
+			return false;
+		}
+
+		const String asset_path = _get_texture_asset_path(p_texture, p_save_path);
+		if (asset_path.is_empty()) {
+			return false;
+		}
+
+		UsdShadeShader preview_surface = UsdShadeShader::Get(p_stage, p_material_path.AppendChild(TfToken("PreviewSurface")));
+		if (!preview_surface) {
+			return false;
+		}
+
+		const SdfPath texture_shader_path = p_material_path.AppendChild(TfToken(p_shader_name));
+		UsdShadeShader texture_shader = UsdShadeShader::Define(p_stage, texture_shader_path);
+		texture_shader.CreateIdAttr(VtValue(TfToken("UsdUVTexture")));
+		texture_shader.CreateInput(TfToken("file"), SdfValueTypeNames->Asset).Set(SdfAssetPath(asset_path.utf8().get_data()));
+		_write_texture_uv_transform(p_stage, p_material, texture_shader, texture_shader_path);
+
+		UsdShadeOutput texture_output = texture_shader.CreateOutput(p_output_name, p_output_type);
+		preview_surface.CreateInput(TfToken(p_input_name), p_input_type).ConnectToSource(texture_output);
+		return true;
+	}
+
+	static bool _deserialize_unmapped_attribute_value(const Dictionary &p_description, SdfValueTypeName *r_type_name, VtValue *r_value) {
+		ERR_FAIL_NULL_V(r_type_name, false);
+		ERR_FAIL_NULL_V(r_value, false);
+
+		const String type_name = p_description.get("type_name", String());
+		const String value_kind = p_description.get("typed_value_kind", String());
+		if (type_name.is_empty() || value_kind.is_empty() || !p_description.has("typed_value")) {
+			return false;
+		}
+
+		const Variant typed_value = p_description["typed_value"];
+
+		if (type_name == "bool" && value_kind == "bool") {
+			*r_type_name = SdfValueTypeNames->Bool;
+			*r_value = VtValue((bool)typed_value);
+			return true;
+		}
+		if (type_name == "int" && value_kind == "int") {
+			*r_type_name = SdfValueTypeNames->Int;
+			*r_value = VtValue((int)typed_value);
+			return true;
+		}
+		if (type_name == "int64" && value_kind == "int64") {
+			*r_type_name = SdfValueTypeNames->Int64;
+			*r_value = VtValue((int64_t)typed_value);
+			return true;
+		}
+		if (type_name == "float" && value_kind == "float") {
+			*r_type_name = SdfValueTypeNames->Float;
+			*r_value = VtValue((float)(double)typed_value);
+			return true;
+		}
+		if (type_name == "double" && value_kind == "double") {
+			*r_type_name = SdfValueTypeNames->Double;
+			*r_value = VtValue((double)typed_value);
+			return true;
+		}
+		if (type_name == "string" && value_kind == "string") {
+			*r_type_name = SdfValueTypeNames->String;
+			*r_value = VtValue(std::string(((String)typed_value).utf8().get_data()));
+			return true;
+		}
+		if (type_name == "token" && value_kind == "token") {
+			*r_type_name = SdfValueTypeNames->Token;
+			*r_value = VtValue(TfToken(((String)typed_value).utf8().get_data()));
+			return true;
+		}
+		if (type_name == "asset" && value_kind == "asset") {
+			*r_type_name = SdfValueTypeNames->Asset;
+			*r_value = VtValue(SdfAssetPath(((String)typed_value).utf8().get_data()));
+			return true;
+		}
+		if ((type_name == "float2" || type_name == "texCoord2f") && value_kind == "vector2") {
+			const Vector2 vector = typed_value;
+			*r_type_name = (type_name == "texCoord2f") ? SdfValueTypeNames->TexCoord2f : SdfValueTypeNames->Float2;
+			*r_value = VtValue(GfVec2f(vector.x, vector.y));
+			return true;
+		}
+		if ((type_name == "float3" || type_name == "color3f" || type_name == "normal3f" || type_name == "point3f" || type_name == "vector3f") && value_kind == "vector3") {
+			const Vector3 vector = typed_value;
+			if (type_name == "color3f") {
+				*r_type_name = SdfValueTypeNames->Color3f;
+			} else if (type_name == "normal3f") {
+				*r_type_name = SdfValueTypeNames->Normal3f;
+			} else if (type_name == "point3f") {
+				*r_type_name = SdfValueTypeNames->Point3f;
+			} else if (type_name == "vector3f") {
+				*r_type_name = SdfValueTypeNames->Vector3f;
+			} else {
+				*r_type_name = SdfValueTypeNames->Float3;
+			}
+			*r_value = VtValue(GfVec3f(vector.x, vector.y, vector.z));
+			return true;
+		}
+
+		if (typed_value.get_type() != Variant::ARRAY) {
+			return false;
+		}
+
+		const Array values = typed_value;
+		if (type_name == "bool[]" && value_kind == "bool_array") {
+			VtArray<bool> vt_values;
+			vt_values.resize(values.size());
+			for (int i = 0; i < values.size(); i++) {
+				vt_values[i] = (bool)values[i];
+			}
+			*r_type_name = SdfValueTypeNames->BoolArray;
+			*r_value = VtValue(vt_values);
+			return true;
+		}
+		if (type_name == "int[]" && value_kind == "int_array") {
+			VtArray<int> vt_values;
+			vt_values.resize(values.size());
+			for (int i = 0; i < values.size(); i++) {
+				vt_values[i] = (int)values[i];
+			}
+			*r_type_name = SdfValueTypeNames->IntArray;
+			*r_value = VtValue(vt_values);
+			return true;
+		}
+		if (type_name == "int64[]" && value_kind == "int64_array") {
+			VtArray<int64_t> vt_values;
+			vt_values.resize(values.size());
+			for (int i = 0; i < values.size(); i++) {
+				vt_values[i] = (int64_t)values[i];
+			}
+			*r_type_name = SdfValueTypeNames->Int64Array;
+			*r_value = VtValue(vt_values);
+			return true;
+		}
+		if (type_name == "float[]" && value_kind == "float_array") {
+			VtArray<float> vt_values;
+			vt_values.resize(values.size());
+			for (int i = 0; i < values.size(); i++) {
+				vt_values[i] = (float)(double)values[i];
+			}
+			*r_type_name = SdfValueTypeNames->FloatArray;
+			*r_value = VtValue(vt_values);
+			return true;
+		}
+		if (type_name == "double[]" && value_kind == "double_array") {
+			VtArray<double> vt_values;
+			vt_values.resize(values.size());
+			for (int i = 0; i < values.size(); i++) {
+				vt_values[i] = (double)values[i];
+			}
+			*r_type_name = SdfValueTypeNames->DoubleArray;
+			*r_value = VtValue(vt_values);
+			return true;
+		}
+		if (type_name == "string[]" && value_kind == "string_array") {
+			VtArray<std::string> vt_values;
+			vt_values.resize(values.size());
+			for (int i = 0; i < values.size(); i++) {
+				vt_values[i] = std::string(((String)values[i]).utf8().get_data());
+			}
+			*r_type_name = SdfValueTypeNames->StringArray;
+			*r_value = VtValue(vt_values);
+			return true;
+		}
+		if (type_name == "token[]" && value_kind == "token_array") {
+			VtArray<TfToken> vt_values;
+			vt_values.resize(values.size());
+			for (int i = 0; i < values.size(); i++) {
+				vt_values[i] = TfToken(((String)values[i]).utf8().get_data());
+			}
+			*r_type_name = SdfValueTypeNames->TokenArray;
+			*r_value = VtValue(vt_values);
+			return true;
+		}
+		if ((type_name == "float2[]" || type_name == "texCoord2f[]") && value_kind == "vector2_array") {
+			VtArray<GfVec2f> vt_values;
+			vt_values.resize(values.size());
+			for (int i = 0; i < values.size(); i++) {
+				const Vector2 vector = values[i];
+				vt_values[i] = GfVec2f(vector.x, vector.y);
+			}
+			*r_type_name = (type_name == "texCoord2f[]") ? SdfValueTypeNames->TexCoord2fArray : SdfValueTypeNames->Float2Array;
+			*r_value = VtValue(vt_values);
+			return true;
+		}
+		if ((type_name == "float3[]" || type_name == "color3f[]" || type_name == "normal3f[]" || type_name == "point3f[]" || type_name == "vector3f[]") && value_kind == "vector3_array") {
+			VtArray<GfVec3f> vt_values;
+			vt_values.resize(values.size());
+			for (int i = 0; i < values.size(); i++) {
+				const Vector3 vector = values[i];
+				vt_values[i] = GfVec3f(vector.x, vector.y, vector.z);
+			}
+			if (type_name == "color3f[]") {
+				*r_type_name = SdfValueTypeNames->Color3fArray;
+			} else if (type_name == "normal3f[]") {
+				*r_type_name = SdfValueTypeNames->Normal3fArray;
+			} else if (type_name == "point3f[]") {
+				*r_type_name = SdfValueTypeNames->Point3fArray;
+			} else if (type_name == "vector3f[]") {
+				*r_type_name = SdfValueTypeNames->Vector3fArray;
+			} else {
+				*r_type_name = SdfValueTypeNames->Float3Array;
+			}
+			*r_value = VtValue(vt_values);
+			return true;
+		}
+
+		return false;
+	}
+
+	static void _reapply_unmapped_properties(const UsdPrim &p_prim, const Object *p_source_object) {
+		ERR_FAIL_NULL(p_source_object);
+		if (!p_prim) {
+			return;
+		}
+
+		const Dictionary metadata = _get_usd_metadata(p_source_object);
+		const Dictionary unmapped_attributes = metadata.get("usd:unmapped_attributes", Dictionary());
+		if (!unmapped_attributes.is_empty()) {
+			Array attribute_names = unmapped_attributes.keys();
+			for (int i = 0; i < attribute_names.size(); i++) {
+				const String attribute_name = attribute_names[i];
+				const Dictionary description = unmapped_attributes[attribute_name];
+				SdfValueTypeName type_name;
+				VtValue value;
+				if (!_deserialize_unmapped_attribute_value(description, &type_name, &value)) {
+					continue;
+				}
+
+				const bool is_custom = description.get("is_custom", true);
+				UsdAttribute attribute = p_prim.CreateAttribute(TfToken(attribute_name.utf8().get_data()), type_name, is_custom);
+				if (attribute) {
+					attribute.Set(value, UsdTimeCode::Default());
+				}
+			}
+		}
+
+		const Dictionary unmapped_relationships = metadata.get("usd:unmapped_relationships", Dictionary());
+		if (!unmapped_relationships.is_empty()) {
+			Array relationship_names = unmapped_relationships.keys();
+			for (int i = 0; i < relationship_names.size(); i++) {
+				const String relationship_name = relationship_names[i];
+				const Variant stored_relationship = unmapped_relationships[relationship_name];
+
+				bool is_custom = true;
+				Array targets;
+				if (stored_relationship.get_type() == Variant::DICTIONARY) {
+					const Dictionary relationship_description = stored_relationship;
+					is_custom = relationship_description.get("is_custom", true);
+					targets = relationship_description.get("targets", Array());
+				} else if (stored_relationship.get_type() == Variant::ARRAY) {
+					targets = stored_relationship;
+				} else {
+					continue;
+				}
+
+				SdfPathVector target_paths;
+				for (int target_index = 0; target_index < targets.size(); target_index++) {
+					const String target = targets[target_index];
+					if (target.is_empty()) {
+						continue;
+					}
+					target_paths.push_back(SdfPath(target.utf8().get_data()));
+				}
+
+				UsdRelationship relationship = p_prim.CreateRelationship(TfToken(relationship_name.utf8().get_data()), is_custom);
+				if (relationship && !target_paths.empty()) {
+					relationship.SetTargets(target_paths);
+				}
+			}
+		}
+	}
+
+	static bool _write_preview_material(const UsdStageRefPtr &p_stage, const Ref<Material> &p_material, const SdfPath &p_mesh_path, const String &p_save_path, UsdShadeMaterial *r_material) {
+		ERR_FAIL_NULL_V(r_material, false);
+		*r_material = UsdShadeMaterial();
+
+		BaseMaterial3D *base_material = Object::cast_to<BaseMaterial3D>(p_material.ptr());
+		if (base_material == nullptr) {
+			return false;
+		}
+
+		const String material_name = _make_valid_identifier(p_material->get_name().is_empty() ? String("Material") : p_material->get_name());
+		const SdfPath material_path = p_mesh_path.AppendChild(TfToken(GODOT_MATERIAL_SCOPE_NAME)).AppendChild(TfToken(material_name.utf8().get_data()));
+		UsdShadeMaterial usd_material = UsdShadeMaterial::Define(p_stage, material_path);
+		UsdShadeShader preview_surface = UsdShadeShader::Define(p_stage, material_path.AppendChild(TfToken("PreviewSurface")));
+		preview_surface.CreateIdAttr(VtValue(TfToken("UsdPreviewSurface")));
+		usd_material.CreateSurfaceOutput().ConnectToSource(preview_surface.CreateOutput(TfToken("surface"), SdfValueTypeNames->Token));
+
+		const Color albedo = base_material->get_albedo();
+		preview_surface.CreateInput(TfToken("diffuseColor"), SdfValueTypeNames->Color3f).Set(GfVec3f(albedo.r, albedo.g, albedo.b));
+		preview_surface.CreateInput(TfToken("metallic"), SdfValueTypeNames->Float).Set(base_material->get_metallic());
+		preview_surface.CreateInput(TfToken("roughness"), SdfValueTypeNames->Float).Set(base_material->get_roughness());
+
+		const bool has_emission = base_material->get_feature(BaseMaterial3D::FEATURE_EMISSION) || base_material->get_texture(BaseMaterial3D::TEXTURE_EMISSION).is_valid();
+		if (has_emission) {
+			const Color emission = base_material->get_emission();
+			preview_surface.CreateInput(TfToken("emissiveColor"), SdfValueTypeNames->Color3f).Set(GfVec3f(emission.r, emission.g, emission.b));
+		}
+
+		if (base_material->get_transparency() != BaseMaterial3D::TRANSPARENCY_DISABLED) {
+			preview_surface.CreateInput(TfToken("opacity"), SdfValueTypeNames->Float).Set(CLAMP(albedo.a, 0.0f, 1.0f));
+		}
+		if (base_material->get_transparency() == BaseMaterial3D::TRANSPARENCY_ALPHA_SCISSOR) {
+			preview_surface.CreateInput(TfToken("opacityThreshold"), SdfValueTypeNames->Float).Set(CLAMP(base_material->get_alpha_scissor_threshold(), 0.0f, 1.0f));
+		}
+
+		_connect_preview_texture(p_stage, p_save_path, base_material, base_material->get_texture(BaseMaterial3D::TEXTURE_ALBEDO), material_path, "AlbedoTexture", "diffuseColor", SdfValueTypeNames->Color3f, TfToken("rgb"), SdfValueTypeNames->Float3);
+		_connect_preview_texture(p_stage, p_save_path, base_material, base_material->get_texture(BaseMaterial3D::TEXTURE_EMISSION), material_path, "EmissionTexture", "emissiveColor", SdfValueTypeNames->Color3f, TfToken("rgb"), SdfValueTypeNames->Float3);
+		_connect_preview_texture(p_stage, p_save_path, base_material, base_material->get_texture(BaseMaterial3D::TEXTURE_NORMAL), material_path, "NormalTexture", "normal", SdfValueTypeNames->Normal3f, TfToken("rgb"), SdfValueTypeNames->Float3);
+		_connect_preview_texture(p_stage, p_save_path, base_material, base_material->get_texture(BaseMaterial3D::TEXTURE_METALLIC), material_path, "MetallicTexture", "metallic", SdfValueTypeNames->Float, _get_usd_texture_output_for_channel(base_material->get_metallic_texture_channel()), _get_usd_output_type_for_channel(base_material->get_metallic_texture_channel()));
+		_connect_preview_texture(p_stage, p_save_path, base_material, base_material->get_texture(BaseMaterial3D::TEXTURE_ROUGHNESS), material_path, "RoughnessTexture", "roughness", SdfValueTypeNames->Float, _get_usd_texture_output_for_channel(base_material->get_roughness_texture_channel()), _get_usd_output_type_for_channel(base_material->get_roughness_texture_channel()));
+
+		*r_material = usd_material;
+		return true;
+	}
+
+	static void _write_mesh_material_binding(const UsdStageRefPtr &p_stage, MeshInstance3D *p_mesh_instance, const UsdGeomMesh &p_usd_mesh, const SdfPath &p_mesh_path, const String &p_save_path) {
+		ERR_FAIL_NULL(p_mesh_instance);
+		if (!p_usd_mesh) {
+			return;
+		}
+
+		Ref<Mesh> mesh = p_mesh_instance->get_mesh();
+		if (mesh.is_null() || mesh->get_surface_count() == 0) {
+			return;
+		}
+
+		Ref<Material> mesh_material = p_mesh_instance->get_active_material(0);
+		if (mesh_material.is_null()) {
+			return;
+		}
+
+		for (int surface_index = 1; surface_index < mesh->get_surface_count(); surface_index++) {
+			const Ref<Material> surface_material = p_mesh_instance->get_active_material(surface_index);
+			if (surface_material.is_null()) {
+				continue;
+			}
+			if (surface_material != mesh_material) {
+				break;
+			}
+		}
+
+		UsdShadeMaterial usd_material;
+		if (!_write_preview_material(p_stage, mesh_material, p_mesh_path, p_save_path, &usd_material) || !usd_material) {
+			return;
+		}
+
+		UsdShadeMaterialBindingAPI::Apply(p_usd_mesh.GetPrim()).Bind(usd_material);
 	}
 
 	static bool _write_mesh_geometry(const Ref<Mesh> &p_mesh, UsdGeomMesh p_usd_mesh) {
@@ -1912,7 +2456,7 @@ class UsdSceneSaver {
 		p_usd_camera.SetFromCamera(camera, UsdTimeCode::Default());
 	}
 
-	static UsdPrim _define_prim_for_node(const UsdStageRefPtr &p_stage, Node *p_node, const SdfPath &p_path, double p_meters_per_unit, bool *r_supports_transform = nullptr) {
+	static UsdPrim _define_prim_for_node(const UsdStageRefPtr &p_stage, Node *p_node, const SdfPath &p_path, double p_meters_per_unit, const String &p_save_path, bool *r_supports_transform = nullptr) {
 		if (r_supports_transform != nullptr) {
 			*r_supports_transform = false;
 		}
@@ -1979,6 +2523,7 @@ class UsdSceneSaver {
 				}
 				return usd_xform.GetPrim();
 			}
+			_write_mesh_material_binding(p_stage, mesh_instance, usd_mesh, p_path, p_save_path);
 			if (r_supports_transform != nullptr) {
 				*r_supports_transform = true;
 			}
@@ -2010,7 +2555,7 @@ class UsdSceneSaver {
 		xformable.SetResetXformStack(resets_xform_stack);
 	}
 
-	static bool _serialize_node_recursive(const UsdStageRefPtr &p_stage, Node *p_node, const SdfPath &p_parent_path, const Transform3D &p_stage_correction_inverse, double p_meters_per_unit, Vector<SdfPath> *r_top_level_paths) {
+	static bool _serialize_node_recursive(const UsdStageRefPtr &p_stage, Node *p_node, const SdfPath &p_parent_path, const Transform3D &p_stage_correction_inverse, double p_meters_per_unit, const String &p_save_path, Vector<SdfPath> *r_top_level_paths) {
 		if (_is_generated_preview_node(p_node)) {
 			return true;
 		}
@@ -2021,7 +2566,7 @@ class UsdSceneSaver {
 				: p_parent_path.AppendChild(TfToken(base_name.utf8().get_data()));
 
 		bool supports_transform = false;
-		UsdPrim prim = _define_prim_for_node(p_stage, p_node, prim_path, p_meters_per_unit, &supports_transform);
+		UsdPrim prim = _define_prim_for_node(p_stage, p_node, prim_path, p_meters_per_unit, p_save_path, &supports_transform);
 		if (!prim) {
 			return false;
 		}
@@ -2036,6 +2581,8 @@ class UsdSceneSaver {
 			}
 		}
 
+		_reapply_unmapped_properties(prim, p_node);
+
 		HashMap<String, int> name_counts;
 		for (int i = 0; i < p_node->get_child_count(); i++) {
 			Node *child = p_node->get_child(i);
@@ -2047,14 +2594,14 @@ class UsdSceneSaver {
 			const int seen_count = name_counts.has(child_base) ? name_counts[child_base] : 0;
 			name_counts.insert(child_base, seen_count + 1);
 			if (seen_count == 0) {
-				if (!_serialize_node_recursive(p_stage, child, prim_path, p_stage_correction_inverse, p_meters_per_unit, nullptr)) {
+				if (!_serialize_node_recursive(p_stage, child, prim_path, p_stage_correction_inverse, p_meters_per_unit, p_save_path, nullptr)) {
 					return false;
 				}
 			} else {
 				String unique_name = vformat("%s_%d", child_base, seen_count + 1);
 				const String original_name = child->get_name();
 				child->set_name(unique_name);
-				const bool ok = _serialize_node_recursive(p_stage, child, prim_path, p_stage_correction_inverse, p_meters_per_unit, nullptr);
+				const bool ok = _serialize_node_recursive(p_stage, child, prim_path, p_stage_correction_inverse, p_meters_per_unit, p_save_path, nullptr);
 				child->set_name(original_name);
 				if (!ok) {
 					return false;
@@ -2092,7 +2639,7 @@ public:
 		const Transform3D stage_correction_inverse = _get_stage_correction_transform(context.meters_per_unit, context.up_axis).affine_inverse();
 		Vector<SdfPath> top_level_paths;
 		for (int i = 0; i < context.top_level_nodes.size(); i++) {
-			if (!_serialize_node_recursive(stage, context.top_level_nodes[i], SdfPath(), stage_correction_inverse, context.meters_per_unit, &top_level_paths)) {
+			if (!_serialize_node_recursive(stage, context.top_level_nodes[i], SdfPath(), stage_correction_inverse, context.meters_per_unit, p_path, &top_level_paths)) {
 				memdelete(root);
 				return ERR_INVALID_DATA;
 			}

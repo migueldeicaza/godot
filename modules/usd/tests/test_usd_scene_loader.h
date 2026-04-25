@@ -533,6 +533,132 @@ TEST_CASE("[SceneTree][USD] Save a simple Godot PackedScene to USDA and load it 
 	memdelete(scene_root);
 }
 
+TEST_CASE("[SceneTree][USD] Save StandardMaterial3D preview properties to USDA and load them back") {
+	PreviewLightingModeScope preview_lighting_mode_scope;
+	preview_lighting_mode_scope.set(0);
+
+	Node3D *scene_root = memnew(Node3D);
+	scene_root->set_name("Root");
+
+	Ref<ArrayMesh> mesh = _make_test_triangle_mesh();
+	Ref<StandardMaterial3D> source_material;
+	source_material.instantiate();
+	source_material->set_name("BodyMaterial");
+	source_material->set_albedo(Color(0.8f, 0.2f, 0.1f, 0.5f));
+	source_material->set_metallic(0.35f);
+	source_material->set_roughness(0.65f);
+	source_material->set_feature(BaseMaterial3D::FEATURE_EMISSION, true);
+	source_material->set_emission(Color(0.15f, 0.05f, 0.02f));
+	source_material->set_transparency(BaseMaterial3D::TRANSPARENCY_ALPHA_SCISSOR);
+	source_material->set_alpha_scissor_threshold(0.4f);
+	mesh->surface_set_material(0, source_material);
+
+	MeshInstance3D *mesh_instance = memnew(MeshInstance3D);
+	mesh_instance->set_name("Triangle");
+	mesh_instance->set_mesh(mesh);
+	scene_root->add_child(mesh_instance);
+	mesh_instance->set_owner(scene_root);
+
+	Ref<PackedScene> source_scene;
+	source_scene.instantiate();
+	REQUIRE(source_scene->pack(scene_root) == OK);
+
+	const String save_path = TestUtils::get_temp_path("usd_material_roundtrip.usda");
+	REQUIRE(ResourceSaver::save(source_scene, save_path) == OK);
+	REQUIRE(FileAccess::exists(save_path));
+
+	Error err = OK;
+	Ref<PackedScene> loaded_scene = ResourceLoader::load(save_path, "PackedScene", ResourceFormatLoader::CACHE_MODE_IGNORE, &err);
+	REQUIRE_MESSAGE(err == OK, "USD material saver round-trip load failed.");
+	REQUIRE(loaded_scene.is_valid());
+
+	Node *loaded_root = loaded_scene->instantiate();
+	REQUIRE(loaded_root != nullptr);
+	REQUIRE(loaded_root->get_child_count() == 1);
+
+	MeshInstance3D *loaded_mesh = Object::cast_to<MeshInstance3D>(loaded_root->get_child(0)->get_child(0));
+	REQUIRE(loaded_mesh != nullptr);
+	REQUIRE(loaded_mesh->get_mesh().is_valid());
+
+	Ref<Material> loaded_material_ref = loaded_mesh->get_mesh()->surface_get_material(0);
+	REQUIRE(loaded_material_ref.is_valid());
+
+	BaseMaterial3D *loaded_material = Object::cast_to<BaseMaterial3D>(loaded_material_ref.ptr());
+	REQUIRE(loaded_material != nullptr);
+	CHECK(loaded_material->get_albedo().r == doctest::Approx(0.8f));
+	CHECK(loaded_material->get_albedo().g == doctest::Approx(0.2f));
+	CHECK(loaded_material->get_albedo().b == doctest::Approx(0.1f));
+	CHECK(loaded_material->get_albedo().a == doctest::Approx(0.5f));
+	CHECK(loaded_material->get_metallic() == doctest::Approx(0.35f));
+	CHECK(loaded_material->get_roughness() == doctest::Approx(0.65f));
+	CHECK(loaded_material->get_feature(BaseMaterial3D::FEATURE_EMISSION));
+	CHECK(loaded_material->get_emission().r == doctest::Approx(0.15f));
+	CHECK(loaded_material->get_emission().g == doctest::Approx(0.05f));
+	CHECK(loaded_material->get_emission().b == doctest::Approx(0.02f));
+	CHECK(loaded_material->get_transparency() == BaseMaterial3D::TRANSPARENCY_ALPHA_SCISSOR);
+	CHECK(loaded_material->get_alpha_scissor_threshold() == doctest::Approx(0.4f));
+
+	memdelete(loaded_root);
+	memdelete(scene_root);
+}
+
+TEST_CASE("[SceneTree][USD] Round-trip typed unmapped USD attributes and relationships") {
+	PreviewLightingModeScope preview_lighting_mode_scope;
+	preview_lighting_mode_scope.set(0);
+
+	const String source_path = TestUtils::get_data_path("usd/unmapped_roundtrip.usda");
+	const String save_path = TestUtils::get_temp_path("usd_unmapped_roundtrip_saved.usda");
+
+	Error err = OK;
+	Ref<PackedScene> loaded_scene = ResourceLoader::load(source_path, "PackedScene", ResourceFormatLoader::CACHE_MODE_IGNORE, &err);
+	REQUIRE_MESSAGE(err == OK, "USD unmapped-property source load failed.");
+	REQUIRE(loaded_scene.is_valid());
+	REQUIRE(ResourceSaver::save(loaded_scene, save_path) == OK);
+
+	Ref<PackedScene> reloaded_scene = ResourceLoader::load(save_path, "PackedScene", ResourceFormatLoader::CACHE_MODE_IGNORE, &err);
+	REQUIRE_MESSAGE(err == OK, "USD unmapped-property reload failed.");
+	REQUIRE(reloaded_scene.is_valid());
+
+	Node *root = reloaded_scene->instantiate();
+	REQUIRE(root != nullptr);
+	REQUIRE(root->get_child_count() == 1);
+
+	Node *usd_root = root->get_child(0);
+	REQUIRE(usd_root != nullptr);
+
+	Dictionary metadata = usd_root->get_meta(StringName("usd"), Dictionary());
+	Dictionary unmapped_attributes = metadata.get("usd:unmapped_attributes", Dictionary());
+	REQUIRE(unmapped_attributes.has("debugLabel"));
+	REQUIRE(unmapped_attributes.has("debugDirection"));
+	REQUIRE(unmapped_attributes.has("debugIds"));
+
+	const Dictionary debug_label = unmapped_attributes["debugLabel"];
+	CHECK((String)debug_label.get("typed_value_kind", String()) == String("string"));
+	CHECK((String)debug_label.get("typed_value", String()) == String("car"));
+
+	const Dictionary debug_direction = unmapped_attributes["debugDirection"];
+	CHECK((String)debug_direction.get("typed_value_kind", String()) == String("vector3"));
+	CHECK(((Vector3)debug_direction.get("typed_value", Vector3())).is_equal_approx(Vector3(1.0f, 2.0f, 3.0f)));
+
+	const Dictionary debug_ids = unmapped_attributes["debugIds"];
+	CHECK((String)debug_ids.get("typed_value_kind", String()) == String("int_array"));
+	const Array ids = debug_ids.get("typed_value", Array());
+	REQUIRE(ids.size() == 3);
+	CHECK((int)ids[0] == 1);
+	CHECK((int)ids[1] == 3);
+	CHECK((int)ids[2] == 5);
+
+	Dictionary unmapped_relationships = metadata.get("usd:unmapped_relationships", Dictionary());
+	REQUIRE(unmapped_relationships.has("debugTarget"));
+	const Dictionary debug_target = unmapped_relationships["debugTarget"];
+	CHECK((bool)debug_target.get("is_custom", false));
+	const Array targets = debug_target.get("targets", Array());
+	REQUIRE(targets.size() == 1);
+	CHECK((String)targets[0] == String("/Root/Target"));
+
+	memdelete(root);
+}
+
 TEST_CASE("[SceneTree][USD] Skip synthetic preview lighting when saving USDA") {
 	const String source_path = TestUtils::get_data_path("usd/basic.usda");
 	const String save_path = TestUtils::get_temp_path("usd_skip_preview_nodes.usda");
