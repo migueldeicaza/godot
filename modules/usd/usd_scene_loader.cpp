@@ -411,6 +411,7 @@ struct UsdMeshBuildResult {
 	Ref<ArrayMesh> mesh;
 	Array material_paths;
 	Array material_subsets;
+	Array geom_subsets;
 };
 
 struct UsdMeshSurfaceFaceRange {
@@ -418,6 +419,60 @@ struct UsdMeshSurfaceFaceRange {
 	int face_count = 0;
 	Vector<int> saved_face_indices;
 };
+
+static Array _build_preserved_geom_subsets(const UsdGeomMesh &p_mesh, const std::vector<UsdGeomSubset> &p_material_subsets, UsdTimeCode p_time) {
+	Array preserved_subsets;
+	HashSet<String> material_subset_paths;
+	for (const UsdGeomSubset &material_subset : p_material_subsets) {
+		material_subset_paths.insert(_to_godot_string(material_subset.GetPath().GetString()));
+	}
+
+	for (const UsdPrim &child : p_mesh.GetPrim().GetChildren()) {
+		if (!child.IsA<UsdGeomSubset>()) {
+			continue;
+		}
+
+		UsdGeomSubset subset(child);
+		const String subset_path = _to_godot_string(subset.GetPath().GetString());
+		if (material_subset_paths.has(subset_path)) {
+			continue;
+		}
+
+		TfToken element_type;
+		subset.GetElementTypeAttr().Get(&element_type, p_time);
+		if (element_type != UsdGeomTokens->face) {
+			continue;
+		}
+
+		VtIntArray authored_indices;
+		if (!subset.GetIndicesAttr().Get(&authored_indices, p_time) || authored_indices.empty()) {
+			continue;
+		}
+
+		TfToken family_name;
+		subset.GetFamilyNameAttr().Get(&family_name, p_time);
+		const TfToken family_type = family_name.IsEmpty() ? TfToken() : UsdGeomSubset::GetFamilyType(UsdGeomImageable(p_mesh.GetPrim()), family_name);
+
+		Dictionary subset_description;
+		subset_description["subset_name"] = _to_godot_string(subset.GetPrim().GetName().GetString());
+		subset_description["element_type"] = _to_godot_string(element_type.GetString());
+		if (!family_name.IsEmpty()) {
+			subset_description["family_name"] = _to_godot_string(family_name.GetString());
+		}
+		if (!family_type.IsEmpty()) {
+			subset_description["family_type"] = _to_godot_string(family_type.GetString());
+		}
+
+		PackedInt32Array indices;
+		for (int i = 0; i < (int)authored_indices.size(); i++) {
+			indices.push_back(authored_indices[i]);
+		}
+		subset_description["indices"] = indices;
+		preserved_subsets.push_back(subset_description);
+	}
+
+	return preserved_subsets;
+}
 
 class UsdSceneBuilder {
 	const UsdStageRefPtr stage;
@@ -1271,6 +1326,7 @@ class UsdSceneBuilder {
 
 		HashMap<int, int> face_to_surface;
 		const std::vector<UsdGeomSubset> material_subsets = mesh_binding_api.GetMaterialBindSubsets();
+		result.geom_subsets = _build_preserved_geom_subsets(p_mesh, material_subsets, time);
 		for (const UsdGeomSubset &subset : material_subsets) {
 			VtIntArray subset_faces;
 			if (!subset.GetIndicesAttr().Get(&subset_faces, time)) {
@@ -1784,6 +1840,9 @@ class UsdSceneBuilder {
 				}
 				if (!mesh_result.material_subsets.is_empty()) {
 					mapping_notes["usd:material_subsets"] = mesh_result.material_subsets;
+				}
+				if (!mesh_result.geom_subsets.is_empty()) {
+					mapping_notes["usd:geom_subsets"] = mesh_result.geom_subsets;
 				}
 			} else {
 				mapping_notes["usd:mesh_status"] = "Mesh geometry was detected, but no triangulated surface could be generated.";
@@ -2588,6 +2647,87 @@ class UsdSceneSaver {
 		}
 	}
 
+	static void _write_preserved_geom_subsets(MeshInstance3D *p_mesh_instance, const UsdGeomMesh &p_usd_mesh, const Vector<UsdMeshSurfaceFaceRange> &p_surface_face_ranges) {
+		ERR_FAIL_NULL(p_mesh_instance);
+		if (!p_usd_mesh) {
+			return;
+		}
+
+		const Dictionary usd_metadata = _get_usd_metadata(p_mesh_instance);
+		const Array preserved_subsets = usd_metadata.get("usd:geom_subsets", Array());
+		if (preserved_subsets.is_empty()) {
+			return;
+		}
+
+		const Ref<Mesh> mesh = p_mesh_instance->get_mesh();
+		if (mesh.is_null() || mesh->get_surface_count() != p_surface_face_ranges.size()) {
+			return;
+		}
+
+		const Array surface_descriptions = usd_metadata.get("usd:material_subsets", Array());
+		if (surface_descriptions.size() != mesh->get_surface_count()) {
+			return;
+		}
+
+		HashMap<int, int> authored_to_saved_face_index;
+		for (int surface_index = 0; surface_index < mesh->get_surface_count(); surface_index++) {
+			if (surface_descriptions[surface_index].get_type() != Variant::DICTIONARY) {
+				continue;
+			}
+
+			const Dictionary surface_description = surface_descriptions[surface_index];
+			const PackedInt32Array authored_face_indices = surface_description.get("authored_face_indices", PackedInt32Array());
+			const Vector<int> &saved_face_indices = p_surface_face_ranges[surface_index].saved_face_indices;
+			if (authored_face_indices.size() != saved_face_indices.size()) {
+				continue;
+			}
+
+			for (int i = 0; i < authored_face_indices.size(); i++) {
+				authored_to_saved_face_index.insert(authored_face_indices[i], saved_face_indices[i]);
+			}
+		}
+
+		for (int subset_index = 0; subset_index < preserved_subsets.size(); subset_index++) {
+			if (preserved_subsets[subset_index].get_type() != Variant::DICTIONARY) {
+				continue;
+			}
+
+			const Dictionary subset_description = preserved_subsets[subset_index];
+			const String element_type_string = subset_description.get("element_type", String());
+			if (element_type_string != "face") {
+				continue;
+			}
+
+			const PackedInt32Array authored_indices = subset_description.get("indices", PackedInt32Array());
+			if (authored_indices.is_empty()) {
+				continue;
+			}
+
+			VtIntArray subset_faces;
+			subset_faces.reserve(authored_indices.size());
+			bool complete_mapping = true;
+			for (int i = 0; i < authored_indices.size(); i++) {
+				if (!authored_to_saved_face_index.has(authored_indices[i])) {
+					complete_mapping = false;
+					break;
+				}
+				subset_faces.push_back(authored_to_saved_face_index[authored_indices[i]]);
+			}
+			if (!complete_mapping || subset_faces.empty()) {
+				continue;
+			}
+
+			const String subset_name = _make_valid_identifier(subset_description.get("subset_name", vformat("GeomSubset_%d", subset_index)));
+			const String family_name_string = subset_description.get("family_name", String());
+			const String family_type_string = subset_description.get("family_type", String("nonOverlapping"));
+			const TfToken family_name = family_name_string.is_empty() ? TfToken() : TfToken(family_name_string.utf8().get_data());
+			const TfToken family_type = family_type_string.is_empty() ? UsdGeomTokens->nonOverlapping : TfToken(family_type_string.utf8().get_data());
+			const TfToken element_type(element_type_string.utf8().get_data());
+
+			UsdGeomSubset::CreateUniqueGeomSubset(p_usd_mesh, TfToken(subset_name.utf8().get_data()), element_type, subset_faces, family_name, family_type);
+		}
+	}
+
 	struct UsdPendingFace {
 		int authored_face_index = -1;
 		int insertion_index = -1;
@@ -2842,6 +2982,7 @@ class UsdSceneSaver {
 				return usd_xform.GetPrim();
 			}
 			_write_mesh_material_binding(p_stage, mesh_instance, usd_mesh, p_path, p_save_path, surface_face_ranges);
+			_write_preserved_geom_subsets(mesh_instance, usd_mesh, surface_face_ranges);
 			if (r_supports_transform != nullptr) {
 				*r_supports_transform = true;
 			}

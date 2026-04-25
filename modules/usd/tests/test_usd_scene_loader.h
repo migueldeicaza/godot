@@ -983,6 +983,27 @@ TEST_CASE("[SceneTree][USD] Preserve sparse authored subset face indices across 
 	CHECK(saved_text.contains("rel material:binding = </Root/Looks/Accent>"));
 }
 
+TEST_CASE("[SceneTree][USD] Preserve generic face geom subsets across USD round-trip") {
+	PreviewLightingModeScope preview_lighting_mode_scope;
+	preview_lighting_mode_scope.set(0);
+
+	const String source_path = TestUtils::get_data_path("usd/generic_face_subset.usda");
+	const String save_path = TestUtils::get_temp_path("usd_generic_face_subset_saved.usda");
+
+	Error err = OK;
+	Ref<PackedScene> loaded_scene = ResourceLoader::load(source_path, "PackedScene", ResourceFormatLoader::CACHE_MODE_IGNORE, &err);
+	REQUIRE_MESSAGE(err == OK, "USD generic geom subset source load failed.");
+	REQUIRE(loaded_scene.is_valid());
+	REQUIRE(ResourceSaver::save(loaded_scene, save_path) == OK);
+
+	Ref<FileAccess> saved_file = FileAccess::open(save_path, FileAccess::READ);
+	REQUIRE(saved_file.is_valid());
+	const String saved_text = saved_file->get_as_text();
+	CHECK(saved_text.contains("def GeomSubset \"Corners\""));
+	CHECK(saved_text.contains("uniform token familyName = \"selection\""));
+	CHECK(saved_text.contains("int[] indices = [0, 3]"));
+}
+
 TEST_CASE("[SceneTree][USD] Skip synthetic preview lighting when saving USDA") {
 	const String source_path = TestUtils::get_data_path("usd/basic.usda");
 	const String save_path = TestUtils::get_temp_path("usd_skip_preview_nodes.usda");
