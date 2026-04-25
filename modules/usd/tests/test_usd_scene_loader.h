@@ -42,8 +42,12 @@ TEST_FORCE_LINK(test_usd_scene_loader)
 
 #include "tests/test_utils.h"
 
+#include "core/config/project_settings.h"
+#include "core/io/file_access.h"
 #include "core/io/image.h"
 #include "core/io/resource_loader.h"
+#include "core/io/resource_saver.h"
+#include "scene/3d/camera_3d.h"
 #include "scene/3d/light_3d.h"
 #include "scene/3d/mesh_instance_3d.h"
 #include "scene/3d/node_3d.h"
@@ -55,7 +59,63 @@ TEST_FORCE_LINK(test_usd_scene_loader)
 
 namespace TestUsdSceneLoader {
 
+static constexpr const char *USD_PREVIEW_LIGHTING_MODE_SETTING = "filesystem/import/usd/preview_lighting_mode";
+
+class PreviewLightingModeScope {
+	Variant original_mode;
+
+public:
+	PreviewLightingModeScope() {
+		original_mode = ProjectSettings::get_singleton()->get_setting(USD_PREVIEW_LIGHTING_MODE_SETTING, 1);
+	}
+
+	~PreviewLightingModeScope() {
+		ProjectSettings::get_singleton()->set_setting(USD_PREVIEW_LIGHTING_MODE_SETTING, original_mode);
+	}
+
+	void set(int p_mode) {
+		ProjectSettings::get_singleton()->set_setting(USD_PREVIEW_LIGHTING_MODE_SETTING, p_mode);
+	}
+};
+
+static Ref<ArrayMesh> _make_test_triangle_mesh() {
+	Array arrays;
+	arrays.resize(Mesh::ARRAY_MAX);
+
+	PackedVector3Array vertices;
+	vertices.push_back(Vector3(0.0f, 0.0f, 0.0f));
+	vertices.push_back(Vector3(1.0f, 0.0f, 0.0f));
+	vertices.push_back(Vector3(0.0f, 1.0f, 0.0f));
+	arrays[Mesh::ARRAY_VERTEX] = vertices;
+
+	PackedVector3Array normals;
+	normals.push_back(Vector3(0.0f, 0.0f, 1.0f));
+	normals.push_back(Vector3(0.0f, 0.0f, 1.0f));
+	normals.push_back(Vector3(0.0f, 0.0f, 1.0f));
+	arrays[Mesh::ARRAY_NORMAL] = normals;
+
+	PackedVector2Array uvs;
+	uvs.push_back(Vector2(0.0f, 0.0f));
+	uvs.push_back(Vector2(1.0f, 0.0f));
+	uvs.push_back(Vector2(0.0f, 1.0f));
+	arrays[Mesh::ARRAY_TEX_UV] = uvs;
+
+	PackedInt32Array indices;
+	indices.push_back(0);
+	indices.push_back(1);
+	indices.push_back(2);
+	arrays[Mesh::ARRAY_INDEX] = indices;
+
+	Ref<ArrayMesh> mesh;
+	mesh.instantiate();
+	mesh->add_surface_from_arrays(Mesh::PRIMITIVE_TRIANGLES, arrays);
+	return mesh;
+}
+
 TEST_CASE("[SceneTree][USD] Load a minimal USD scene as PackedScene") {
+	PreviewLightingModeScope preview_lighting_mode_scope;
+	preview_lighting_mode_scope.set(1);
+
 	const String usd_path = TestUtils::get_data_path("usd/basic.usda");
 
 	CHECK(ResourceLoader::get_resource_type(usd_path) == "PackedScene");
@@ -76,6 +136,7 @@ TEST_CASE("[SceneTree][USD] Load a minimal USD scene as PackedScene") {
 	CHECK((String)root_metadata.get("usd:default_prim_path", String()) == String("/Root"));
 	CHECK((bool)root_metadata.get("usd:has_authored_lights", true) == false);
 	CHECK((bool)root_metadata.get("usd:has_preview_lighting", false));
+	CHECK((String)root_metadata.get("usd:preview_lighting_mode", String()) == String("when_missing"));
 
 	Node *usd_root = root->get_child(0);
 	REQUIRE(usd_root != nullptr);
@@ -273,6 +334,9 @@ TEST_CASE("[SceneTree][USD] Import emissive preview materials and additional lig
 }
 
 TEST_CASE("[SceneTree][USD] Add preview sun and environment when a stage has no authored lights") {
+	PreviewLightingModeScope preview_lighting_mode_scope;
+	preview_lighting_mode_scope.set(1);
+
 	const String usd_path = TestUtils::get_data_path("usd/basic.usda");
 
 	Error err = OK;
@@ -303,6 +367,7 @@ TEST_CASE("[SceneTree][USD] Add preview sun and environment when a stage has no 
 	Dictionary root_metadata = root->get_meta(StringName("usd"), Dictionary());
 	CHECK((bool)root_metadata.get("usd:has_authored_lights", true) == false);
 	CHECK((bool)root_metadata.get("usd:has_preview_lighting", false));
+	CHECK((String)root_metadata.get("usd:preview_lighting_mode", String()) == String("when_missing"));
 
 	Dictionary environment_metadata = world_environment->get_meta(StringName("usd"), Dictionary());
 	CHECK((bool)environment_metadata.get("usd:generated_preview", false));
@@ -313,6 +378,195 @@ TEST_CASE("[SceneTree][USD] Add preview sun and environment when a stage has no 
 	CHECK((String)light_metadata.get("usd:generated_preview_kind", String()) == String("directional_light"));
 
 	memdelete(root);
+}
+
+TEST_CASE("[SceneTree][USD] Respect preview lighting project setting overrides") {
+	const String no_light_stage = TestUtils::get_data_path("usd/basic.usda");
+	const String authored_light_stage = TestUtils::get_data_path("usd/emissive_and_lights.usda");
+
+	{
+		PreviewLightingModeScope preview_lighting_mode_scope;
+		preview_lighting_mode_scope.set(0);
+
+		Error err = OK;
+		Ref<PackedScene> packed_scene = ResourceLoader::load(no_light_stage, "PackedScene", ResourceFormatLoader::CACHE_MODE_IGNORE, &err);
+		REQUIRE_MESSAGE(err == OK, "USD preview override load failed for never mode.");
+		REQUIRE(packed_scene.is_valid());
+
+		Node *root = packed_scene->instantiate();
+		REQUIRE(root != nullptr);
+		REQUIRE(root->get_child_count() == 1);
+
+		Dictionary root_metadata = root->get_meta(StringName("usd"), Dictionary());
+		CHECK((bool)root_metadata.get("usd:has_authored_lights", true) == false);
+		CHECK((bool)root_metadata.get("usd:has_preview_lighting", true) == false);
+		CHECK((String)root_metadata.get("usd:preview_lighting_mode", String()) == String("never"));
+
+		memdelete(root);
+	}
+
+	{
+		PreviewLightingModeScope preview_lighting_mode_scope;
+		preview_lighting_mode_scope.set(2);
+
+		Error err = OK;
+		Ref<PackedScene> packed_scene = ResourceLoader::load(authored_light_stage, "PackedScene", ResourceFormatLoader::CACHE_MODE_IGNORE, &err);
+		REQUIRE_MESSAGE(err == OK, "USD preview override load failed for always mode.");
+		REQUIRE(packed_scene.is_valid());
+
+		Node *root = packed_scene->instantiate();
+		REQUIRE(root != nullptr);
+		REQUIRE(root->get_child_count() == 3);
+		REQUIRE(Object::cast_to<WorldEnvironment>(root->get_child(1)) != nullptr);
+		REQUIRE(Object::cast_to<DirectionalLight3D>(root->get_child(2)) != nullptr);
+
+		Dictionary root_metadata = root->get_meta(StringName("usd"), Dictionary());
+		CHECK((bool)root_metadata.get("usd:has_authored_lights", false));
+		CHECK((bool)root_metadata.get("usd:has_preview_lighting", false));
+		CHECK((String)root_metadata.get("usd:preview_lighting_mode", String()) == String("always"));
+
+		memdelete(root);
+	}
+}
+
+TEST_CASE("[SceneTree][USD] Preserve stage correction on resetXformStack nodes") {
+	PreviewLightingModeScope preview_lighting_mode_scope;
+	preview_lighting_mode_scope.set(0);
+
+	const String usd_path = TestUtils::get_data_path("usd/reset_stage_transform.usda");
+
+	Error err = OK;
+	Ref<PackedScene> packed_scene = ResourceLoader::load(usd_path, "PackedScene", ResourceFormatLoader::CACHE_MODE_IGNORE, &err);
+	REQUIRE_MESSAGE(err == OK, "USD reset-stage transform load failed.");
+	REQUIRE(packed_scene.is_valid());
+
+	Node *root = packed_scene->instantiate();
+	REQUIRE(root != nullptr);
+	REQUIRE(root->get_child_count() == 1);
+
+	Node3D *scene_root = Object::cast_to<Node3D>(root);
+	REQUIRE(scene_root != nullptr);
+	CHECK(scene_root->get_transform().basis.get_scale().x == doctest::Approx(0.01f));
+	CHECK(scene_root->get_transform().basis.get_scale().y == doctest::Approx(0.01f));
+	CHECK(scene_root->get_transform().basis.get_scale().z == doctest::Approx(0.01f));
+
+	Node3D *usd_root = Object::cast_to<Node3D>(root->get_child(0));
+	REQUIRE(usd_root != nullptr);
+	REQUIRE(usd_root->get_child_count() == 1);
+
+	Node3D *parent = Object::cast_to<Node3D>(usd_root->get_child(0));
+	REQUIRE(parent != nullptr);
+	REQUIRE(parent->get_child_count() == 1);
+
+	Node3D *reset_branch = Object::cast_to<Node3D>(parent->get_child(0));
+	REQUIRE(reset_branch != nullptr);
+	CHECK(reset_branch->is_set_as_top_level());
+
+	Dictionary reset_metadata = reset_branch->get_meta(StringName("usd"), Dictionary());
+	CHECK((bool)reset_metadata.get("usd:resets_xform_stack", false));
+
+	const Transform3D corrected_transform = reset_branch->get_transform();
+	CHECK(corrected_transform.origin.x == doctest::Approx(0.0f));
+	CHECK(corrected_transform.origin.y == doctest::Approx(2.0f));
+	CHECK(corrected_transform.origin.z == doctest::Approx(0.0f).epsilon(0.0001f));
+	CHECK(corrected_transform.basis.determinant() < 0.0f);
+
+	memdelete(root);
+}
+
+TEST_CASE("[SceneTree][USD] Save a simple Godot PackedScene to USDA and load it back") {
+	PreviewLightingModeScope preview_lighting_mode_scope;
+	preview_lighting_mode_scope.set(0);
+
+	Node3D *scene_root = memnew(Node3D);
+	scene_root->set_name("Root");
+
+	MeshInstance3D *mesh_instance = memnew(MeshInstance3D);
+	mesh_instance->set_name("Triangle");
+	mesh_instance->set_mesh(_make_test_triangle_mesh());
+	scene_root->add_child(mesh_instance);
+	mesh_instance->set_owner(scene_root);
+
+	Camera3D *camera = memnew(Camera3D);
+	camera->set_name("Camera");
+	camera->set_perspective(60.0f, 0.1f, 100.0f);
+	scene_root->add_child(camera);
+	camera->set_owner(scene_root);
+
+	DirectionalLight3D *sun = memnew(DirectionalLight3D);
+	sun->set_name("Sun");
+	sun->set_color(Color(1.0f, 0.95f, 0.9f));
+	sun->set_param(Light3D::PARAM_INTENSITY, 1234.0f);
+	scene_root->add_child(sun);
+	sun->set_owner(scene_root);
+
+	Ref<PackedScene> source_scene;
+	source_scene.instantiate();
+	REQUIRE(source_scene->pack(scene_root) == OK);
+
+	const String save_path = TestUtils::get_temp_path("usd_save_roundtrip.usda");
+	REQUIRE(ResourceSaver::save(source_scene, save_path) == OK);
+	REQUIRE(FileAccess::exists(save_path));
+
+	Error err = OK;
+	Ref<PackedScene> loaded_scene = ResourceLoader::load(save_path, "PackedScene", ResourceFormatLoader::CACHE_MODE_IGNORE, &err);
+	REQUIRE_MESSAGE(err == OK, "USD saver round-trip load failed.");
+	REQUIRE(loaded_scene.is_valid());
+
+	Node *loaded_root = loaded_scene->instantiate();
+	REQUIRE(loaded_root != nullptr);
+	REQUIRE(loaded_root->get_child_count() == 1);
+
+	Dictionary root_metadata = loaded_root->get_meta(StringName("usd"), Dictionary());
+	CHECK((bool)root_metadata.get("usd:has_authored_lights", false));
+	CHECK((bool)root_metadata.get("usd:has_preview_lighting", true) == false);
+
+	Node *usd_root = loaded_root->get_child(0);
+	REQUIRE(usd_root != nullptr);
+	CHECK(usd_root->get_name() == "Root");
+	REQUIRE(usd_root->get_child_count() == 3);
+	REQUIRE(Object::cast_to<MeshInstance3D>(usd_root->get_child(0)) != nullptr);
+	REQUIRE(Object::cast_to<Camera3D>(usd_root->get_child(1)) != nullptr);
+	REQUIRE(Object::cast_to<DirectionalLight3D>(usd_root->get_child(2)) != nullptr);
+
+	memdelete(loaded_root);
+	memdelete(scene_root);
+}
+
+TEST_CASE("[SceneTree][USD] Skip synthetic preview lighting when saving USDA") {
+	const String source_path = TestUtils::get_data_path("usd/basic.usda");
+	const String save_path = TestUtils::get_temp_path("usd_skip_preview_nodes.usda");
+
+	{
+		PreviewLightingModeScope preview_lighting_mode_scope;
+		preview_lighting_mode_scope.set(1);
+
+		Error err = OK;
+		Ref<PackedScene> loaded_scene = ResourceLoader::load(source_path, "PackedScene", ResourceFormatLoader::CACHE_MODE_IGNORE, &err);
+		REQUIRE_MESSAGE(err == OK, "USD source load failed before save.");
+		REQUIRE(loaded_scene.is_valid());
+		REQUIRE(ResourceSaver::save(loaded_scene, save_path) == OK);
+	}
+
+	{
+		PreviewLightingModeScope preview_lighting_mode_scope;
+		preview_lighting_mode_scope.set(0);
+
+		Error err = OK;
+		Ref<PackedScene> reloaded_scene = ResourceLoader::load(save_path, "PackedScene", ResourceFormatLoader::CACHE_MODE_IGNORE, &err);
+		REQUIRE_MESSAGE(err == OK, "USD preview-skip reload failed.");
+		REQUIRE(reloaded_scene.is_valid());
+
+		Node *root = reloaded_scene->instantiate();
+		REQUIRE(root != nullptr);
+		REQUIRE(root->get_child_count() == 1);
+
+		Dictionary root_metadata = root->get_meta(StringName("usd"), Dictionary());
+		CHECK((bool)root_metadata.get("usd:has_authored_lights", true) == false);
+		CHECK((bool)root_metadata.get("usd:has_preview_lighting", true) == false);
+
+		memdelete(root);
+	}
 }
 
 TEST_CASE("[SceneTree][USD] Import preview texture channels and UV transforms") {

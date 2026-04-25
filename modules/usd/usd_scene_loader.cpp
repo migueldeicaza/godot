@@ -31,6 +31,7 @@
 #include "usd_scene_loader.h"
 
 #include "core/config/project_settings.h"
+#include "core/io/dir_access.h"
 #include "core/io/file_access.h"
 #include "core/io/image.h"
 #include "core/math/math_funcs.h"
@@ -83,6 +84,7 @@
 #include <pxr/usd/usdGeom/sphere.h>
 #include <pxr/usd/usdGeom/subset.h>
 #include <pxr/usd/usdGeom/tokens.h>
+#include <pxr/usd/usdGeom/xform.h>
 #include <pxr/usd/usdGeom/xformable.h>
 #include <pxr/usd/usdLux/cylinderLight.h>
 #include <pxr/usd/usdLux/diskLight.h>
@@ -105,6 +107,13 @@ using namespace pxr;
 namespace {
 
 static constexpr const char *USD_META_KEY = "usd";
+static constexpr const char *USD_PREVIEW_LIGHTING_MODE_SETTING = "filesystem/import/usd/preview_lighting_mode";
+
+enum UsdPreviewLightingMode {
+	USD_PREVIEW_LIGHTING_NEVER = 0,
+	USD_PREVIEW_LIGHTING_WHEN_MISSING = 1,
+	USD_PREVIEW_LIGHTING_ALWAYS = 2,
+};
 
 String _to_godot_string(const std::string &p_string) {
 	return String::utf8(p_string.c_str());
@@ -115,6 +124,31 @@ String _get_absolute_path(const String &p_path) {
 		return ProjectSettings::get_singleton()->globalize_path(p_path);
 	}
 	return p_path;
+}
+
+UsdPreviewLightingMode _get_preview_lighting_mode() {
+	ProjectSettings *project_settings = ProjectSettings::get_singleton();
+	const int configured_mode = project_settings != nullptr ? (int)project_settings->get_setting(USD_PREVIEW_LIGHTING_MODE_SETTING, USD_PREVIEW_LIGHTING_WHEN_MISSING) : USD_PREVIEW_LIGHTING_WHEN_MISSING;
+
+	switch (configured_mode) {
+		case USD_PREVIEW_LIGHTING_NEVER:
+			return USD_PREVIEW_LIGHTING_NEVER;
+		case USD_PREVIEW_LIGHTING_ALWAYS:
+			return USD_PREVIEW_LIGHTING_ALWAYS;
+		default:
+			return USD_PREVIEW_LIGHTING_WHEN_MISSING;
+	}
+}
+
+String _preview_lighting_mode_to_string(UsdPreviewLightingMode p_mode) {
+	switch (p_mode) {
+		case USD_PREVIEW_LIGHTING_NEVER:
+			return "never";
+		case USD_PREVIEW_LIGHTING_ALWAYS:
+			return "always";
+		default:
+			return "when_missing";
+	}
 }
 
 Dictionary _get_usd_metadata(const Object *p_object) {
@@ -147,6 +181,28 @@ Transform3D _gf_matrix_to_transform(const GfMatrix4d &p_matrix) {
 			(real_t)p_matrix[0][2], (real_t)p_matrix[1][2], (real_t)p_matrix[2][2]);
 	Vector3 origin((real_t)p_matrix[3][0], (real_t)p_matrix[3][1], (real_t)p_matrix[3][2]);
 	return Transform3D(basis, origin);
+}
+
+GfMatrix4d _transform_to_gf_matrix(const Transform3D &p_transform) {
+	GfMatrix4d matrix(1.0);
+	const Vector3 x = p_transform.basis.get_column(0);
+	const Vector3 y = p_transform.basis.get_column(1);
+	const Vector3 z = p_transform.basis.get_column(2);
+
+	matrix[0][0] = x.x;
+	matrix[1][0] = x.y;
+	matrix[2][0] = x.z;
+	matrix[0][1] = y.x;
+	matrix[1][1] = y.y;
+	matrix[2][1] = y.z;
+	matrix[0][2] = z.x;
+	matrix[1][2] = z.y;
+	matrix[2][2] = z.z;
+	matrix[3][0] = p_transform.origin.x;
+	matrix[3][1] = p_transform.origin.y;
+	matrix[3][2] = p_transform.origin.z;
+
+	return matrix;
 }
 
 Dictionary _serialize_attribute(const UsdAttribute &p_attribute, const UsdTimeCode &p_time) {
@@ -268,6 +324,16 @@ class UsdSceneBuilder {
 		return (real_t)p_meters_per_unit;
 	}
 
+	Transform3D _get_stage_correction_transform() const {
+		const real_t unit_scale = _meters_scale(meters_per_unit);
+		Basis root_basis;
+		if (up_axis == UsdGeomTokens->z) {
+			root_basis = Basis(Vector3(1, 0, 0), (real_t)-Math::PI * 0.5);
+		}
+		root_basis = root_basis.scaled(Vector3(unit_scale, unit_scale, unit_scale));
+		return Transform3D(root_basis, Vector3());
+	}
+
 	Dictionary _make_common_metadata(const UsdPrim &p_prim) const {
 		Dictionary metadata;
 		metadata["usd:prim_path"] = _to_godot_string(p_prim.GetPath().GetString());
@@ -286,21 +352,34 @@ class UsdSceneBuilder {
 	void _apply_transform_and_visibility(const UsdPrim &p_prim, Node *p_node, HashSet<String> *r_handled_attributes) const {
 		if (Node3D *node_3d = Object::cast_to<Node3D>(p_node)) {
 			UsdGeomXformable xformable(p_prim);
+			UsdGeomImageable imageable(p_prim);
 			if (xformable) {
 				GfMatrix4d local_matrix(1.0);
 				bool resets_xform_stack = false;
-				if (xformable.GetLocalTransformation(&local_matrix, &resets_xform_stack, time)) {
-					node_3d->set_transform(_gf_matrix_to_transform(local_matrix));
-				}
+				const bool has_local_transform = xformable.GetLocalTransformation(&local_matrix, &resets_xform_stack, time);
 				if (resets_xform_stack) {
-					node_3d->set_as_top_level(true);
+					Transform3D corrected_world_transform;
+					bool has_corrected_world_transform = false;
+					if (imageable) {
+						corrected_world_transform = _get_stage_correction_transform() * _gf_matrix_to_transform(imageable.ComputeLocalToWorldTransform(time));
+						has_corrected_world_transform = true;
+					} else if (has_local_transform) {
+						corrected_world_transform = _get_stage_correction_transform() * _gf_matrix_to_transform(local_matrix);
+						has_corrected_world_transform = true;
+					}
+
+					node_3d->set_as_top_level_keep_local(true);
+					if (has_corrected_world_transform) {
+						node_3d->set_global_transform(corrected_world_transform);
+					}
 					_set_usd_metadata(node_3d, "usd:resets_xform_stack", true);
+				} else if (has_local_transform) {
+					node_3d->set_transform(_gf_matrix_to_transform(local_matrix));
 				}
 
 				r_handled_attributes->insert("xformOpOrder");
 			}
 
-			UsdGeomImageable imageable(p_prim);
 			if (imageable) {
 				const TfToken visibility = imageable.ComputeVisibility(time);
 				if (visibility == UsdGeomTokens->invisible) {
@@ -954,13 +1033,13 @@ class UsdSceneBuilder {
 		return false;
 	}
 
-	void _append_preview_lighting(Node3D *p_root) const {
+	void _append_preview_lighting(Node3D *p_root, const String &p_reason) const {
 		ERR_FAIL_NULL(p_root);
 
 		Dictionary preview_metadata;
 		preview_metadata["usd:generated_preview"] = true;
 		preview_metadata["usd:preview_only"] = true;
-		preview_metadata["usd:generated_preview_reason"] = "No authored UsdLux lights were found on the USD stage.";
+		preview_metadata["usd:generated_preview_reason"] = p_reason;
 
 		Ref<Environment> preview_environment;
 		preview_environment.instantiate();
@@ -1605,13 +1684,7 @@ public:
 		Node3D *root = memnew(Node3D);
 		root->set_name(p_scene_name.is_empty() ? String("USDScene") : p_scene_name);
 
-		const real_t unit_scale = _meters_scale(meters_per_unit);
-		Basis root_basis;
-		if (up_axis == UsdGeomTokens->z) {
-			root_basis = Basis(Vector3(1, 0, 0), (real_t)-Math::PI * 0.5);
-		}
-		root_basis = root_basis.scaled(Vector3(unit_scale, unit_scale, unit_scale));
-		root->set_transform(Transform3D(root_basis, Vector3()));
+		root->set_transform(_get_stage_correction_transform());
 
 		Dictionary stage_metadata;
 		stage_metadata["usd:source_identifier"] = _to_godot_string(stage->GetRootLayer()->GetIdentifier());
@@ -1620,7 +1693,10 @@ public:
 		stage_metadata["usd:read_only_loader"] = true;
 		const bool has_authored_lights = _stage_has_authored_lights();
 		stage_metadata["usd:has_authored_lights"] = has_authored_lights;
-		stage_metadata["usd:has_preview_lighting"] = !has_authored_lights;
+		const UsdPreviewLightingMode preview_lighting_mode = _get_preview_lighting_mode();
+		const bool add_preview_lighting = preview_lighting_mode == USD_PREVIEW_LIGHTING_ALWAYS || (preview_lighting_mode == USD_PREVIEW_LIGHTING_WHEN_MISSING && !has_authored_lights);
+		stage_metadata["usd:preview_lighting_mode"] = _preview_lighting_mode_to_string(preview_lighting_mode);
+		stage_metadata["usd:has_preview_lighting"] = add_preview_lighting;
 		if (UsdPrim default_prim = stage->GetDefaultPrim()) {
 			stage_metadata["usd:default_prim_path"] = _to_godot_string(default_prim.GetPath().GetString());
 		}
@@ -1635,11 +1711,407 @@ public:
 			_append_children(child_prim, child_node);
 		}
 
-		if (!has_authored_lights) {
-			_append_preview_lighting(root);
+		if (add_preview_lighting) {
+			const String preview_reason = preview_lighting_mode == USD_PREVIEW_LIGHTING_ALWAYS
+					? String("Synthetic preview lighting was forced by project setting '") + USD_PREVIEW_LIGHTING_MODE_SETTING + "'."
+					: "No authored UsdLux lights were found on the USD stage.";
+			_append_preview_lighting(root, preview_reason);
 		}
 
 		return root;
+	}
+};
+
+class UsdSceneSaver {
+	struct SaveContext {
+		double meters_per_unit = 1.0;
+		TfToken up_axis = UsdGeomTokens->y;
+		Vector<Node *> top_level_nodes;
+		String default_prim_path;
+	};
+
+	static bool _is_generated_preview_node(const Node *p_node) {
+		const Dictionary metadata = _get_usd_metadata(p_node);
+		return (bool)metadata.get("usd:generated_preview", false);
+	}
+
+	static real_t _meters_scale(double p_meters_per_unit) {
+		return (real_t)p_meters_per_unit;
+	}
+
+	static Transform3D _get_stage_correction_transform(double p_meters_per_unit, const TfToken &p_up_axis) {
+		const real_t unit_scale = _meters_scale(p_meters_per_unit);
+		Basis root_basis;
+		if (p_up_axis == UsdGeomTokens->z) {
+			root_basis = Basis(Vector3(1, 0, 0), (real_t)-Math::PI * 0.5);
+		}
+		root_basis = root_basis.scaled(Vector3(unit_scale, unit_scale, unit_scale));
+		return Transform3D(root_basis, Vector3());
+	}
+
+	static TfToken _up_axis_from_string(const String &p_value) {
+		if (p_value.to_upper() == "Z") {
+			return UsdGeomTokens->z;
+		}
+		return UsdGeomTokens->y;
+	}
+
+	static String _make_valid_identifier(const String &p_name) {
+		String identifier = _to_godot_string(TfMakeValidIdentifier(p_name.strip_edges().utf8().get_data()));
+		if (identifier.is_empty()) {
+			identifier = "Node";
+		}
+		return identifier;
+	}
+
+	static bool _is_stage_container(const Node *p_root) {
+		const Dictionary metadata = _get_usd_metadata(p_root);
+		return (bool)metadata.get("usd:read_only_loader", false);
+	}
+
+	static SaveContext _make_save_context(Node *p_root) {
+		SaveContext context;
+		const Dictionary metadata = _get_usd_metadata(p_root);
+
+		if (metadata.has("usd:meters_per_unit")) {
+			context.meters_per_unit = (double)metadata["usd:meters_per_unit"];
+		}
+		if (metadata.has("usd:up_axis")) {
+			context.up_axis = _up_axis_from_string((String)metadata["usd:up_axis"]);
+		}
+		if (metadata.has("usd:default_prim_path")) {
+			context.default_prim_path = metadata["usd:default_prim_path"];
+		}
+
+		if (_is_stage_container(p_root)) {
+			for (int i = 0; i < p_root->get_child_count(); i++) {
+				Node *child = p_root->get_child(i);
+				if (_is_generated_preview_node(child)) {
+					continue;
+				}
+				context.top_level_nodes.push_back(child);
+			}
+		} else {
+			context.top_level_nodes.push_back(p_root);
+		}
+
+		return context;
+	}
+
+	static void _apply_common_light_attributes(const Light3D *p_light, const UsdLuxNonboundableLightBase &p_usd_light) {
+		p_usd_light.CreateColorAttr().Set(GfVec3f(p_light->get_color().r, p_light->get_color().g, p_light->get_color().b));
+		p_usd_light.CreateIntensityAttr().Set((float)p_light->get_param(Light3D::PARAM_INTENSITY));
+		p_usd_light.CreateExposureAttr().Set(0.0f);
+	}
+
+	static void _apply_common_light_attributes(const Light3D *p_light, const UsdLuxBoundableLightBase &p_usd_light) {
+		p_usd_light.CreateColorAttr().Set(GfVec3f(p_light->get_color().r, p_light->get_color().g, p_light->get_color().b));
+		p_usd_light.CreateIntensityAttr().Set((float)p_light->get_param(Light3D::PARAM_INTENSITY));
+		p_usd_light.CreateExposureAttr().Set(0.0f);
+	}
+
+	static bool _write_mesh_geometry(const Ref<Mesh> &p_mesh, UsdGeomMesh p_usd_mesh) {
+		ERR_FAIL_COND_V(p_mesh.is_null(), false);
+
+		VtArray<GfVec3f> points;
+		VtArray<int> face_vertex_counts;
+		VtArray<int> face_vertex_indices;
+		VtArray<GfVec3f> normals;
+		VtArray<GfVec2f> uvs;
+		bool have_normals = true;
+		bool have_uvs = true;
+
+		for (int surface_index = 0; surface_index < p_mesh->get_surface_count(); surface_index++) {
+			const Array arrays = p_mesh->surface_get_arrays(surface_index);
+			if (arrays.size() != Mesh::ARRAY_MAX) {
+				continue;
+			}
+
+			const PackedVector3Array vertices = arrays[Mesh::ARRAY_VERTEX];
+			if (vertices.is_empty()) {
+				continue;
+			}
+
+			const PackedVector3Array surface_normals = arrays[Mesh::ARRAY_NORMAL];
+			const PackedVector2Array surface_uvs = arrays[Mesh::ARRAY_TEX_UV];
+			const PackedInt32Array indices = arrays[Mesh::ARRAY_INDEX];
+			const int32_t vertex_offset = (int32_t)points.size();
+
+			for (int i = 0; i < vertices.size(); i++) {
+				const Vector3 vertex = vertices[i];
+				points.push_back(GfVec3f(vertex.x, vertex.y, vertex.z));
+			}
+
+			if (have_normals && surface_normals.size() == vertices.size()) {
+				for (int i = 0; i < surface_normals.size(); i++) {
+					const Vector3 normal = surface_normals[i];
+					normals.push_back(GfVec3f(normal.x, normal.y, normal.z));
+				}
+			} else {
+				have_normals = false;
+			}
+
+			if (have_uvs && surface_uvs.size() == vertices.size()) {
+				for (int i = 0; i < surface_uvs.size(); i++) {
+					const Vector2 uv = surface_uvs[i];
+					uvs.push_back(GfVec2f(uv.x, uv.y));
+				}
+			} else {
+				have_uvs = false;
+			}
+
+			if (!indices.is_empty()) {
+				for (int i = 0; i + 2 < indices.size(); i += 3) {
+					face_vertex_counts.push_back(3);
+					face_vertex_indices.push_back(vertex_offset + indices[i]);
+					face_vertex_indices.push_back(vertex_offset + indices[i + 2]);
+					face_vertex_indices.push_back(vertex_offset + indices[i + 1]);
+				}
+			} else {
+				for (int i = 0; i + 2 < vertices.size(); i += 3) {
+					face_vertex_counts.push_back(3);
+					face_vertex_indices.push_back(vertex_offset + i);
+					face_vertex_indices.push_back(vertex_offset + i + 2);
+					face_vertex_indices.push_back(vertex_offset + i + 1);
+				}
+			}
+		}
+
+		if (points.empty() || face_vertex_counts.empty() || face_vertex_indices.empty()) {
+			return false;
+		}
+
+		p_usd_mesh.CreatePointsAttr().Set(points);
+		p_usd_mesh.CreateFaceVertexCountsAttr().Set(face_vertex_counts);
+		p_usd_mesh.CreateFaceVertexIndicesAttr().Set(face_vertex_indices);
+		p_usd_mesh.CreateSubdivisionSchemeAttr().Set(UsdGeomTokens->none);
+		p_usd_mesh.CreateOrientationAttr().Set(UsdGeomTokens->rightHanded);
+
+		if (have_normals && normals.size() == points.size()) {
+			p_usd_mesh.CreateNormalsAttr().Set(normals);
+			p_usd_mesh.SetNormalsInterpolation(UsdGeomTokens->vertex);
+		}
+
+		if (have_uvs && uvs.size() == points.size()) {
+			UsdGeomPrimvarsAPI primvars_api(p_usd_mesh);
+			UsdGeomPrimvar st = primvars_api.CreatePrimvar(TfToken("st"), SdfValueTypeNames->TexCoord2fArray, UsdGeomTokens->vertex);
+			st.Set(uvs);
+		}
+
+		return true;
+	}
+
+	static void _write_camera(const Camera3D *p_camera, UsdGeomCamera p_usd_camera, double p_meters_per_unit) {
+		GfCamera camera;
+		camera.SetClippingRange(GfRange1f((float)p_camera->get_near() / MAX((double)p_meters_per_unit, 0.000001), (float)p_camera->get_far() / MAX((double)p_meters_per_unit, 0.000001)));
+		if (p_camera->get_projection() == Camera3D::PROJECTION_ORTHOGONAL) {
+			camera.SetOrthographicFromAspectRatioAndSize(1.0f, (float)p_camera->get_size() / MAX((double)p_meters_per_unit, 0.000001), GfCamera::FOVVertical);
+		} else {
+			camera.SetPerspectiveFromAspectRatioAndFieldOfView(1.0f, (float)p_camera->get_fov(), GfCamera::FOVVertical);
+		}
+		p_usd_camera.SetFromCamera(camera, UsdTimeCode::Default());
+	}
+
+	static UsdPrim _define_prim_for_node(const UsdStageRefPtr &p_stage, Node *p_node, const SdfPath &p_path, double p_meters_per_unit, bool *r_supports_transform = nullptr) {
+		if (r_supports_transform != nullptr) {
+			*r_supports_transform = false;
+		}
+
+		if (Camera3D *camera = Object::cast_to<Camera3D>(p_node)) {
+			UsdGeomCamera usd_camera = UsdGeomCamera::Define(p_stage, p_path);
+			_write_camera(camera, usd_camera, p_meters_per_unit);
+			if (r_supports_transform != nullptr) {
+				*r_supports_transform = true;
+			}
+			return usd_camera.GetPrim();
+		}
+
+		if (DirectionalLight3D *directional_light = Object::cast_to<DirectionalLight3D>(p_node)) {
+			UsdLuxDistantLight usd_light = UsdLuxDistantLight::Define(p_stage, p_path);
+			_apply_common_light_attributes(directional_light, usd_light);
+			usd_light.CreateAngleAttr().Set(0.53f);
+			if (r_supports_transform != nullptr) {
+				*r_supports_transform = true;
+			}
+			return usd_light.GetPrim();
+		}
+
+		if (SpotLight3D *spot_light = Object::cast_to<SpotLight3D>(p_node)) {
+			UsdLuxSphereLight usd_light = UsdLuxSphereLight::Define(p_stage, p_path);
+			_apply_common_light_attributes(spot_light, usd_light);
+			usd_light.CreateRadiusAttr().Set((float)MAX((double)spot_light->get_param(Light3D::PARAM_SIZE), 0.001));
+			UsdLuxShapingAPI shaping_api = UsdLuxShapingAPI::Apply(usd_light.GetPrim());
+			shaping_api.CreateShapingConeAngleAttr().Set((float)spot_light->get_param(Light3D::PARAM_SPOT_ANGLE));
+			shaping_api.CreateShapingConeSoftnessAttr().Set(CLAMP(1.0f - (float)spot_light->get_param(Light3D::PARAM_SPOT_ATTENUATION), 0.0f, 1.0f));
+			if (r_supports_transform != nullptr) {
+				*r_supports_transform = true;
+			}
+			return usd_light.GetPrim();
+		}
+
+		if (OmniLight3D *omni_light = Object::cast_to<OmniLight3D>(p_node)) {
+			UsdLuxSphereLight usd_light = UsdLuxSphereLight::Define(p_stage, p_path);
+			_apply_common_light_attributes(omni_light, usd_light);
+			usd_light.CreateRadiusAttr().Set((float)MAX((double)omni_light->get_param(Light3D::PARAM_SIZE), 0.001));
+			if (r_supports_transform != nullptr) {
+				*r_supports_transform = true;
+			}
+			return usd_light.GetPrim();
+		}
+
+		if (AreaLight3D *area_light = Object::cast_to<AreaLight3D>(p_node)) {
+			UsdLuxRectLight usd_light = UsdLuxRectLight::Define(p_stage, p_path);
+			_apply_common_light_attributes(area_light, usd_light);
+			usd_light.CreateWidthAttr().Set((float)area_light->get_area_size().x);
+			usd_light.CreateHeightAttr().Set((float)area_light->get_area_size().y);
+			if (r_supports_transform != nullptr) {
+				*r_supports_transform = true;
+			}
+			return usd_light.GetPrim();
+		}
+
+		if (MeshInstance3D *mesh_instance = Object::cast_to<MeshInstance3D>(p_node)) {
+			UsdGeomMesh usd_mesh = UsdGeomMesh::Define(p_stage, p_path);
+			if (!_write_mesh_geometry(mesh_instance->get_mesh(), usd_mesh)) {
+				UsdGeomXform usd_xform = UsdGeomXform::Define(p_stage, p_path);
+				if (r_supports_transform != nullptr) {
+					*r_supports_transform = true;
+				}
+				return usd_xform.GetPrim();
+			}
+			if (r_supports_transform != nullptr) {
+				*r_supports_transform = true;
+			}
+			return usd_mesh.GetPrim();
+		}
+
+		UsdGeomXform usd_xform = UsdGeomXform::Define(p_stage, p_path);
+		if (r_supports_transform != nullptr) {
+			*r_supports_transform = Object::cast_to<Node3D>(p_node) != nullptr;
+		}
+		return usd_xform.GetPrim();
+	}
+
+	static void _write_transform(Node3D *p_node, const UsdPrim &p_prim, const Transform3D &p_stage_correction_inverse) {
+		UsdGeomXformable xformable(p_prim);
+		if (!xformable) {
+			return;
+		}
+
+		Transform3D authored_transform = p_node->get_transform();
+		const Dictionary metadata = _get_usd_metadata(p_node);
+		const bool resets_xform_stack = (bool)metadata.get("usd:resets_xform_stack", false);
+		if (resets_xform_stack) {
+			authored_transform = p_stage_correction_inverse * authored_transform;
+		}
+
+		UsdGeomXformOp transform_op = xformable.MakeMatrixXform();
+		transform_op.Set(_transform_to_gf_matrix(authored_transform), UsdTimeCode::Default());
+		xformable.SetResetXformStack(resets_xform_stack);
+	}
+
+	static bool _serialize_node_recursive(const UsdStageRefPtr &p_stage, Node *p_node, const SdfPath &p_parent_path, const Transform3D &p_stage_correction_inverse, double p_meters_per_unit, Vector<SdfPath> *r_top_level_paths) {
+		if (_is_generated_preview_node(p_node)) {
+			return true;
+		}
+
+		const String base_name = _make_valid_identifier(p_node->get_name());
+		const SdfPath prim_path = p_parent_path.IsEmpty()
+				? SdfPath::AbsoluteRootPath().AppendChild(TfToken(base_name.utf8().get_data()))
+				: p_parent_path.AppendChild(TfToken(base_name.utf8().get_data()));
+
+		bool supports_transform = false;
+		UsdPrim prim = _define_prim_for_node(p_stage, p_node, prim_path, p_meters_per_unit, &supports_transform);
+		if (!prim) {
+			return false;
+		}
+
+		if (p_parent_path.IsEmpty() && r_top_level_paths != nullptr) {
+			r_top_level_paths->push_back(prim_path);
+		}
+
+		if (supports_transform) {
+			if (Node3D *node_3d = Object::cast_to<Node3D>(p_node)) {
+				_write_transform(node_3d, prim, p_stage_correction_inverse);
+			}
+		}
+
+		HashMap<String, int> name_counts;
+		for (int i = 0; i < p_node->get_child_count(); i++) {
+			Node *child = p_node->get_child(i);
+			if (_is_generated_preview_node(child)) {
+				continue;
+			}
+
+			const String child_base = _make_valid_identifier(child->get_name());
+			const int seen_count = name_counts.has(child_base) ? name_counts[child_base] : 0;
+			name_counts.insert(child_base, seen_count + 1);
+			if (seen_count == 0) {
+				if (!_serialize_node_recursive(p_stage, child, prim_path, p_stage_correction_inverse, p_meters_per_unit, nullptr)) {
+					return false;
+				}
+			} else {
+				String unique_name = vformat("%s_%d", child_base, seen_count + 1);
+				const String original_name = child->get_name();
+				child->set_name(unique_name);
+				const bool ok = _serialize_node_recursive(p_stage, child, prim_path, p_stage_correction_inverse, p_meters_per_unit, nullptr);
+				child->set_name(original_name);
+				if (!ok) {
+					return false;
+				}
+			}
+		}
+
+		return true;
+	}
+
+public:
+	Error save(const Ref<PackedScene> &p_scene, const String &p_path) const {
+		ERR_FAIL_COND_V_MSG(p_scene.is_null(), ERR_INVALID_PARAMETER, "USD saver requires a valid PackedScene resource.");
+
+		Node *root = p_scene->instantiate();
+		ERR_FAIL_NULL_V_MSG(root, ERR_CANT_CREATE, "USD saver could not instantiate the PackedScene.");
+
+		const SaveContext context = _make_save_context(root);
+		if (context.top_level_nodes.is_empty()) {
+			memdelete(root);
+			return ERR_INVALID_DATA;
+		}
+
+		DirAccess::make_dir_recursive_absolute(p_path.get_base_dir());
+
+		UsdStageRefPtr stage = UsdStage::CreateNew(_get_absolute_path(p_path).utf8().get_data());
+		if (!stage) {
+			memdelete(root);
+			return ERR_CANT_CREATE;
+		}
+
+		UsdGeomSetStageMetersPerUnit(stage, context.meters_per_unit);
+		UsdGeomSetStageUpAxis(stage, context.up_axis);
+
+		const Transform3D stage_correction_inverse = _get_stage_correction_transform(context.meters_per_unit, context.up_axis).affine_inverse();
+		Vector<SdfPath> top_level_paths;
+		for (int i = 0; i < context.top_level_nodes.size(); i++) {
+			if (!_serialize_node_recursive(stage, context.top_level_nodes[i], SdfPath(), stage_correction_inverse, context.meters_per_unit, &top_level_paths)) {
+				memdelete(root);
+				return ERR_INVALID_DATA;
+			}
+		}
+
+		if (!top_level_paths.is_empty()) {
+			const String default_prim_path = !context.default_prim_path.is_empty() ? context.default_prim_path : _to_godot_string(top_level_paths[0].GetString());
+			UsdPrim default_prim = stage->GetPrimAtPath(SdfPath(default_prim_path.utf8().get_data()));
+			if (!default_prim && !top_level_paths.is_empty()) {
+				default_prim = stage->GetPrimAtPath(top_level_paths[0]);
+			}
+			if (default_prim) {
+				stage->SetDefaultPrim(default_prim);
+			}
+		}
+
+		const bool saved = stage->GetRootLayer()->Save();
+		memdelete(root);
+		return saved ? OK : ERR_CANT_CREATE;
 	}
 };
 
@@ -1731,4 +2203,29 @@ String UsdSceneFormatLoader::get_resource_type(const String &p_path) const {
 		return "PackedScene";
 	}
 	return String();
+}
+
+Error UsdSceneFormatSaver::save(const Ref<Resource> &p_resource, const String &p_path, uint32_t p_flags) {
+	(void)p_flags;
+
+	Ref<PackedScene> packed_scene = p_resource;
+	ERR_FAIL_COND_V_MSG(packed_scene.is_null(), ERR_UNAVAILABLE, "USD saver only supports PackedScene resources.");
+	ERR_FAIL_COND_V_MSG(!recognize_path(p_resource, p_path), ERR_FILE_UNRECOGNIZED, "USD saver only writes .usda files in this prototype.");
+
+	UsdSceneSaver saver;
+	return saver.save(packed_scene, p_path);
+}
+
+bool UsdSceneFormatSaver::recognize(const Ref<Resource> &p_resource) const {
+	return p_resource.is_valid() && p_resource->is_class("PackedScene");
+}
+
+void UsdSceneFormatSaver::get_recognized_extensions(const Ref<Resource> &p_resource, List<String> *p_extensions) const {
+	if (recognize(p_resource)) {
+		p_extensions->push_back("usda");
+	}
+}
+
+bool UsdSceneFormatSaver::recognize_path(const Ref<Resource> &p_resource, const String &p_path) const {
+	return recognize(p_resource) && p_path.get_extension().to_lower() == "usda";
 }

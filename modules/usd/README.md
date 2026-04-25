@@ -37,7 +37,7 @@ This keeps the requested `usd:` namespacing while still fitting Godot's metadata
   - `metersPerUnit` maps to a uniform scale on the generated scene root.
 - Hierarchy:
   - Prim hierarchy maps to node hierarchy.
-  - `resetXformStack` maps to `Node3D::set_as_top_level(true)`.
+  - `resetXformStack` maps to a top-level `Node3D` transform that preserves the stage's axis and unit correction instead of inheriting parent USD xforms.
 - Visibility:
   - USD visibility maps to `Node3D.visible`.
 - Core geometry:
@@ -55,6 +55,9 @@ This keeps the requested `usd:` namespacing while still fitting Godot's metadata
   - Distant lights map to `DirectionalLight3D`.
   - Sphere lights map to `OmniLight3D`.
   - Color, intensity, and exposure map approximately to Godot light parameters.
+- Preview fallback:
+  - Lightless stages can synthesize a `WorldEnvironment` and `DirectionalLight3D` preview rig.
+  - The behavior is controlled by `filesystem/import/usd/preview_lighting_mode` with `Never`, `When Missing`, and `Always`.
 
 ## Known gaps
 

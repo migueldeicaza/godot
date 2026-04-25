@@ -32,17 +32,25 @@
 
 #include "usd_scene_loader.h"
 
+#include "core/config/project_settings.h"
 #include "core/io/resource_loader.h"
+#include "core/io/resource_saver.h"
 
 static Ref<UsdSceneFormatLoader> usd_scene_format_loader;
+static Ref<UsdSceneFormatSaver> usd_scene_format_saver;
 
 void initialize_usd_module(ModuleInitializationLevel p_level) {
 	if (p_level != MODULE_INITIALIZATION_LEVEL_SCENE) {
 		return;
 	}
 
+	GLOBAL_DEF(PropertyInfo(Variant::INT, "filesystem/import/usd/preview_lighting_mode", PROPERTY_HINT_ENUM, "Never,When Missing,Always"), 1);
+
 	usd_scene_format_loader.instantiate();
 	ResourceLoader::add_resource_format_loader(usd_scene_format_loader, true);
+
+	usd_scene_format_saver.instantiate();
+	ResourceSaver::add_resource_format_saver(usd_scene_format_saver, true);
 }
 
 void uninitialize_usd_module(ModuleInitializationLevel p_level) {
@@ -53,5 +61,10 @@ void uninitialize_usd_module(ModuleInitializationLevel p_level) {
 	if (usd_scene_format_loader.is_valid()) {
 		ResourceLoader::remove_resource_format_loader(usd_scene_format_loader);
 		usd_scene_format_loader.unref();
+	}
+
+	if (usd_scene_format_saver.is_valid()) {
+		ResourceSaver::remove_resource_format_saver(usd_scene_format_saver);
+		usd_scene_format_saver.unref();
 	}
 }
