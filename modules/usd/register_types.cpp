@@ -35,6 +35,7 @@
 #include "core/config/project_settings.h"
 #include "core/io/resource_loader.h"
 #include "core/io/resource_saver.h"
+#include "core/object/class_db.h"
 
 static Ref<UsdSceneFormatLoader> usd_scene_format_loader;
 static Ref<UsdSceneFormatSaver> usd_scene_format_saver;
@@ -45,6 +46,9 @@ void initialize_usd_module(ModuleInitializationLevel p_level) {
 	}
 
 	GLOBAL_DEF(PropertyInfo(Variant::INT, "filesystem/import/usd/preview_lighting_mode", PROPERTY_HINT_ENUM, "Never,When Missing,Always"), 1);
+
+	GDREGISTER_CLASS(UsdStageResource);
+	GDREGISTER_CLASS(UsdStageInstance);
 
 	usd_scene_format_loader.instantiate();
 	ResourceLoader::add_resource_format_loader(usd_scene_format_loader, true);

@@ -34,7 +34,9 @@
 #include "core/io/dir_access.h"
 #include "core/io/file_access.h"
 #include "core/io/image.h"
+#include "core/io/resource_uid.h"
 #include "core/math/math_funcs.h"
+#include "core/object/callable_mp.h"
 #include "core/object/class_db.h"
 #include "core/string/print_string.h"
 #include "scene/3d/camera_3d.h"
@@ -63,6 +65,7 @@
 #include <pxr/base/tf/token.h>
 #include <pxr/base/vt/value.h>
 #include <pxr/usd/sdf/assetPath.h>
+#include <pxr/usd/sdf/layer.h>
 #include <pxr/usd/sdf/listOp.h>
 #include <pxr/usd/sdf/path.h>
 #include <pxr/usd/sdf/primSpec.h>
@@ -76,6 +79,7 @@
 #include <pxr/usd/usd/references.h>
 #include <pxr/usd/usd/relationship.h>
 #include <pxr/usd/usd/stage.h>
+#include <pxr/usd/usd/variantSets.h>
 #include <pxr/usd/usdGeom/camera.h>
 #include <pxr/usd/usdGeom/capsule.h>
 #include <pxr/usd/usdGeom/cone.h>
@@ -104,6 +108,8 @@
 #include <pxr/usd/usdShade/materialBindingAPI.h>
 #include <pxr/usd/usdShade/shader.h>
 
+#include <algorithm>
+
 #if (defined(__cpp_exceptions) && __cpp_exceptions) || (defined(__EXCEPTIONS) && __EXCEPTIONS) || defined(_CPPUNWIND)
 #define USD_SCENE_LOADER_HAS_EXCEPTIONS 1
 #endif
@@ -125,11 +131,201 @@ String _to_godot_string(const std::string &p_string) {
 	return String::utf8(p_string.c_str());
 }
 
+String _get_project_path(const String &p_path) {
+	return ResourceUID::ensure_path(p_path);
+}
+
 String _get_absolute_path(const String &p_path) {
-	if (p_path.begins_with("res://") || p_path.begins_with("user://")) {
-		return ProjectSettings::get_singleton()->globalize_path(p_path);
+	const String project_path = _get_project_path(p_path);
+	if (project_path.begins_with("res://") || project_path.begins_with("user://")) {
+		return ProjectSettings::get_singleton()->globalize_path(project_path);
 	}
-	return p_path;
+	return project_path;
+}
+
+static constexpr const char *USD_STAGE_INSTANCE_GENERATED_META = "usd_stage_instance_generated";
+
+struct VariantSelectionRequest {
+	String prim_path;
+	String variant_set;
+	String selection;
+	int path_depth = 0;
+};
+
+int _get_prim_path_depth(const String &p_prim_path) {
+	int depth = 0;
+	for (int i = 0; i < p_prim_path.length(); i++) {
+		if (p_prim_path[i] == '/') {
+			depth++;
+		}
+	}
+	return depth;
+}
+
+Dictionary _collect_stage_metadata(const UsdStageRefPtr &p_stage) {
+	Dictionary metadata;
+	ERR_FAIL_COND_V(p_stage == nullptr, metadata);
+
+	metadata["usd:source_identifier"] = _to_godot_string(p_stage->GetRootLayer()->GetIdentifier());
+	metadata["usd:up_axis"] = _to_godot_string(UsdGeomGetStageUpAxis(p_stage).GetString());
+	metadata["usd:meters_per_unit"] = UsdGeomGetStageMetersPerUnit(p_stage);
+	if (UsdPrim default_prim = p_stage->GetDefaultPrim()) {
+		metadata["usd:default_prim_path"] = _to_godot_string(default_prim.GetPath().GetString());
+	}
+
+	return metadata;
+}
+
+Dictionary _collect_variant_sets(const UsdStageRefPtr &p_stage) {
+	Dictionary variant_catalog;
+	ERR_FAIL_COND_V(p_stage == nullptr, variant_catalog);
+
+	for (const UsdPrim &prim : p_stage->TraverseAll()) {
+		UsdVariantSets variant_sets = prim.GetVariantSets();
+		std::vector<std::string> set_names;
+		variant_sets.GetNames(&set_names);
+		if (set_names.empty()) {
+			continue;
+		}
+
+		Dictionary prim_variant_sets;
+		for (const std::string &set_name : set_names) {
+			UsdVariantSet variant_set = variant_sets.GetVariantSet(set_name);
+			if (!variant_set) {
+				continue;
+			}
+
+			const std::vector<std::string> variant_names = variant_set.GetVariantNames();
+			Array variants;
+			for (const std::string &variant_name : variant_names) {
+				variants.push_back(_to_godot_string(variant_name));
+			}
+
+			Dictionary set_description;
+			set_description["prim_path"] = _to_godot_string(prim.GetPath().GetString());
+			set_description["variant_set"] = _to_godot_string(set_name);
+			set_description["variants"] = variants;
+			set_description["selection"] = _to_godot_string(variant_set.GetVariantSelection());
+			prim_variant_sets[_to_godot_string(set_name)] = set_description;
+		}
+
+		if (!prim_variant_sets.is_empty()) {
+			variant_catalog[_to_godot_string(prim.GetPath().GetString())] = prim_variant_sets;
+		}
+	}
+
+	return variant_catalog;
+}
+
+bool _set_variant_selection(const UsdStageRefPtr &p_stage, const String &p_prim_path, const String &p_variant_set_name, const String &p_selection, bool p_warn_missing = true) {
+	ERR_FAIL_COND_V(p_stage == nullptr, false);
+	if (p_prim_path.is_empty() || p_variant_set_name.is_empty() || p_selection.is_empty()) {
+		return false;
+	}
+
+	UsdPrim prim = p_stage->GetPrimAtPath(SdfPath(p_prim_path.utf8().get_data()));
+	if (!prim) {
+		if (p_warn_missing) {
+			WARN_PRINT(vformat("USD variant selection ignored because prim does not exist: %s", p_prim_path));
+		}
+		return false;
+	}
+
+	UsdVariantSet variant_set = prim.GetVariantSets().GetVariantSet(TfToken(p_variant_set_name.utf8().get_data()));
+	if (!variant_set) {
+		if (p_warn_missing) {
+			WARN_PRINT(vformat("USD variant selection ignored because variant set does not exist: %s:%s", p_prim_path, p_variant_set_name));
+		}
+		return false;
+	}
+
+	if (!variant_set.SetVariantSelection(p_selection.utf8().get_data())) {
+		ERR_PRINT(vformat("USD variant selection failed: %s:%s=%s", p_prim_path, p_variant_set_name, p_selection));
+		return false;
+	}
+
+	return true;
+}
+
+void _add_variant_selection_request(std::vector<VariantSelectionRequest> &r_requests, const String &p_prim_path, const String &p_variant_set_name, const String &p_selection) {
+	if (p_prim_path.is_empty() || p_variant_set_name.is_empty() || p_selection.is_empty()) {
+		return;
+	}
+
+	VariantSelectionRequest request;
+	request.prim_path = p_prim_path;
+	request.variant_set = p_variant_set_name;
+	request.selection = p_selection;
+	request.path_depth = _get_prim_path_depth(p_prim_path);
+	r_requests.push_back(request);
+}
+
+void _apply_variant_selections(const UsdStageRefPtr &p_stage, const Dictionary &p_variant_selections) {
+	std::vector<VariantSelectionRequest> requests;
+	for (const KeyValue<Variant, Variant> &prim_entry : p_variant_selections) {
+		if (prim_entry.value.get_type() == Variant::DICTIONARY) {
+			const String prim_path = prim_entry.key;
+			Dictionary prim_selections = prim_entry.value;
+			for (const KeyValue<Variant, Variant> &set_entry : prim_selections) {
+				if (set_entry.value.get_type() != Variant::STRING && set_entry.value.get_type() != Variant::STRING_NAME) {
+					continue;
+				}
+				_add_variant_selection_request(requests, prim_path, set_entry.key, set_entry.value);
+			}
+			continue;
+		}
+
+		if (prim_entry.value.get_type() != Variant::STRING && prim_entry.value.get_type() != Variant::STRING_NAME) {
+			continue;
+		}
+
+		const String flat_key = prim_entry.key;
+		const int separator = flat_key.rfind(":");
+		if (separator <= 0) {
+			continue;
+		}
+
+		const String prim_path = flat_key.substr(0, separator);
+		const String variant_set_name = flat_key.substr(separator + 1);
+		_add_variant_selection_request(requests, prim_path, variant_set_name, prim_entry.value);
+	}
+
+	std::sort(requests.begin(), requests.end(), [](const VariantSelectionRequest &p_left, const VariantSelectionRequest &p_right) {
+		if (p_left.path_depth == p_right.path_depth) {
+			return p_left.prim_path < p_right.prim_path;
+		}
+		return p_left.path_depth < p_right.path_depth;
+	});
+
+	for (const VariantSelectionRequest &request : requests) {
+		_set_variant_selection(p_stage, request.prim_path, request.variant_set, request.selection, false);
+	}
+}
+
+UsdStageRefPtr _open_stage_for_instance(const String &p_source_path, const Dictionary &p_variant_selections = Dictionary()) {
+	const String absolute_path = _get_absolute_path(p_source_path);
+	SdfLayerRefPtr root_layer = SdfLayer::FindOrOpen(absolute_path.utf8().get_data());
+	ERR_FAIL_COND_V_MSG(!root_layer, nullptr, vformat("Failed to open USD root layer: %s", p_source_path));
+
+	if (!p_variant_selections.is_empty()) {
+		SdfLayerRefPtr instance_layer = SdfLayer::CreateAnonymous("GodotUsdStageInstance.usda");
+		const std::string sublayer_path = root_layer->GetRealPath().empty() ? root_layer->GetIdentifier() : root_layer->GetRealPath();
+		instance_layer->InsertSubLayerPath(sublayer_path);
+		UsdStageRefPtr stage = UsdStage::Open(instance_layer, UsdStage::LoadAll);
+		ERR_FAIL_COND_V_MSG(!stage, nullptr, vformat("Failed to compose USD stage: %s", p_source_path));
+
+		stage->SetEditTarget(instance_layer);
+		_apply_variant_selections(stage, p_variant_selections);
+		stage = UsdStage::Open(instance_layer, UsdStage::LoadAll);
+		ERR_FAIL_COND_V_MSG(!stage, nullptr, vformat("Failed to recompose USD stage with variant selections: %s", p_source_path));
+		return stage;
+	}
+
+	SdfLayerRefPtr session_layer = SdfLayer::CreateAnonymous("GodotUsdStageInstanceSession.usda");
+	UsdStageRefPtr stage = UsdStage::Open(root_layer, session_layer, UsdStage::LoadAll);
+	ERR_FAIL_COND_V_MSG(!stage, nullptr, vformat("Failed to compose USD stage: %s", p_source_path));
+
+	return stage;
 }
 
 UsdPreviewLightingMode _get_preview_lighting_mode() {
@@ -3533,6 +3729,390 @@ public:
 
 } // namespace
 
+void UsdStageResource::_bind_methods() {
+	ClassDB::bind_method(D_METHOD("set_source_path", "source_path"), &UsdStageResource::set_source_path);
+	ClassDB::bind_method(D_METHOD("get_source_path"), &UsdStageResource::get_source_path);
+	ClassDB::bind_method(D_METHOD("get_stage_metadata"), &UsdStageResource::get_stage_metadata);
+	ClassDB::bind_method(D_METHOD("get_variant_sets"), &UsdStageResource::get_variant_sets);
+	ClassDB::bind_method(D_METHOD("refresh_metadata"), &UsdStageResource::refresh_metadata);
+
+	ADD_PROPERTY(PropertyInfo(Variant::STRING, "source_path", PROPERTY_HINT_FILE, "*.usd,*.usda,*.usdc,*.usdz"), "set_source_path", "get_source_path");
+	ADD_PROPERTY(PropertyInfo(Variant::DICTIONARY, "stage_metadata", PROPERTY_HINT_NONE, "", PROPERTY_USAGE_NONE), "", "get_stage_metadata");
+	ADD_PROPERTY(PropertyInfo(Variant::DICTIONARY, "variant_sets", PROPERTY_HINT_NONE, "", PROPERTY_USAGE_NONE), "", "get_variant_sets");
+}
+
+void UsdStageResource::set_source_path(const String &p_source_path) {
+	if (source_path == p_source_path) {
+		return;
+	}
+
+	source_path = p_source_path;
+	const Error error = refresh_metadata();
+	if (error != OK) {
+		emit_changed();
+	}
+}
+
+String UsdStageResource::get_source_path() const {
+	return source_path;
+}
+
+Dictionary UsdStageResource::get_stage_metadata() const {
+	return stage_metadata;
+}
+
+Dictionary UsdStageResource::get_variant_sets() const {
+	return variant_sets;
+}
+
+Error UsdStageResource::refresh_metadata() {
+	stage_metadata.clear();
+	variant_sets.clear();
+
+	if (source_path.is_empty()) {
+		notify_property_list_changed();
+		return ERR_UNCONFIGURED;
+	}
+
+	if (!FileAccess::exists(_get_project_path(source_path))) {
+		notify_property_list_changed();
+		return ERR_FILE_NOT_FOUND;
+	}
+
+	UsdStageRefPtr stage = _open_stage_for_instance(source_path);
+	if (!stage) {
+		notify_property_list_changed();
+		return ERR_CANT_OPEN;
+	}
+
+	stage_metadata = _collect_stage_metadata(stage);
+	variant_sets = _collect_variant_sets(stage);
+	notify_property_list_changed();
+	emit_changed();
+	return OK;
+}
+
+void UsdStageInstance::_bind_methods() {
+	ClassDB::bind_method(D_METHOD("set_stage", "stage"), &UsdStageInstance::set_stage);
+	ClassDB::bind_method(D_METHOD("get_stage"), &UsdStageInstance::get_stage);
+	ClassDB::bind_method(D_METHOD("set_variant_selections", "variant_selections"), &UsdStageInstance::set_variant_selections);
+	ClassDB::bind_method(D_METHOD("get_variant_selections"), &UsdStageInstance::get_variant_selections);
+	ClassDB::bind_method(D_METHOD("rebuild"), &UsdStageInstance::rebuild);
+	ClassDB::bind_method(D_METHOD("get_node_for_prim_path", "prim_path"), &UsdStageInstance::get_node_for_prim_path);
+
+	ADD_PROPERTY(PropertyInfo(Variant::OBJECT, "stage", PROPERTY_HINT_RESOURCE_TYPE, UsdStageResource::get_class_static()), "set_stage", "get_stage");
+	ADD_PROPERTY(PropertyInfo(Variant::DICTIONARY, "variant_selections", PROPERTY_HINT_NONE, "", PROPERTY_USAGE_NO_EDITOR), "set_variant_selections", "get_variant_selections");
+}
+
+void UsdStageInstance::_notification(int p_what) {
+	switch (p_what) {
+		case NOTIFICATION_READY: {
+			if (stage.is_valid() && !stage->get_source_path().is_empty()) {
+				rebuild();
+			}
+		} break;
+	}
+}
+
+void UsdStageInstance::_clear_node_children(Node *p_node) {
+	ERR_FAIL_NULL(p_node);
+	for (int i = p_node->get_child_count() - 1; i >= 0; i--) {
+		Node *child = p_node->get_child(i);
+		p_node->remove_child(child);
+		if (child->is_inside_tree()) {
+			child->queue_free();
+		} else {
+			memdelete(child);
+		}
+	}
+}
+
+void UsdStageInstance::_clear_generated_children() {
+	for (int i = get_child_count() - 1; i >= 0; i--) {
+		Node *child = get_child(i);
+		if (!child->has_meta(USD_STAGE_INSTANCE_GENERATED_META) || !(bool)child->get_meta(USD_STAGE_INSTANCE_GENERATED_META)) {
+			continue;
+		}
+
+		remove_child(child);
+		if (child->is_inside_tree()) {
+			child->queue_free();
+		} else {
+			memdelete(child);
+		}
+	}
+
+	generated_root = nullptr;
+}
+
+Node *UsdStageInstance::_find_node_for_prim_path(Node *p_node, const String &p_prim_path) const {
+	ERR_FAIL_NULL_V(p_node, nullptr);
+
+	if (p_node->has_meta(USD_META_KEY)) {
+		const Variant metadata_variant = p_node->get_meta(USD_META_KEY);
+		if (metadata_variant.get_type() == Variant::DICTIONARY) {
+			const Dictionary metadata = metadata_variant;
+			if ((String)metadata.get("usd:prim_path", String()) == p_prim_path) {
+				return p_node;
+			}
+		}
+	}
+
+	for (int i = 0; i < p_node->get_child_count(); i++) {
+		Node *found = _find_node_for_prim_path(p_node->get_child(i), p_prim_path);
+		if (found != nullptr) {
+			return found;
+		}
+	}
+
+	return nullptr;
+}
+
+bool UsdStageInstance::_parse_variant_property(const String &p_property, String *r_prim_path, String *r_variant_set) const {
+	if (!p_property.begins_with("variants/")) {
+		return false;
+	}
+
+	const String variant_path = p_property.substr(9);
+	const int separator = variant_path.rfind("/");
+	if (separator <= 0 || separator >= variant_path.length() - 1) {
+		return false;
+	}
+
+	if (r_prim_path != nullptr) {
+		*r_prim_path = "/" + variant_path.substr(0, separator);
+	}
+	if (r_variant_set != nullptr) {
+		*r_variant_set = variant_path.substr(separator + 1);
+	}
+	return true;
+}
+
+String UsdStageInstance::_get_variant_selection(const String &p_prim_path, const String &p_variant_set) const {
+	if (variant_selections.has(p_prim_path)) {
+		const Variant prim_selection_variant = variant_selections[p_prim_path];
+		if (prim_selection_variant.get_type() == Variant::DICTIONARY) {
+			const Dictionary prim_selections = prim_selection_variant;
+			const Variant selection = prim_selections.get(p_variant_set, Variant());
+			if (selection.get_type() == Variant::STRING || selection.get_type() == Variant::STRING_NAME) {
+				return selection;
+			}
+		}
+	}
+
+	const Dictionary variant_sets = !composed_variant_sets.is_empty() ? composed_variant_sets : (stage.is_valid() ? stage->get_variant_sets() : Dictionary());
+	if (!variant_sets.is_empty()) {
+		const Variant prim_sets_variant = variant_sets.get(p_prim_path, Variant());
+		if (prim_sets_variant.get_type() == Variant::DICTIONARY) {
+			const Dictionary prim_sets = prim_sets_variant;
+			const Variant set_description_variant = prim_sets.get(p_variant_set, Variant());
+			if (set_description_variant.get_type() == Variant::DICTIONARY) {
+				const Dictionary set_description = set_description_variant;
+				return set_description.get("selection", String());
+			}
+		}
+	}
+
+	return String();
+}
+
+void UsdStageInstance::_set_variant_selection_property(const String &p_prim_path, const String &p_variant_set, const String &p_selection) {
+	const String current_selection = _get_variant_selection(p_prim_path, p_variant_set);
+	if (current_selection == p_selection) {
+		return;
+	}
+
+	Dictionary updated_selections = variant_selections.duplicate(true);
+	Dictionary prim_selections;
+	const Variant prim_selection_variant = updated_selections.get(p_prim_path, Variant());
+	if (prim_selection_variant.get_type() == Variant::DICTIONARY) {
+		prim_selections = ((Dictionary)prim_selection_variant).duplicate(true);
+	}
+
+	prim_selections[p_variant_set] = p_selection;
+	updated_selections[p_prim_path] = prim_selections;
+	variant_selections = updated_selections;
+
+	if (stage.is_valid() && !stage->get_source_path().is_empty()) {
+		rebuild();
+	}
+	notify_property_list_changed();
+}
+
+void UsdStageInstance::_stage_changed() {
+	notify_property_list_changed();
+
+	if (stage.is_null() || stage->get_source_path().is_empty()) {
+		composed_variant_sets.clear();
+		if (generated_root != nullptr) {
+			_clear_generated_children();
+		}
+		return;
+	}
+
+	rebuild();
+}
+
+bool UsdStageInstance::_set(const StringName &p_name, const Variant &p_value) {
+	String prim_path;
+	String variant_set;
+	if (!_parse_variant_property(p_name, &prim_path, &variant_set)) {
+		return false;
+	}
+
+	if (p_value.get_type() != Variant::STRING && p_value.get_type() != Variant::STRING_NAME) {
+		return false;
+	}
+
+	_set_variant_selection_property(prim_path, variant_set, p_value);
+	return true;
+}
+
+bool UsdStageInstance::_get(const StringName &p_name, Variant &r_ret) const {
+	String prim_path;
+	String variant_set;
+	if (!_parse_variant_property(p_name, &prim_path, &variant_set)) {
+		return false;
+	}
+
+	r_ret = _get_variant_selection(prim_path, variant_set);
+	return true;
+}
+
+void UsdStageInstance::_get_property_list(List<PropertyInfo> *p_list) const {
+	if (stage.is_null()) {
+		return;
+	}
+
+	const Dictionary variant_sets = !composed_variant_sets.is_empty() ? composed_variant_sets : stage->get_variant_sets();
+	if (!variant_sets.is_empty()) {
+		p_list->push_back(PropertyInfo(Variant::NIL, "USD Variants", PROPERTY_HINT_NONE, "variants/", PROPERTY_USAGE_GROUP));
+	}
+
+	for (const KeyValue<Variant, Variant> &prim_entry : variant_sets) {
+		if (prim_entry.value.get_type() != Variant::DICTIONARY) {
+			continue;
+		}
+
+		const String prim_path = prim_entry.key;
+		const String property_prim_path = prim_path.trim_prefix("/");
+		if (property_prim_path.is_empty()) {
+			continue;
+		}
+
+		const Dictionary prim_sets = prim_entry.value;
+		for (const KeyValue<Variant, Variant> &set_entry : prim_sets) {
+			if (set_entry.value.get_type() != Variant::DICTIONARY) {
+				continue;
+			}
+
+			const String variant_set = set_entry.key;
+			const Dictionary set_description = set_entry.value;
+			const Array variants = set_description.get("variants", Array());
+			if (variants.is_empty()) {
+				continue;
+			}
+
+			String hint_string;
+			for (int i = 0; i < variants.size(); i++) {
+				if (variants[i].get_type() != Variant::STRING && variants[i].get_type() != Variant::STRING_NAME) {
+					continue;
+				}
+				if (!hint_string.is_empty()) {
+					hint_string += ",";
+				}
+				hint_string += String(variants[i]);
+			}
+
+			if (hint_string.is_empty()) {
+				continue;
+			}
+
+			p_list->push_back(PropertyInfo(Variant::STRING, "variants/" + property_prim_path + "/" + variant_set, PROPERTY_HINT_ENUM, hint_string, PROPERTY_USAGE_DEFAULT | PROPERTY_USAGE_UPDATE_ALL_IF_MODIFIED));
+		}
+	}
+}
+
+void UsdStageInstance::set_stage(const Ref<UsdStageResource> &p_stage) {
+	if (stage == p_stage) {
+		return;
+	}
+
+	if (stage.is_valid()) {
+		stage->disconnect_changed(callable_mp(this, &UsdStageInstance::_stage_changed));
+	}
+
+	stage = p_stage;
+	if (stage.is_valid()) {
+		stage->connect_changed(callable_mp(this, &UsdStageInstance::_stage_changed));
+	}
+
+	_stage_changed();
+}
+
+Ref<UsdStageResource> UsdStageInstance::get_stage() const {
+	return stage;
+}
+
+void UsdStageInstance::set_variant_selections(const Dictionary &p_variant_selections) {
+	variant_selections = p_variant_selections;
+	if (stage.is_valid() && !stage->get_source_path().is_empty()) {
+		rebuild();
+	}
+	notify_property_list_changed();
+}
+
+Dictionary UsdStageInstance::get_variant_selections() const {
+	return variant_selections;
+}
+
+Error UsdStageInstance::rebuild() {
+	composed_variant_sets.clear();
+
+	ERR_FAIL_COND_V_MSG(stage.is_null(), ERR_UNCONFIGURED, "UsdStageInstance requires a stage resource.");
+	ERR_FAIL_COND_V_MSG(stage->get_source_path().is_empty(), ERR_UNCONFIGURED, "UsdStageInstance stage resource has no source path.");
+
+	UsdStageRefPtr composed_stage = _open_stage_for_instance(stage->get_source_path(), variant_selections);
+	ERR_FAIL_COND_V_MSG(!composed_stage, ERR_CANT_OPEN, vformat("Failed to compose USD stage for instance: %s", stage->get_source_path()));
+	composed_variant_sets = _collect_variant_sets(composed_stage);
+
+	UsdSceneBuilder builder(composed_stage);
+	Node *rebuilt_root = builder.build("_Generated");
+	ERR_FAIL_NULL_V(rebuilt_root, ERR_CANT_CREATE);
+
+	if (generated_root == nullptr) {
+		generated_root = rebuilt_root;
+		generated_root->set_meta(USD_STAGE_INSTANCE_GENERATED_META, true);
+		add_child(generated_root);
+	} else {
+		_clear_node_children(generated_root);
+		if (Node3D *generated_root_3d = Object::cast_to<Node3D>(generated_root)) {
+			if (Node3D *rebuilt_root_3d = Object::cast_to<Node3D>(rebuilt_root)) {
+				generated_root_3d->set_transform(rebuilt_root_3d->get_transform());
+			}
+		}
+		while (rebuilt_root->get_child_count() > 0) {
+			Node *child = rebuilt_root->get_child(0);
+			rebuilt_root->remove_child(child);
+			generated_root->add_child(child);
+		}
+		memdelete(rebuilt_root);
+	}
+
+	generated_root->set_meta("usd_stage_instance_source_path", stage->get_source_path());
+	generated_root->set_meta("usd_stage_instance_variant_selections", variant_selections);
+
+	return OK;
+}
+
+Node *UsdStageInstance::get_node_for_prim_path(const String &p_prim_path) const {
+	if (generated_root == nullptr) {
+		return nullptr;
+	}
+
+	return _find_node_for_prim_path(generated_root, p_prim_path);
+}
+
 Ref<Resource> UsdSceneFormatLoader::load(const String &p_path, const String &p_original_path, Error *r_error, bool p_use_sub_threads, float *r_progress, CacheMode p_cache_mode) {
 	(void)p_original_path;
 	(void)p_use_sub_threads;
@@ -3545,7 +4125,7 @@ Ref<Resource> UsdSceneFormatLoader::load(const String &p_path, const String &p_o
 		*r_error = ERR_FILE_CANT_OPEN;
 	}
 
-	if (!FileAccess::exists(p_path)) {
+	if (!FileAccess::exists(_get_project_path(p_path))) {
 		if (r_error) {
 			*r_error = ERR_FILE_NOT_FOUND;
 		}
