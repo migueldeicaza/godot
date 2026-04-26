@@ -890,6 +890,7 @@ TEST_CASE("[SceneTree][USD] Preserve authored material subset names across USD r
 	const Dictionary second_description = subset_descriptions[1];
 	CHECK((String)first_description.get("binding_kind", String()) == String("mesh"));
 	CHECK((String)second_description.get("binding_kind", String()) == String("subset"));
+	CHECK((String)second_description.get("subset_path", String()) == String("/Root/Panel/Trim"));
 	CHECK((String)second_description.get("subset_name", String()) == String("Trim"));
 	CHECK((String)second_description.get("family_name", String()) == String("materialBind"));
 	const Array material_bindings = mesh_metadata.get("usd:material_bindings", Array());
@@ -1002,6 +1003,50 @@ TEST_CASE("[SceneTree][USD] Preserve generic face geom subsets across USD round-
 	CHECK(saved_text.contains("def GeomSubset \"Corners\""));
 	CHECK(saved_text.contains("uniform token familyName = \"selection\""));
 	CHECK(saved_text.contains("int[] indices = [0, 3]"));
+}
+
+TEST_CASE("[SceneTree][USD] Preserve generic point geom subsets across USD round-trip") {
+	PreviewLightingModeScope preview_lighting_mode_scope;
+	preview_lighting_mode_scope.set(0);
+
+	const String source_path = TestUtils::get_data_path("usd/point_subset.usda");
+	const String save_path = TestUtils::get_temp_path("usd_point_subset_saved.usda");
+
+	Error err = OK;
+	Ref<PackedScene> loaded_scene = ResourceLoader::load(source_path, "PackedScene", ResourceFormatLoader::CACHE_MODE_IGNORE, &err);
+	REQUIRE_MESSAGE(err == OK, "USD point subset source load failed.");
+	REQUIRE(loaded_scene.is_valid());
+	REQUIRE(ResourceSaver::save(loaded_scene, save_path) == OK);
+
+	Ref<FileAccess> saved_file = FileAccess::open(save_path, FileAccess::READ);
+	REQUIRE(saved_file.is_valid());
+	const String saved_text = saved_file->get_as_text();
+	CHECK(saved_text.contains("def GeomSubset \"PinnedPoints\""));
+	CHECK(saved_text.contains("uniform token elementType = \"point\""));
+	CHECK(saved_text.contains("uniform token familyName = \"selection\""));
+	CHECK(saved_text.contains("int[] indices = [2, 3]"));
+}
+
+TEST_CASE("[SceneTree][USD] Preserve generic edge geom subsets across USD round-trip") {
+	PreviewLightingModeScope preview_lighting_mode_scope;
+	preview_lighting_mode_scope.set(0);
+
+	const String source_path = TestUtils::get_data_path("usd/edge_subset.usda");
+	const String save_path = TestUtils::get_temp_path("usd_edge_subset_saved.usda");
+
+	Error err = OK;
+	Ref<PackedScene> loaded_scene = ResourceLoader::load(source_path, "PackedScene", ResourceFormatLoader::CACHE_MODE_IGNORE, &err);
+	REQUIRE_MESSAGE(err == OK, "USD edge subset source load failed.");
+	REQUIRE(loaded_scene.is_valid());
+	REQUIRE(ResourceSaver::save(loaded_scene, save_path) == OK);
+
+	Ref<FileAccess> saved_file = FileAccess::open(save_path, FileAccess::READ);
+	REQUIRE(saved_file.is_valid());
+	const String saved_text = saved_file->get_as_text();
+	CHECK(saved_text.contains("def GeomSubset \"SharedEdge\""));
+	CHECK(saved_text.contains("uniform token elementType = \"edge\""));
+	CHECK(saved_text.contains("uniform token familyName = \"selection\""));
+	CHECK(saved_text.contains("int[] indices = [1, 2, 3, 4]"));
 }
 
 TEST_CASE("[SceneTree][USD] Skip synthetic preview lighting when saving USDA") {
