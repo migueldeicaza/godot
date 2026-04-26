@@ -1049,6 +1049,86 @@ TEST_CASE("[SceneTree][USD] Preserve generic edge geom subsets across USD round-
 	CHECK(saved_text.contains("int[] indices = [1, 2, 3, 4]"));
 }
 
+TEST_CASE("[SceneTree][USD] Preserve authored references in read-only composition mode") {
+	PreviewLightingModeScope preview_lighting_mode_scope;
+	preview_lighting_mode_scope.set(0);
+
+	const String source_path = TestUtils::get_data_path("usd/composition_reference_source.usda");
+	const String save_path = TestUtils::get_temp_path("usd_composition_reference_saved.usda");
+
+	Error err = OK;
+	Ref<PackedScene> loaded_scene = ResourceLoader::load(source_path, "PackedScene", ResourceFormatLoader::CACHE_MODE_IGNORE, &err);
+	REQUIRE_MESSAGE(err == OK, "USD composition reference source load failed.");
+	REQUIRE(loaded_scene.is_valid());
+
+	Node *root = loaded_scene->instantiate();
+	REQUIRE(root != nullptr);
+	REQUIRE(root->get_child_count() == 1);
+
+	Node *usd_root = root->get_child(0);
+	REQUIRE(usd_root != nullptr);
+	Node *car_node = usd_root->get_child(0);
+	REQUIRE(car_node != nullptr);
+	Dictionary car_metadata = car_node->get_meta(StringName("usd"), Dictionary());
+	CHECK((String)car_metadata.get("usd:composition_preservation_mode", String()) == String("read_only"));
+	const Array references = car_metadata.get("usd:references", Array());
+	REQUIRE(references.size() == 1);
+	const Dictionary reference = references[0];
+	CHECK((String)reference.get("asset_path", String()) == String("./composition_ref_target.usda"));
+	CHECK((String)reference.get("prim_path", String()) == String("/Asset"));
+	memdelete(root);
+
+	REQUIRE(ResourceSaver::save(loaded_scene, save_path) == OK);
+
+	Ref<FileAccess> saved_file = FileAccess::open(save_path, FileAccess::READ);
+	REQUIRE(saved_file.is_valid());
+	const String saved_text = saved_file->get_as_text();
+	CHECK(saved_text.contains("over \"Car\""));
+	CHECK(saved_text.contains("references = @./composition_ref_target.usda@</Asset>"));
+	CHECK(saved_text.contains("xformOp:transform"));
+	CHECK(saved_text.contains("def Mesh \"Geom\"") == false);
+}
+
+TEST_CASE("[SceneTree][USD] Preserve authored payloads in read-only composition mode") {
+	PreviewLightingModeScope preview_lighting_mode_scope;
+	preview_lighting_mode_scope.set(0);
+
+	const String source_path = TestUtils::get_data_path("usd/composition_payload_source.usda");
+	const String save_path = TestUtils::get_temp_path("usd_composition_payload_saved.usda");
+
+	Error err = OK;
+	Ref<PackedScene> loaded_scene = ResourceLoader::load(source_path, "PackedScene", ResourceFormatLoader::CACHE_MODE_IGNORE, &err);
+	REQUIRE_MESSAGE(err == OK, "USD composition payload source load failed.");
+	REQUIRE(loaded_scene.is_valid());
+
+	Node *root = loaded_scene->instantiate();
+	REQUIRE(root != nullptr);
+	REQUIRE(root->get_child_count() == 1);
+
+	Node *usd_root = root->get_child(0);
+	REQUIRE(usd_root != nullptr);
+	Node *payload_node = usd_root->get_child(0);
+	REQUIRE(payload_node != nullptr);
+	Dictionary payload_metadata = payload_node->get_meta(StringName("usd"), Dictionary());
+	CHECK((String)payload_metadata.get("usd:composition_preservation_mode", String()) == String("read_only"));
+	const Array payloads = payload_metadata.get("usd:payloads", Array());
+	REQUIRE(payloads.size() == 1);
+	const Dictionary payload = payloads[0];
+	CHECK((String)payload.get("asset_path", String()) == String("./composition_payload_target.usda"));
+	CHECK((String)payload.get("prim_path", String()) == String("/PayloadAsset"));
+	memdelete(root);
+
+	REQUIRE(ResourceSaver::save(loaded_scene, save_path) == OK);
+
+	Ref<FileAccess> saved_file = FileAccess::open(save_path, FileAccess::READ);
+	REQUIRE(saved_file.is_valid());
+	const String saved_text = saved_file->get_as_text();
+	CHECK(saved_text.contains("over \"PayloadCar\""));
+	CHECK(saved_text.contains("payload = @./composition_payload_target.usda@</PayloadAsset>"));
+	CHECK(saved_text.contains("xformOp:transform"));
+	CHECK(saved_text.contains("def Mesh \"PayloadGeom\"") == false);
+}
+
 TEST_CASE("[SceneTree][USD] Skip synthetic preview lighting when saving USDA") {
 	const String source_path = TestUtils::get_data_path("usd/basic.usda");
 	const String save_path = TestUtils::get_temp_path("usd_skip_preview_nodes.usda");

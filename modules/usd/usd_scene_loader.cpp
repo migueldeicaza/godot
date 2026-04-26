@@ -63,12 +63,17 @@
 #include <pxr/base/tf/token.h>
 #include <pxr/base/vt/value.h>
 #include <pxr/usd/sdf/assetPath.h>
+#include <pxr/usd/sdf/listOp.h>
 #include <pxr/usd/sdf/path.h>
+#include <pxr/usd/sdf/primSpec.h>
+#include <pxr/usd/sdf/schema.h>
 #include <pxr/usd/sdf/types.h>
 #include <pxr/usd/usd/property.h>
 #include <pxr/usd/usd/attribute.h>
+#include <pxr/usd/usd/payloads.h>
 #include <pxr/usd/usd/prim.h>
 #include <pxr/usd/usd/primRange.h>
+#include <pxr/usd/usd/references.h>
 #include <pxr/usd/usd/relationship.h>
 #include <pxr/usd/usd/stage.h>
 #include <pxr/usd/usdGeom/camera.h>
@@ -344,6 +349,99 @@ Dictionary _serialize_relationships(const UsdPrim &p_prim) {
 		relationships[_to_godot_string(relationship.GetName().GetString())] = relationship_description;
 	}
 	return relationships;
+}
+
+Dictionary _serialize_layer_offset(const SdfLayerOffset &p_layer_offset) {
+	Dictionary description;
+	description["offset"] = p_layer_offset.GetOffset();
+	description["scale"] = p_layer_offset.GetScale();
+	return description;
+}
+
+Dictionary _serialize_reference(const SdfReference &p_reference) {
+	Dictionary description;
+	description["asset_path"] = _to_godot_string(p_reference.GetAssetPath());
+	description["prim_path"] = _to_godot_string(p_reference.GetPrimPath().GetString());
+	description["layer_offset"] = _serialize_layer_offset(p_reference.GetLayerOffset());
+	if (!p_reference.GetCustomData().empty()) {
+		description["custom_data_status"] = "deferred";
+		description["custom_data_debug"] = _to_godot_string(TfStringify(p_reference.GetCustomData()));
+	}
+	return description;
+}
+
+Dictionary _serialize_payload(const SdfPayload &p_payload) {
+	Dictionary description;
+	description["asset_path"] = _to_godot_string(p_payload.GetAssetPath());
+	description["prim_path"] = _to_godot_string(p_payload.GetPrimPath().GetString());
+	description["layer_offset"] = _serialize_layer_offset(p_payload.GetLayerOffset());
+	return description;
+}
+
+Array _serialize_authored_references(const UsdPrim &p_prim) {
+	Array references;
+	HashSet<String> seen_references;
+	const SdfPrimSpecHandleVector prim_stack = p_prim.GetPrimStack();
+	for (const SdfPrimSpecHandle &prim_spec : prim_stack) {
+		if (!prim_spec || !prim_spec->HasReferences()) {
+			continue;
+		}
+
+		const SdfReferenceVector authored_references = prim_spec->GetReferenceList().GetAddedOrExplicitItems();
+		for (const SdfReference &reference : authored_references) {
+			const String key = vformat("%s|%s|%s|%s",
+					_to_godot_string(reference.GetAssetPath()),
+					_to_godot_string(reference.GetPrimPath().GetString()),
+					String::num_real(reference.GetLayerOffset().GetOffset()),
+					String::num_real(reference.GetLayerOffset().GetScale()));
+			if (seen_references.has(key)) {
+				continue;
+			}
+			seen_references.insert(key);
+			references.push_back(_serialize_reference(reference));
+		}
+	}
+	return references;
+}
+
+Array _serialize_authored_payloads(const UsdPrim &p_prim) {
+	Array payloads;
+	HashSet<String> seen_payloads;
+	const SdfPrimSpecHandleVector prim_stack = p_prim.GetPrimStack();
+	for (const SdfPrimSpecHandle &prim_spec : prim_stack) {
+		if (!prim_spec || !prim_spec->HasPayloads()) {
+			continue;
+		}
+
+		const SdfPayloadVector authored_payloads = prim_spec->GetPayloadList().GetAddedOrExplicitItems();
+		for (const SdfPayload &payload : authored_payloads) {
+			const String key = vformat("%s|%s|%s|%s",
+					_to_godot_string(payload.GetAssetPath()),
+					_to_godot_string(payload.GetPrimPath().GetString()),
+					String::num_real(payload.GetLayerOffset().GetOffset()),
+					String::num_real(payload.GetLayerOffset().GetScale()));
+			if (seen_payloads.has(key)) {
+				continue;
+			}
+			seen_payloads.insert(key);
+			payloads.push_back(_serialize_payload(payload));
+		}
+	}
+	return payloads;
+}
+
+void _store_composition_arcs(const UsdPrim &p_prim, Object *p_target) {
+	const Array serialized_references = _serialize_authored_references(p_prim);
+	if (!serialized_references.is_empty()) {
+		_set_usd_metadata(p_target, "usd:references", serialized_references);
+		_set_usd_metadata(p_target, "usd:composition_preservation_mode", "read_only");
+	}
+
+	const Array serialized_payloads = _serialize_authored_payloads(p_prim);
+	if (!serialized_payloads.is_empty()) {
+		_set_usd_metadata(p_target, "usd:payloads", serialized_payloads);
+		_set_usd_metadata(p_target, "usd:composition_preservation_mode", "read_only");
+	}
 }
 
 void _mark_owner_recursive(Node *p_node, Node *p_owner) {
@@ -1935,6 +2033,7 @@ class UsdSceneBuilder {
 		}
 
 		_store_unmapped_properties(p_prim, node, handled_attributes);
+		_store_composition_arcs(p_prim, node);
 		return node;
 	}
 
@@ -2010,6 +2109,12 @@ class UsdSceneSaver {
 	static bool _is_generated_preview_node(const Node *p_node) {
 		const Dictionary metadata = _get_usd_metadata(p_node);
 		return (bool)metadata.get("usd:generated_preview", false);
+	}
+
+	static bool _has_preserved_composition_arcs(const Object *p_object) {
+		ERR_FAIL_NULL_V(p_object, false);
+		const Dictionary metadata = _get_usd_metadata(p_object);
+		return !((Array)metadata.get("usd:references", Array())).is_empty() || !((Array)metadata.get("usd:payloads", Array())).is_empty();
 	}
 
 	static real_t _meters_scale(double p_meters_per_unit) {
@@ -2375,6 +2480,95 @@ class UsdSceneSaver {
 		}
 
 		return false;
+	}
+
+	static bool _deserialize_layer_offset(const Variant &p_value, SdfLayerOffset *r_layer_offset) {
+		ERR_FAIL_NULL_V(r_layer_offset, false);
+		if (p_value.get_type() != Variant::DICTIONARY) {
+			return false;
+		}
+
+		const Dictionary description = p_value;
+		const double offset = description.get("offset", 0.0);
+		const double scale = description.get("scale", 1.0);
+		*r_layer_offset = SdfLayerOffset(offset, scale);
+		return true;
+	}
+
+	static bool _deserialize_reference(const Dictionary &p_description, SdfReference *r_reference) {
+		ERR_FAIL_NULL_V(r_reference, false);
+		const String asset_path = p_description.get("asset_path", String());
+		const String prim_path = p_description.get("prim_path", String());
+		SdfLayerOffset layer_offset;
+		_deserialize_layer_offset(p_description.get("layer_offset", Dictionary()), &layer_offset);
+		*r_reference = SdfReference(asset_path.utf8().get_data(), prim_path.is_empty() ? SdfPath() : SdfPath(prim_path.utf8().get_data()), layer_offset);
+		return true;
+	}
+
+	static bool _deserialize_payload(const Dictionary &p_description, SdfPayload *r_payload) {
+		ERR_FAIL_NULL_V(r_payload, false);
+		const String asset_path = p_description.get("asset_path", String());
+		const String prim_path = p_description.get("prim_path", String());
+		SdfLayerOffset layer_offset;
+		_deserialize_layer_offset(p_description.get("layer_offset", Dictionary()), &layer_offset);
+		*r_payload = SdfPayload(asset_path.utf8().get_data(), prim_path.is_empty() ? SdfPath() : SdfPath(prim_path.utf8().get_data()), layer_offset);
+		return true;
+	}
+
+	static bool _reapply_composition_arcs(const UsdPrim &p_prim, const Object *p_source_object) {
+		ERR_FAIL_NULL_V(p_source_object, false);
+		if (!p_prim) {
+			return false;
+		}
+
+		const Dictionary metadata = _get_usd_metadata(p_source_object);
+		bool applied_any = false;
+
+		const Array references = metadata.get("usd:references", Array());
+		if (!references.is_empty()) {
+			SdfReferenceVector reference_items;
+			for (int i = 0; i < references.size(); i++) {
+				if (references[i].get_type() != Variant::DICTIONARY) {
+					continue;
+				}
+				SdfReference reference;
+				if (_deserialize_reference(references[i], &reference)) {
+					reference_items.push_back(reference);
+				}
+			}
+
+			if (!reference_items.empty()) {
+				UsdReferences usd_references = p_prim.GetReferences();
+				if (usd_references) {
+					usd_references.SetReferences(reference_items);
+					applied_any = true;
+				}
+			}
+		}
+
+		const Array payloads = metadata.get("usd:payloads", Array());
+		if (!payloads.is_empty()) {
+			SdfPayloadVector payload_items;
+			for (int i = 0; i < payloads.size(); i++) {
+				if (payloads[i].get_type() != Variant::DICTIONARY) {
+					continue;
+				}
+				SdfPayload payload;
+				if (_deserialize_payload(payloads[i], &payload)) {
+					payload_items.push_back(payload);
+				}
+			}
+
+			if (!payload_items.empty()) {
+				UsdPayloads usd_payloads = p_prim.GetPayloads();
+				if (usd_payloads) {
+					usd_payloads.SetPayloads(payload_items);
+					applied_any = true;
+				}
+			}
+		}
+
+		return applied_any;
 	}
 
 	static void _reapply_unmapped_properties(const UsdPrim &p_prim, const Object *p_source_object) {
@@ -3098,6 +3292,24 @@ class UsdSceneSaver {
 			*r_supports_transform = false;
 		}
 
+		if (_has_preserved_composition_arcs(p_node)) {
+			if (Node3D *node_3d = Object::cast_to<Node3D>(p_node)) {
+				if (Object::cast_to<MeshInstance3D>(p_node) == nullptr &&
+						Object::cast_to<Camera3D>(p_node) == nullptr &&
+						Object::cast_to<Light3D>(p_node) == nullptr) {
+					UsdGeomXform usd_xform = UsdGeomXform::Define(p_stage, p_path);
+					if (r_supports_transform != nullptr) {
+						*r_supports_transform = node_3d != nullptr;
+					}
+					return usd_xform.GetPrim();
+				}
+			}
+			if (r_supports_transform != nullptr) {
+				*r_supports_transform = Object::cast_to<Node3D>(p_node) != nullptr;
+			}
+			return p_stage->OverridePrim(p_path);
+		}
+
 		if (Camera3D *camera = Object::cast_to<Camera3D>(p_node)) {
 			UsdGeomCamera usd_camera = UsdGeomCamera::Define(p_stage, p_path);
 			_write_camera(camera, usd_camera, p_meters_per_unit);
@@ -3178,16 +3390,27 @@ class UsdSceneSaver {
 	}
 
 	static void _write_transform(Node3D *p_node, const UsdPrim &p_prim, const Transform3D &p_stage_correction_inverse) {
-		UsdGeomXformable xformable(p_prim);
-		if (!xformable) {
-			return;
-		}
-
 		Transform3D authored_transform = p_node->get_transform();
 		const Dictionary metadata = _get_usd_metadata(p_node);
 		const bool resets_xform_stack = (bool)metadata.get("usd:resets_xform_stack", false);
 		if (resets_xform_stack) {
 			authored_transform = p_stage_correction_inverse * authored_transform;
+		}
+
+		UsdGeomXformable xformable(p_prim);
+		if (!xformable) {
+			UsdAttribute transform_attr = p_prim.CreateAttribute(TfToken("xformOp:transform"), SdfValueTypeNames->Matrix4d, false);
+			if (transform_attr) {
+				transform_attr.Set(_transform_to_gf_matrix(authored_transform), UsdTimeCode::Default());
+			}
+
+			VtArray<TfToken> op_order;
+			op_order.push_back(TfToken("xformOp:transform"));
+			UsdAttribute order_attr = p_prim.CreateAttribute(TfToken("xformOpOrder"), SdfValueTypeNames->TokenArray, false);
+			if (order_attr) {
+				order_attr.Set(op_order, UsdTimeCode::Default());
+			}
+			return;
 		}
 
 		UsdGeomXformOp transform_op = xformable.MakeMatrixXform();
@@ -3215,6 +3438,8 @@ class UsdSceneSaver {
 			r_top_level_paths->push_back(prim_path);
 		}
 
+		const bool preserved_composition_arcs = _reapply_composition_arcs(prim, p_node);
+
 		if (supports_transform) {
 			if (Node3D *node_3d = Object::cast_to<Node3D>(p_node)) {
 				_write_transform(node_3d, prim, p_stage_correction_inverse);
@@ -3222,6 +3447,10 @@ class UsdSceneSaver {
 		}
 
 		_reapply_unmapped_properties(prim, p_node);
+
+		if (preserved_composition_arcs) {
+			return true;
+		}
 
 		HashMap<String, int> name_counts;
 		for (int i = 0; i < p_node->get_child_count(); i++) {
