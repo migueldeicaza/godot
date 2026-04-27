@@ -21,6 +21,7 @@ func _init() -> void:
 
 	var source_path: String = args[0]
 	stage.source_path = source_path
+	instance.rebuild()
 	_require(stage.get_stage_metadata().get("usd:default_prim_path", "") == "/Model", "Stage metadata did not record the default prim.")
 
 	var source_uid_id := ResourceUID.create_id_for_path(source_path)
@@ -90,6 +91,7 @@ func _init() -> void:
 	ordered_selections["/Model/Nested"] = { "detail": "sphere" }
 	ordered_selections["/Model"] = { "modelingVariant": "blue" }
 	ordered_instance.variant_selections = ordered_selections
+	ordered_instance.rebuild()
 	_require(ordered_instance.get_node_for_prim_path("/Model/Nested/NestedSphere") != null, "Depth-sorted variant selections did not apply a nested selection after its parent.")
 
 	quit(1 if failed else 0)

@@ -62,10 +62,22 @@ class UsdStageInstance : public Node3D {
 	Dictionary variant_selections;
 	Dictionary composed_variant_sets;
 	Node *generated_root = nullptr;
+	bool debug_logging = false;
+	bool rebuilt_after_scene_instantiation = false;
+	int debug_rebuild_count = 0;
+	String debug_last_selection_change;
+	String debug_last_rebuild_status;
+	String debug_last_generated_summary;
 
 	void _clear_node_children(Node *p_node);
 	void _clear_generated_children();
+	bool _is_generated_root(Node *p_node) const;
+	void _adopt_existing_generated_root();
+	Node *_get_generated_owner() const;
+	void _mark_generated_tree_owned();
 	Node *_find_node_for_prim_path(Node *p_node, const String &p_prim_path) const;
+	void _append_generated_summary(Node *p_node, PackedStringArray *r_summary, int p_limit) const;
+	String _get_generated_summary() const;
 	bool _parse_variant_property(const String &p_property, String *r_prim_path, String *r_variant_set) const;
 	String _get_variant_selection(const String &p_prim_path, const String &p_variant_set) const;
 	void _set_variant_selection_property(const String &p_prim_path, const String &p_variant_set, const String &p_selection);
@@ -84,6 +96,13 @@ public:
 
 	void set_variant_selections(const Dictionary &p_variant_selections);
 	Dictionary get_variant_selections() const;
+
+	void set_debug_logging(bool p_debug_logging);
+	bool is_debug_logging() const;
+	int get_debug_rebuild_count() const;
+	String get_debug_last_selection_change() const;
+	String get_debug_last_rebuild_status() const;
+	String get_debug_last_generated_summary() const;
 
 	Error rebuild();
 	Node *get_node_for_prim_path(const String &p_prim_path) const;

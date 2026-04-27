@@ -45,6 +45,7 @@
 #include "scene/3d/node_3d.h"
 #include "scene/3d/world_environment.h"
 #include "scene/main/node.h"
+#include "scene/main/scene_tree.h"
 #include "scene/resources/3d/primitive_meshes.h"
 #include "scene/resources/environment.h"
 #include "scene/resources/image_texture.h"
@@ -80,6 +81,7 @@
 #include <pxr/usd/usd/relationship.h>
 #include <pxr/usd/usd/stage.h>
 #include <pxr/usd/usd/variantSets.h>
+#include <pxr/usd/usdUtils/usdzPackage.h>
 #include <pxr/usd/usdGeom/camera.h>
 #include <pxr/usd/usdGeom/capsule.h>
 #include <pxr/usd/usdGeom/cone.h>
@@ -144,6 +146,23 @@ String _get_absolute_path(const String &p_path) {
 }
 
 static constexpr const char *USD_STAGE_INSTANCE_GENERATED_META = "usd_stage_instance_generated";
+
+bool _is_usd_scene_extension(const String &p_extension) {
+	const String extension = p_extension.to_lower();
+	return extension == "usd" || extension == "usda" || extension == "usdc" || extension == "usdz";
+}
+
+bool _is_stage_instance_generated_root_node(Node *p_node) {
+	if (p_node == nullptr) {
+		return false;
+	}
+
+	if (p_node->has_meta(USD_STAGE_INSTANCE_GENERATED_META) && (bool)p_node->get_meta(USD_STAGE_INSTANCE_GENERATED_META)) {
+		return true;
+	}
+
+	return p_node->get_name() == StringName("_Generated");
+}
 
 struct VariantSelectionRequest {
 	String prim_path;
@@ -307,23 +326,16 @@ UsdStageRefPtr _open_stage_for_instance(const String &p_source_path, const Dicti
 	SdfLayerRefPtr root_layer = SdfLayer::FindOrOpen(absolute_path.utf8().get_data());
 	ERR_FAIL_COND_V_MSG(!root_layer, nullptr, vformat("Failed to open USD root layer: %s", p_source_path));
 
-	if (!p_variant_selections.is_empty()) {
-		SdfLayerRefPtr instance_layer = SdfLayer::CreateAnonymous("GodotUsdStageInstance.usda");
-		const std::string sublayer_path = root_layer->GetRealPath().empty() ? root_layer->GetIdentifier() : root_layer->GetRealPath();
-		instance_layer->InsertSubLayerPath(sublayer_path);
-		UsdStageRefPtr stage = UsdStage::Open(instance_layer, UsdStage::LoadAll);
-		ERR_FAIL_COND_V_MSG(!stage, nullptr, vformat("Failed to compose USD stage: %s", p_source_path));
-
-		stage->SetEditTarget(instance_layer);
-		_apply_variant_selections(stage, p_variant_selections);
-		stage = UsdStage::Open(instance_layer, UsdStage::LoadAll);
-		ERR_FAIL_COND_V_MSG(!stage, nullptr, vformat("Failed to recompose USD stage with variant selections: %s", p_source_path));
-		return stage;
-	}
-
 	SdfLayerRefPtr session_layer = SdfLayer::CreateAnonymous("GodotUsdStageInstanceSession.usda");
 	UsdStageRefPtr stage = UsdStage::Open(root_layer, session_layer, UsdStage::LoadAll);
 	ERR_FAIL_COND_V_MSG(!stage, nullptr, vformat("Failed to compose USD stage: %s", p_source_path));
+
+	if (!p_variant_selections.is_empty()) {
+		stage->SetEditTarget(session_layer);
+		_apply_variant_selections(stage, p_variant_selections);
+		stage = UsdStage::Open(root_layer, session_layer, UsdStage::LoadAll);
+		ERR_FAIL_COND_V_MSG(!stage, nullptr, vformat("Failed to recompose USD stage with variant selections: %s", p_source_path));
+	}
 
 	return stage;
 }
@@ -2349,7 +2361,33 @@ class UsdSceneSaver {
 
 	static SaveContext _make_save_context(Node *p_root) {
 		SaveContext context;
-		const Dictionary metadata = _get_usd_metadata(p_root);
+		Node *metadata_source = p_root;
+
+		if (Object::cast_to<UsdStageInstance>(p_root) || _is_stage_instance_generated_root_node(p_root)) {
+			Node *generated_root = _is_stage_instance_generated_root_node(p_root) ? p_root : nullptr;
+			if (generated_root == nullptr) {
+				for (int i = 0; i < p_root->get_child_count(); i++) {
+					Node *child = p_root->get_child(i);
+					if (_is_stage_instance_generated_root_node(child)) {
+						generated_root = child;
+						break;
+					}
+				}
+			}
+
+			if (generated_root != nullptr) {
+				metadata_source = generated_root;
+				for (int i = 0; i < generated_root->get_child_count(); i++) {
+					Node *child = generated_root->get_child(i);
+					if (_is_generated_preview_node(child)) {
+						continue;
+					}
+					context.top_level_nodes.push_back(child);
+				}
+			}
+		}
+
+		const Dictionary metadata = _get_usd_metadata(metadata_source);
 
 		if (metadata.has("usd:meters_per_unit")) {
 			context.meters_per_unit = (double)metadata["usd:meters_per_unit"];
@@ -2359,6 +2397,10 @@ class UsdSceneSaver {
 		}
 		if (metadata.has("usd:default_prim_path")) {
 			context.default_prim_path = metadata["usd:default_prim_path"];
+		}
+
+		if (!context.top_level_nodes.is_empty()) {
+			return context;
 		}
 
 		if (_is_stage_container(p_root)) {
@@ -3797,17 +3839,35 @@ void UsdStageInstance::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("get_stage"), &UsdStageInstance::get_stage);
 	ClassDB::bind_method(D_METHOD("set_variant_selections", "variant_selections"), &UsdStageInstance::set_variant_selections);
 	ClassDB::bind_method(D_METHOD("get_variant_selections"), &UsdStageInstance::get_variant_selections);
+	ClassDB::bind_method(D_METHOD("set_debug_logging", "debug_logging"), &UsdStageInstance::set_debug_logging);
+	ClassDB::bind_method(D_METHOD("is_debug_logging"), &UsdStageInstance::is_debug_logging);
+	ClassDB::bind_method(D_METHOD("get_debug_rebuild_count"), &UsdStageInstance::get_debug_rebuild_count);
+	ClassDB::bind_method(D_METHOD("get_debug_last_selection_change"), &UsdStageInstance::get_debug_last_selection_change);
+	ClassDB::bind_method(D_METHOD("get_debug_last_rebuild_status"), &UsdStageInstance::get_debug_last_rebuild_status);
+	ClassDB::bind_method(D_METHOD("get_debug_last_generated_summary"), &UsdStageInstance::get_debug_last_generated_summary);
 	ClassDB::bind_method(D_METHOD("rebuild"), &UsdStageInstance::rebuild);
 	ClassDB::bind_method(D_METHOD("get_node_for_prim_path", "prim_path"), &UsdStageInstance::get_node_for_prim_path);
 
 	ADD_PROPERTY(PropertyInfo(Variant::OBJECT, "stage", PROPERTY_HINT_RESOURCE_TYPE, UsdStageResource::get_class_static()), "set_stage", "get_stage");
 	ADD_PROPERTY(PropertyInfo(Variant::DICTIONARY, "variant_selections", PROPERTY_HINT_NONE, "", PROPERTY_USAGE_NO_EDITOR), "set_variant_selections", "get_variant_selections");
+	ADD_GROUP("USD Debug", "debug_");
+	ADD_PROPERTY(PropertyInfo(Variant::BOOL, "debug_logging"), "set_debug_logging", "is_debug_logging");
+	ADD_PROPERTY(PropertyInfo(Variant::INT, "debug_rebuild_count", PROPERTY_HINT_NONE, "", PROPERTY_USAGE_EDITOR | PROPERTY_USAGE_READ_ONLY), "", "get_debug_rebuild_count");
+	ADD_PROPERTY(PropertyInfo(Variant::STRING, "debug_last_selection_change", PROPERTY_HINT_NONE, "", PROPERTY_USAGE_EDITOR | PROPERTY_USAGE_READ_ONLY), "", "get_debug_last_selection_change");
+	ADD_PROPERTY(PropertyInfo(Variant::STRING, "debug_last_rebuild_status", PROPERTY_HINT_NONE, "", PROPERTY_USAGE_EDITOR | PROPERTY_USAGE_READ_ONLY), "", "get_debug_last_rebuild_status");
+	ADD_PROPERTY(PropertyInfo(Variant::STRING, "debug_last_generated_summary", PROPERTY_HINT_MULTILINE_TEXT, "", PROPERTY_USAGE_EDITOR | PROPERTY_USAGE_READ_ONLY), "", "get_debug_last_generated_summary");
 }
 
 void UsdStageInstance::_notification(int p_what) {
 	switch (p_what) {
-		case NOTIFICATION_READY: {
+		case NOTIFICATION_SCENE_INSTANTIATED: {
+			_adopt_existing_generated_root();
 			if (stage.is_valid() && !stage->get_source_path().is_empty()) {
+				rebuilt_after_scene_instantiation = rebuild() == OK;
+			}
+		} break;
+		case NOTIFICATION_READY: {
+			if (!rebuilt_after_scene_instantiation && stage.is_valid() && !stage->get_source_path().is_empty()) {
 				rebuild();
 			}
 		} break;
@@ -3830,7 +3890,7 @@ void UsdStageInstance::_clear_node_children(Node *p_node) {
 void UsdStageInstance::_clear_generated_children() {
 	for (int i = get_child_count() - 1; i >= 0; i--) {
 		Node *child = get_child(i);
-		if (!child->has_meta(USD_STAGE_INSTANCE_GENERATED_META) || !(bool)child->get_meta(USD_STAGE_INSTANCE_GENERATED_META)) {
+		if (!_is_generated_root(child)) {
 			continue;
 		}
 
@@ -3843,6 +3903,106 @@ void UsdStageInstance::_clear_generated_children() {
 	}
 
 	generated_root = nullptr;
+}
+
+bool UsdStageInstance::_is_generated_root(Node *p_node) const {
+	return _is_stage_instance_generated_root_node(p_node);
+}
+
+void UsdStageInstance::_adopt_existing_generated_root() {
+	if (generated_root != nullptr && generated_root->get_parent() == this && _is_generated_root(generated_root)) {
+		generated_root->set_meta(USD_STAGE_INSTANCE_GENERATED_META, true);
+	} else {
+		generated_root = nullptr;
+	}
+
+	if (generated_root == nullptr) {
+		for (int i = 0; i < get_child_count(); i++) {
+			Node *child = get_child(i);
+			if (!_is_generated_root(child)) {
+				continue;
+			}
+
+			generated_root = child;
+			generated_root->set_meta(USD_STAGE_INSTANCE_GENERATED_META, true);
+			break;
+		}
+	}
+
+	for (int i = get_child_count() - 1; i >= 0; i--) {
+		Node *child = get_child(i);
+		if (child == generated_root || !_is_generated_root(child)) {
+			continue;
+		}
+
+		remove_child(child);
+		if (child->is_inside_tree()) {
+			child->queue_free();
+		} else {
+			memdelete(child);
+		}
+	}
+}
+
+Node *UsdStageInstance::_get_generated_owner() const {
+	if (is_inside_tree()) {
+		SceneTree *tree = get_tree();
+		Node *edited_scene_root = tree->get_edited_scene_root();
+		if (edited_scene_root != nullptr && (edited_scene_root == this || edited_scene_root->is_ancestor_of(this))) {
+			return edited_scene_root;
+		}
+	}
+
+	return get_owner();
+}
+
+void UsdStageInstance::_mark_generated_tree_owned() {
+	if (generated_root == nullptr) {
+		return;
+	}
+
+	Node *owner = _get_generated_owner();
+	if (owner == nullptr) {
+		return;
+	}
+
+	_mark_owner_recursive(generated_root, owner);
+}
+
+void UsdStageInstance::_append_generated_summary(Node *p_node, PackedStringArray *r_summary, int p_limit) const {
+	ERR_FAIL_NULL(p_node);
+	ERR_FAIL_NULL(r_summary);
+	if (r_summary->size() >= p_limit) {
+		return;
+	}
+
+	if (p_node->has_meta(USD_META_KEY)) {
+		const Variant metadata_variant = p_node->get_meta(USD_META_KEY);
+		if (metadata_variant.get_type() == Variant::DICTIONARY) {
+			const Dictionary metadata = metadata_variant;
+			const String prim_path = metadata.get("usd:prim_path", String());
+			if (!prim_path.is_empty()) {
+				r_summary->push_back(prim_path);
+			}
+		}
+	}
+
+	for (int i = 0; i < p_node->get_child_count() && r_summary->size() < p_limit; i++) {
+		_append_generated_summary(p_node->get_child(i), r_summary, p_limit);
+	}
+}
+
+String UsdStageInstance::_get_generated_summary() const {
+	if (generated_root == nullptr) {
+		return "<no generated root>";
+	}
+
+	PackedStringArray summary;
+	_append_generated_summary(generated_root, &summary, 12);
+	if (summary.is_empty()) {
+		return "<generated root has no USD prim nodes>";
+	}
+	return String(", ").join(summary);
 }
 
 Node *UsdStageInstance::_find_node_for_prim_path(Node *p_node, const String &p_prim_path) const {
@@ -3918,7 +4078,13 @@ String UsdStageInstance::_get_variant_selection(const String &p_prim_path, const
 
 void UsdStageInstance::_set_variant_selection_property(const String &p_prim_path, const String &p_variant_set, const String &p_selection) {
 	const String current_selection = _get_variant_selection(p_prim_path, p_variant_set);
+	debug_last_selection_change = vformat("%s:%s %s -> %s", p_prim_path, p_variant_set, current_selection, p_selection);
 	if (current_selection == p_selection) {
+		debug_last_rebuild_status = "Skipped rebuild because selection was unchanged.";
+		if (debug_logging) {
+			print_line(vformat("UsdStageInstance: %s", debug_last_rebuild_status));
+		}
+		notify_property_list_changed();
 		return;
 	}
 
@@ -3933,8 +4099,10 @@ void UsdStageInstance::_set_variant_selection_property(const String &p_prim_path
 	updated_selections[p_prim_path] = prim_selections;
 	variant_selections = updated_selections;
 
-	if (stage.is_valid() && !stage->get_source_path().is_empty()) {
+	if (stage.is_valid() && !stage->get_source_path().is_empty() && (is_inside_tree() || generated_root != nullptr)) {
 		rebuild();
+	} else {
+		debug_last_rebuild_status = stage.is_valid() && !stage->get_source_path().is_empty() ? "Deferred rebuild until the instance enters the scene tree." : "Skipped rebuild because the instance has no stage source path.";
 	}
 	notify_property_list_changed();
 }
@@ -3944,13 +4112,16 @@ void UsdStageInstance::_stage_changed() {
 
 	if (stage.is_null() || stage->get_source_path().is_empty()) {
 		composed_variant_sets.clear();
-		if (generated_root != nullptr) {
-			_clear_generated_children();
-		}
+		_clear_generated_children();
+		rebuilt_after_scene_instantiation = false;
 		return;
 	}
 
-	rebuild();
+	if (is_inside_tree() || generated_root != nullptr) {
+		rebuild();
+	} else {
+		debug_last_rebuild_status = "Deferred rebuild until the instance enters the scene tree.";
+	}
 }
 
 bool UsdStageInstance::_set(const StringName &p_name, const Variant &p_value) {
@@ -4043,6 +4214,7 @@ void UsdStageInstance::set_stage(const Ref<UsdStageResource> &p_stage) {
 	}
 
 	stage = p_stage;
+	rebuilt_after_scene_instantiation = false;
 	if (stage.is_valid()) {
 		stage->connect_changed(callable_mp(this, &UsdStageInstance::_stage_changed));
 	}
@@ -4056,8 +4228,12 @@ Ref<UsdStageResource> UsdStageInstance::get_stage() const {
 
 void UsdStageInstance::set_variant_selections(const Dictionary &p_variant_selections) {
 	variant_selections = p_variant_selections;
-	if (stage.is_valid() && !stage->get_source_path().is_empty()) {
+	rebuilt_after_scene_instantiation = false;
+	debug_last_selection_change = "variant_selections dictionary replaced";
+	if (stage.is_valid() && !stage->get_source_path().is_empty() && (is_inside_tree() || generated_root != nullptr)) {
 		rebuild();
+	} else {
+		debug_last_rebuild_status = stage.is_valid() && !stage->get_source_path().is_empty() ? "Deferred rebuild until the instance enters the scene tree." : "Skipped rebuild because the instance has no stage source path.";
 	}
 	notify_property_list_changed();
 }
@@ -4066,20 +4242,62 @@ Dictionary UsdStageInstance::get_variant_selections() const {
 	return variant_selections;
 }
 
+void UsdStageInstance::set_debug_logging(bool p_debug_logging) {
+	debug_logging = p_debug_logging;
+}
+
+bool UsdStageInstance::is_debug_logging() const {
+	return debug_logging;
+}
+
+int UsdStageInstance::get_debug_rebuild_count() const {
+	return debug_rebuild_count;
+}
+
+String UsdStageInstance::get_debug_last_selection_change() const {
+	return debug_last_selection_change;
+}
+
+String UsdStageInstance::get_debug_last_rebuild_status() const {
+	return debug_last_rebuild_status;
+}
+
+String UsdStageInstance::get_debug_last_generated_summary() const {
+	return debug_last_generated_summary;
+}
+
 Error UsdStageInstance::rebuild() {
 	composed_variant_sets.clear();
+	debug_rebuild_count++;
+	debug_last_rebuild_status = vformat("Rebuild #%d started.", debug_rebuild_count);
+	if (debug_logging) {
+		print_line(vformat("UsdStageInstance: %s selections=%s", debug_last_rebuild_status, Variant(variant_selections)));
+	}
 
-	ERR_FAIL_COND_V_MSG(stage.is_null(), ERR_UNCONFIGURED, "UsdStageInstance requires a stage resource.");
-	ERR_FAIL_COND_V_MSG(stage->get_source_path().is_empty(), ERR_UNCONFIGURED, "UsdStageInstance stage resource has no source path.");
+	if (stage.is_null()) {
+		debug_last_rebuild_status = "Rebuild failed: instance requires a stage resource.";
+		ERR_FAIL_V_MSG(ERR_UNCONFIGURED, debug_last_rebuild_status);
+	}
+	if (stage->get_source_path().is_empty()) {
+		debug_last_rebuild_status = "Rebuild failed: stage resource has no source path.";
+		ERR_FAIL_V_MSG(ERR_UNCONFIGURED, debug_last_rebuild_status);
+	}
 
 	UsdStageRefPtr composed_stage = _open_stage_for_instance(stage->get_source_path(), variant_selections);
-	ERR_FAIL_COND_V_MSG(!composed_stage, ERR_CANT_OPEN, vformat("Failed to compose USD stage for instance: %s", stage->get_source_path()));
+	if (!composed_stage) {
+		debug_last_rebuild_status = vformat("Rebuild failed: could not compose USD stage for %s.", stage->get_source_path());
+		ERR_FAIL_V_MSG(ERR_CANT_OPEN, debug_last_rebuild_status);
+	}
 	composed_variant_sets = _collect_variant_sets(composed_stage);
 
 	UsdSceneBuilder builder(composed_stage);
 	Node *rebuilt_root = builder.build("_Generated");
-	ERR_FAIL_NULL_V(rebuilt_root, ERR_CANT_CREATE);
+	if (rebuilt_root == nullptr) {
+		debug_last_rebuild_status = "Rebuild failed: could not build generated Godot root.";
+		ERR_FAIL_V(ERR_CANT_CREATE);
+	}
 
+	_adopt_existing_generated_root();
 	if (generated_root == nullptr) {
 		generated_root = rebuilt_root;
 		generated_root->set_meta(USD_STAGE_INSTANCE_GENERATED_META, true);
@@ -4101,6 +4319,12 @@ Error UsdStageInstance::rebuild() {
 
 	generated_root->set_meta("usd_stage_instance_source_path", stage->get_source_path());
 	generated_root->set_meta("usd_stage_instance_variant_selections", variant_selections);
+	_mark_generated_tree_owned();
+	debug_last_generated_summary = _get_generated_summary();
+	debug_last_rebuild_status = vformat("Rebuild #%d completed: %d generated root children.", debug_rebuild_count, generated_root->get_child_count());
+	if (debug_logging) {
+		print_line(vformat("UsdStageInstance: %s summary=%s", debug_last_rebuild_status, debug_last_generated_summary));
+	}
 
 	return OK;
 }
@@ -4142,8 +4366,21 @@ Ref<Resource> UsdSceneFormatLoader::load(const String &p_path, const String &p_o
 		return Ref<Resource>();
 	}
 
-	UsdSceneBuilder builder(stage);
-	Node *scene_root = builder.build(p_path.get_file().get_basename());
+	Node *scene_root = nullptr;
+	const Dictionary variant_sets = _collect_variant_sets(stage);
+	if (!variant_sets.is_empty()) {
+		UsdStageInstance *stage_instance = memnew(UsdStageInstance);
+		stage_instance->set_name(p_path.get_file().get_basename());
+		Ref<UsdStageResource> stage_resource;
+		stage_resource.instantiate();
+		stage_resource->set_source_path(p_path);
+		stage_instance->set_stage(stage_resource);
+		stage_instance->rebuild();
+		scene_root = stage_instance;
+	} else {
+		UsdSceneBuilder builder(stage);
+		scene_root = builder.build(p_path.get_file().get_basename());
+	}
 	ERR_FAIL_NULL_V_MSG(scene_root, Ref<Resource>(), vformat("Failed to build Godot scene from USD stage: %s", p_path));
 
 	for (int i = 0; i < scene_root->get_child_count(); i++) {
@@ -4206,10 +4443,25 @@ Error UsdSceneFormatSaver::save(const Ref<Resource> &p_resource, const String &p
 
 	Ref<PackedScene> packed_scene = p_resource;
 	ERR_FAIL_COND_V_MSG(packed_scene.is_null(), ERR_UNAVAILABLE, "USD saver only supports PackedScene resources.");
-	ERR_FAIL_COND_V_MSG(!recognize_path(p_resource, p_path), ERR_FILE_UNRECOGNIZED, "USD saver only writes .usda files in this prototype.");
+	ERR_FAIL_COND_V_MSG(!recognize_path(p_resource, p_path), ERR_FILE_UNRECOGNIZED, "USD saver only writes .usd, .usda, .usdc, and .usdz files.");
 
 	UsdSceneSaver saver;
-	return saver.save(packed_scene, p_path);
+	if (p_path.get_extension().to_lower() != "usdz") {
+		return saver.save(packed_scene, p_path);
+	}
+
+	const String package_source_path = p_path + ".tmp.usda";
+	Error save_error = saver.save(packed_scene, package_source_path);
+	if (save_error != OK) {
+		return save_error;
+	}
+
+	const String absolute_package_source_path = _get_absolute_path(package_source_path);
+	const String absolute_package_path = _get_absolute_path(p_path);
+	const String first_layer_name = p_path.get_file().get_basename() + ".usda";
+	const bool packaged = UsdUtilsCreateNewUsdzPackage(SdfAssetPath(absolute_package_source_path.utf8().get_data()), absolute_package_path.utf8().get_data(), first_layer_name.utf8().get_data());
+	DirAccess::remove_absolute(package_source_path);
+	return packaged ? OK : ERR_CANT_CREATE;
 }
 
 bool UsdSceneFormatSaver::recognize(const Ref<Resource> &p_resource) const {
@@ -4218,10 +4470,13 @@ bool UsdSceneFormatSaver::recognize(const Ref<Resource> &p_resource) const {
 
 void UsdSceneFormatSaver::get_recognized_extensions(const Ref<Resource> &p_resource, List<String> *p_extensions) const {
 	if (recognize(p_resource)) {
+		p_extensions->push_back("usd");
 		p_extensions->push_back("usda");
+		p_extensions->push_back("usdc");
+		p_extensions->push_back("usdz");
 	}
 }
 
 bool UsdSceneFormatSaver::recognize_path(const Ref<Resource> &p_resource, const String &p_path) const {
-	return recognize(p_resource) && p_path.get_extension().to_lower() == "usda";
+	return recognize(p_resource) && _is_usd_scene_extension(p_path.get_extension());
 }

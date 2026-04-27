@@ -21,6 +21,7 @@ env_usd.Prepend(CPPPATH=[usd_include_path])
 env_usd.Prepend(LIBPATH=[usd_library_path])
 
 usd_libs = [
+    "usd_usdUtils",
     "usd_usdLux",
     "usd_usdShade",
     "usd_usdSkel",
