@@ -3804,13 +3804,20 @@ bool _variant_selections_match_stage_defaults(const Dictionary &p_variant_select
 	return true;
 }
 
+struct SourceStageInstanceSaveInfo {
+	String source_path;
+	String source_absolute_path;
+	Dictionary variant_selections;
+	Dictionary stage_variant_sets;
+};
+
 Error _copy_file_absolute_preserving_contents(const String &p_source_absolute_path, const String &p_destination_absolute_path) {
 	if (p_source_absolute_path.simplify_path() == p_destination_absolute_path.simplify_path()) {
 		return OK;
 	}
 
 	const Error make_dir_error = DirAccess::make_dir_recursive_absolute(p_destination_absolute_path.get_base_dir());
-	ERR_FAIL_COND_V_MSG(make_dir_error != OK, make_dir_error, vformat("Failed to create destination directory for USDZ save: %s", p_destination_absolute_path.get_base_dir()));
+	ERR_FAIL_COND_V_MSG(make_dir_error != OK, make_dir_error, vformat("Failed to create destination directory for USD save: %s", p_destination_absolute_path.get_base_dir()));
 
 	return DirAccess::copy_absolute(p_source_absolute_path, p_destination_absolute_path);
 }
@@ -4017,11 +4024,8 @@ Error _save_source_usd_layer_with_variant_defaults(const String &p_source_absolu
 	return _copy_file_absolute_preserving_contents(temp_layer_path, p_destination_absolute_path);
 }
 
-bool _try_save_source_usdz_stage_instance(const Ref<PackedScene> &p_scene, const String &p_path, Error *r_error) {
-	if (p_path.get_extension().to_lower() != "usdz") {
-		return false;
-	}
-
+bool _try_get_source_stage_instance_save_info(const Ref<PackedScene> &p_scene, const String &p_required_source_extension, SourceStageInstanceSaveInfo *r_info) {
+	ERR_FAIL_NULL_V(r_info, false);
 	Node *root = p_scene->instantiate();
 	ERR_FAIL_NULL_V_MSG(root, false, "USD saver could not instantiate the PackedScene.");
 
@@ -4039,78 +4043,50 @@ bool _try_save_source_usdz_stage_instance(const Ref<PackedScene> &p_scene, const
 
 	const String source_path = stage->get_source_path();
 	const String source_absolute_path = _get_absolute_path(source_path);
-	if (source_absolute_path.get_extension().to_lower() != "usdz") {
+	const String source_extension = source_absolute_path.get_extension().to_lower();
+	if (source_extension != p_required_source_extension) {
 		memdelete(root);
 		return false;
 	}
 
-	const Dictionary variant_selections = stage_instance->get_variant_selections();
-	const Dictionary stage_variant_sets = stage->get_variant_sets();
+	r_info->source_path = source_path;
+	r_info->source_absolute_path = source_absolute_path;
+	r_info->variant_selections = stage_instance->get_variant_selections();
+	r_info->stage_variant_sets = stage->get_variant_sets();
 	memdelete(root);
-
-	if (!_variant_selections_match_stage_defaults(variant_selections, stage_variant_sets)) {
-		const String destination_absolute_path = _get_absolute_path(p_path);
-		const Error save_error = _save_source_usdz_with_variant_defaults(source_absolute_path, destination_absolute_path, p_path.get_file(), variant_selections);
-		if (r_error != nullptr) {
-			*r_error = save_error;
-		}
-		return true;
-	}
-
-	const String destination_absolute_path = _get_absolute_path(p_path);
-	const Error copy_error = _copy_file_absolute_preserving_contents(source_absolute_path, destination_absolute_path);
-	if (r_error != nullptr) {
-		*r_error = copy_error;
-	}
-	ERR_FAIL_COND_V_MSG(copy_error != OK, true, vformat("Failed to preserve source USDZ package while saving: %s -> %s", source_path, p_path));
 	return true;
 }
 
-bool _try_save_source_usdc_stage_instance(const Ref<PackedScene> &p_scene, const String &p_path, Error *r_error) {
-	if (p_path.get_extension().to_lower() != "usdc") {
+bool _try_save_source_stage_instance(const Ref<PackedScene> &p_scene, const String &p_path, Error *r_error) {
+	const String destination_extension = p_path.get_extension().to_lower();
+	if (destination_extension != "usdz" && destination_extension != "usdc") {
 		return false;
 	}
 
-	Node *root = p_scene->instantiate();
-	ERR_FAIL_NULL_V_MSG(root, false, "USD saver could not instantiate the PackedScene.");
-
-	UsdStageInstance *stage_instance = Object::cast_to<UsdStageInstance>(root);
-	if (stage_instance == nullptr) {
-		memdelete(root);
+	SourceStageInstanceSaveInfo source_info;
+	if (!_try_get_source_stage_instance_save_info(p_scene, destination_extension, &source_info)) {
 		return false;
 	}
-
-	const Ref<UsdStageResource> stage = stage_instance->get_stage();
-	if (stage.is_null() || stage->get_source_path().is_empty()) {
-		memdelete(root);
-		return false;
-	}
-
-	const String source_path = stage->get_source_path();
-	const String source_absolute_path = _get_absolute_path(source_path);
-	if (source_absolute_path.get_extension().to_lower() != "usdc") {
-		memdelete(root);
-		return false;
-	}
-
-	const Dictionary variant_selections = stage_instance->get_variant_selections();
-	const Dictionary stage_variant_sets = stage->get_variant_sets();
-	memdelete(root);
 
 	const String destination_absolute_path = _get_absolute_path(p_path);
-	if (!_variant_selections_match_stage_defaults(variant_selections, stage_variant_sets)) {
-		const Error save_error = _save_source_usd_layer_with_variant_defaults(source_absolute_path, destination_absolute_path, p_path.get_file(), variant_selections);
+	if (!_variant_selections_match_stage_defaults(source_info.variant_selections, source_info.stage_variant_sets)) {
+		Error save_error = ERR_UNAVAILABLE;
+		if (destination_extension == "usdz") {
+			save_error = _save_source_usdz_with_variant_defaults(source_info.source_absolute_path, destination_absolute_path, p_path.get_file(), source_info.variant_selections);
+		} else if (destination_extension == "usdc") {
+			save_error = _save_source_usd_layer_with_variant_defaults(source_info.source_absolute_path, destination_absolute_path, p_path.get_file(), source_info.variant_selections);
+		}
 		if (r_error != nullptr) {
 			*r_error = save_error;
 		}
 		return true;
 	}
 
-	const Error copy_error = _copy_file_absolute_preserving_contents(source_absolute_path, destination_absolute_path);
+	const Error copy_error = _copy_file_absolute_preserving_contents(source_info.source_absolute_path, destination_absolute_path);
 	if (r_error != nullptr) {
 		*r_error = copy_error;
 	}
-	ERR_FAIL_COND_V_MSG(copy_error != OK, true, vformat("Failed to preserve source USDC layer while saving: %s -> %s", source_path, p_path));
+	ERR_FAIL_COND_V_MSG(copy_error != OK, true, vformat("Failed to preserve source USD file while saving: %s -> %s", source_info.source_path, p_path));
 	return true;
 }
 
@@ -4790,14 +4766,9 @@ Error UsdSceneFormatSaver::save(const Ref<Resource> &p_resource, const String &p
 	ERR_FAIL_COND_V_MSG(packed_scene.is_null(), ERR_UNAVAILABLE, "USD saver only supports PackedScene resources.");
 	ERR_FAIL_COND_V_MSG(!recognize_path(p_resource, p_path), ERR_FILE_UNRECOGNIZED, "USD saver only writes .usd, .usda, .usdc, and .usdz files.");
 
-	Error source_usdz_save_error = OK;
-	if (_try_save_source_usdz_stage_instance(packed_scene, p_path, &source_usdz_save_error)) {
-		return source_usdz_save_error;
-	}
-
-	Error source_usdc_save_error = OK;
-	if (_try_save_source_usdc_stage_instance(packed_scene, p_path, &source_usdc_save_error)) {
-		return source_usdc_save_error;
+	Error source_stage_save_error = OK;
+	if (_try_save_source_stage_instance(packed_scene, p_path, &source_stage_save_error)) {
+		return source_stage_save_error;
 	}
 
 	UsdSceneSaver saver;
