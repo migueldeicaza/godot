@@ -70,6 +70,11 @@ func _init() -> void:
 	_require(instance.get_node_for_prim_path("/Model/BlueSphere") != null, "Variant rebuild did not include BlueSphere.")
 	_require(instance.get_node_for_prim_path("/Model/RedCube") == null, "Variant rebuild still included RedCube.")
 
+	var blue_sphere := instance.get_node_for_prim_path("/Model/BlueSphere") as Node3D
+	_require(blue_sphere != null, "BlueSphere should be editable as a Node3D.")
+	blue_sphere.transform = Transform3D(Basis.IDENTITY, Vector3(2.0, 3.0, 4.0))
+	blue_sphere.visible = false
+
 	var has_nested_variant_property := false
 	for property in instance.get_property_list():
 		if property.get("name", "") == "variants/Model/Nested/detail":
@@ -83,6 +88,18 @@ func _init() -> void:
 	_require(instance.get("variants/Model/Nested/detail") == "sphere", "Nested variant property did not update to sphere.")
 	_require(instance.get_node_for_prim_path("/Model/Nested/NestedSphere") != null, "Nested variant rebuild did not include NestedSphere.")
 	_require(instance.get_node_for_prim_path("/Model/Nested/NestedCube") == null, "Nested variant rebuild still included NestedCube.")
+	blue_sphere = instance.get_node_for_prim_path("/Model/BlueSphere") as Node3D
+	_require(blue_sphere != null, "BlueSphere should still exist after nested variant rebuild.")
+	_require(blue_sphere.transform.origin.is_equal_approx(Vector3(2.0, 3.0, 4.0)), "Runtime transform override did not survive nested rebuild.")
+	_require(not blue_sphere.visible, "Runtime visibility override did not survive nested rebuild.")
+
+	instance.set("variants/Model/modelingVariant", "red")
+	_require(instance.get_node_for_prim_path("/Model/BlueSphere") == null, "BlueSphere override test expected BlueSphere to be dormant in red variant.")
+	instance.set("variants/Model/modelingVariant", "blue")
+	blue_sphere = instance.get_node_for_prim_path("/Model/BlueSphere") as Node3D
+	_require(blue_sphere != null, "BlueSphere should return after switching back to blue variant.")
+	_require(blue_sphere.transform.origin.is_equal_approx(Vector3(2.0, 3.0, 4.0)), "Dormant runtime transform override did not reapply when prim recomposed.")
+	_require(not blue_sphere.visible, "Dormant runtime visibility override did not reapply when prim recomposed.")
 
 	var ordered_instance := UsdStageInstance.new()
 	root.add_child(ordered_instance)

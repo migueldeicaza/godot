@@ -4777,14 +4777,8 @@ String UsdStageInstance::_get_generated_summary() const {
 Node *UsdStageInstance::_find_node_for_prim_path(Node *p_node, const String &p_prim_path) const {
 	ERR_FAIL_NULL_V(p_node, nullptr);
 
-	if (p_node->has_meta(USD_META_KEY)) {
-		const Variant metadata_variant = p_node->get_meta(USD_META_KEY);
-		if (metadata_variant.get_type() == Variant::DICTIONARY) {
-			const Dictionary metadata = metadata_variant;
-			if ((String)metadata.get("usd:prim_path", String()) == p_prim_path) {
-				return p_node;
-			}
-		}
+	if (_get_prim_path_for_node(p_node) == p_prim_path) {
+		return p_node;
 	}
 
 	for (int i = 0; i < p_node->get_child_count(); i++) {
@@ -4795,6 +4789,146 @@ Node *UsdStageInstance::_find_node_for_prim_path(Node *p_node, const String &p_p
 	}
 
 	return nullptr;
+}
+
+String UsdStageInstance::_get_prim_path_for_node(const Node *p_node) const {
+	ERR_FAIL_NULL_V(p_node, String());
+	if (!p_node->has_meta(USD_META_KEY)) {
+		return String();
+	}
+
+	const Variant metadata_variant = p_node->get_meta(USD_META_KEY);
+	if (metadata_variant.get_type() != Variant::DICTIONARY) {
+		return String();
+	}
+
+	const Dictionary metadata = metadata_variant;
+	if ((bool)metadata.get("usd:generated_preview", false)) {
+		return String();
+	}
+
+	return metadata.get("usd:prim_path", String());
+}
+
+bool UsdStageInstance::_get_node3d_runtime_state(Node *p_node, Dictionary *r_state) const {
+	ERR_FAIL_NULL_V(p_node, false);
+	ERR_FAIL_NULL_V(r_state, false);
+
+	Node3D *node_3d = Object::cast_to<Node3D>(p_node);
+	if (node_3d == nullptr) {
+		return false;
+	}
+
+	const String prim_path = _get_prim_path_for_node(p_node);
+	if (prim_path.is_empty()) {
+		return false;
+	}
+
+	Dictionary state;
+	state["transform"] = node_3d->get_transform();
+	state["visible"] = node_3d->is_visible();
+	*r_state = state;
+	return true;
+}
+
+bool UsdStageInstance::_node3d_runtime_state_matches(Node *p_node, const Dictionary &p_state) const {
+	ERR_FAIL_NULL_V(p_node, false);
+
+	Node3D *node_3d = Object::cast_to<Node3D>(p_node);
+	if (node_3d == nullptr) {
+		return false;
+	}
+
+	if (p_state.get("transform", Variant()).get_type() != Variant::TRANSFORM3D) {
+		return false;
+	}
+	const Transform3D transform = p_state["transform"];
+	if (!_transforms_equal_approx(node_3d->get_transform(), transform)) {
+		return false;
+	}
+
+	if (p_state.get("visible", Variant()).get_type() != Variant::BOOL) {
+		return false;
+	}
+	return node_3d->is_visible() == (bool)p_state["visible"];
+}
+
+void UsdStageInstance::_collect_runtime_node_baselines(Node *p_node, Dictionary *r_baselines) const {
+	ERR_FAIL_NULL(p_node);
+	ERR_FAIL_NULL(r_baselines);
+
+	Dictionary state;
+	if (_get_node3d_runtime_state(p_node, &state)) {
+		const String prim_path = _get_prim_path_for_node(p_node);
+		r_baselines->set(prim_path, state);
+	}
+
+	for (int i = 0; i < p_node->get_child_count(); i++) {
+		_collect_runtime_node_baselines(p_node->get_child(i), r_baselines);
+	}
+}
+
+void UsdStageInstance::_capture_runtime_node_overrides() {
+	if (generated_root == nullptr) {
+		return;
+	}
+
+	Dictionary current_states;
+	_collect_runtime_node_baselines(generated_root, &current_states);
+	for (const KeyValue<Variant, Variant> &current_entry : current_states) {
+		if (current_entry.key.get_type() != Variant::STRING || current_entry.value.get_type() != Variant::DICTIONARY) {
+			continue;
+		}
+
+		const String prim_path = current_entry.key;
+		const Dictionary current_state = current_entry.value;
+		const Variant baseline_variant = generated_node_baselines.get(prim_path, Variant());
+		if (baseline_variant.get_type() != Variant::DICTIONARY) {
+			runtime_node_overrides[prim_path] = current_state;
+			continue;
+		}
+
+		Node *current_node = _find_node_for_prim_path(generated_root, prim_path);
+		if (current_node != nullptr && !_node3d_runtime_state_matches(current_node, baseline_variant)) {
+			runtime_node_overrides[prim_path] = current_state;
+		} else {
+			runtime_node_overrides.erase(prim_path);
+		}
+	}
+}
+
+void UsdStageInstance::_refresh_runtime_node_baselines() {
+	generated_node_baselines.clear();
+	if (generated_root == nullptr) {
+		return;
+	}
+
+	_collect_runtime_node_baselines(generated_root, &generated_node_baselines);
+}
+
+void UsdStageInstance::_apply_runtime_node_overrides(Node *p_node) {
+	ERR_FAIL_NULL(p_node);
+
+	const String prim_path = _get_prim_path_for_node(p_node);
+	if (!prim_path.is_empty()) {
+		const Variant override_variant = runtime_node_overrides.get(prim_path, Variant());
+		if (override_variant.get_type() == Variant::DICTIONARY) {
+			Node3D *node_3d = Object::cast_to<Node3D>(p_node);
+			if (node_3d != nullptr) {
+				const Dictionary override_state = override_variant;
+				if (override_state.get("transform", Variant()).get_type() == Variant::TRANSFORM3D) {
+					node_3d->set_transform(override_state["transform"]);
+				}
+				if (override_state.get("visible", Variant()).get_type() == Variant::BOOL) {
+					node_3d->set_visible((bool)override_state["visible"]);
+				}
+			}
+		}
+	}
+
+	for (int i = 0; i < p_node->get_child_count(); i++) {
+		_apply_runtime_node_overrides(p_node->get_child(i));
+	}
 }
 
 bool UsdStageInstance::_parse_variant_property(const String &p_property, String *r_prim_path, String *r_variant_set) const {
@@ -4878,6 +5012,9 @@ void UsdStageInstance::_set_variant_selection_property(const String &p_prim_path
 
 void UsdStageInstance::_stage_changed() {
 	notify_property_list_changed();
+	generated_node_baselines.clear();
+	runtime_node_overrides.clear();
+	skip_next_runtime_override_capture = true;
 
 	if (stage.is_null() || stage->get_source_path().is_empty()) {
 		composed_variant_sets.clear();
@@ -4984,6 +5121,8 @@ void UsdStageInstance::set_stage(const Ref<UsdStageResource> &p_stage) {
 
 	stage = p_stage;
 	rebuilt_after_scene_instantiation = false;
+	generated_node_baselines.clear();
+	runtime_node_overrides.clear();
 	if (stage.is_valid()) {
 		stage->connect_changed(callable_mp(this, &UsdStageInstance::_stage_changed));
 	}
@@ -5036,6 +5175,11 @@ String UsdStageInstance::get_debug_last_generated_summary() const {
 }
 
 Error UsdStageInstance::rebuild() {
+	if (skip_next_runtime_override_capture) {
+		skip_next_runtime_override_capture = false;
+	} else {
+		_capture_runtime_node_overrides();
+	}
 	composed_variant_sets.clear();
 	debug_rebuild_count++;
 	debug_last_rebuild_status = vformat("Rebuild #%d started.", debug_rebuild_count);
@@ -5088,6 +5232,8 @@ Error UsdStageInstance::rebuild() {
 
 	generated_root->set_meta("usd_stage_instance_source_path", stage->get_source_path());
 	generated_root->set_meta("usd_stage_instance_variant_selections", variant_selections);
+	_refresh_runtime_node_baselines();
+	_apply_runtime_node_overrides(generated_root);
 	_mark_generated_tree_owned();
 	debug_last_generated_summary = _get_generated_summary();
 	debug_last_rebuild_status = vformat("Rebuild #%d completed: %d generated root children.", debug_rebuild_count, generated_root->get_child_count());
