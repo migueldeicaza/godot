@@ -1129,6 +1129,80 @@ TEST_CASE("[SceneTree][USD] Preserve authored payloads in read-only composition 
 	CHECK(saved_text.contains("def Mesh \"PayloadGeom\"") == false);
 }
 
+TEST_CASE("[SceneTree][USD] Preserve authored inherits in read-only composition mode") {
+	PreviewLightingModeScope preview_lighting_mode_scope;
+	preview_lighting_mode_scope.set(0);
+
+	const String source_path = TestUtils::get_data_path("usd/composition_inherits_source.usda");
+	const String save_path = TestUtils::get_temp_path("usd_composition_inherits_saved.usda");
+
+	Error err = OK;
+	Ref<PackedScene> loaded_scene = ResourceLoader::load(source_path, "PackedScene", ResourceFormatLoader::CACHE_MODE_IGNORE, &err);
+	REQUIRE_MESSAGE(err == OK, "USD composition inherits source load failed.");
+	REQUIRE(loaded_scene.is_valid());
+
+	Node *root = loaded_scene->instantiate();
+	REQUIRE(root != nullptr);
+	REQUIRE(root->get_child_count() == 1);
+
+	Node *usd_root = root->get_child(0);
+	REQUIRE(usd_root != nullptr);
+	Node *inherited_node = usd_root->get_child(0);
+	REQUIRE(inherited_node != nullptr);
+	Dictionary inherited_metadata = inherited_node->get_meta(StringName("usd"), Dictionary());
+	CHECK((String)inherited_metadata.get("usd:composition_preservation_mode", String()) == String("read_only"));
+	const Array inherits = inherited_metadata.get("usd:inherits", Array());
+	REQUIRE(inherits.size() == 1);
+	CHECK((String)inherits[0] == String("/BaseAsset"));
+	memdelete(root);
+
+	REQUIRE(ResourceSaver::save(loaded_scene, save_path) == OK);
+
+	Ref<FileAccess> saved_file = FileAccess::open(save_path, FileAccess::READ);
+	REQUIRE(saved_file.is_valid());
+	const String saved_text = saved_file->get_as_text();
+	CHECK(saved_text.contains("def Xform \"InheritedAsset\""));
+	CHECK(saved_text.contains("inherits = </BaseAsset>"));
+	CHECK(saved_text.contains("xformOp:transform"));
+}
+
+TEST_CASE("[SceneTree][USD] Preserve authored specializes in read-only composition mode") {
+	PreviewLightingModeScope preview_lighting_mode_scope;
+	preview_lighting_mode_scope.set(0);
+
+	const String source_path = TestUtils::get_data_path("usd/composition_specializes_source.usda");
+	const String save_path = TestUtils::get_temp_path("usd_composition_specializes_saved.usda");
+
+	Error err = OK;
+	Ref<PackedScene> loaded_scene = ResourceLoader::load(source_path, "PackedScene", ResourceFormatLoader::CACHE_MODE_IGNORE, &err);
+	REQUIRE_MESSAGE(err == OK, "USD composition specializes source load failed.");
+	REQUIRE(loaded_scene.is_valid());
+
+	Node *root = loaded_scene->instantiate();
+	REQUIRE(root != nullptr);
+	REQUIRE(root->get_child_count() == 1);
+
+	Node *usd_root = root->get_child(0);
+	REQUIRE(usd_root != nullptr);
+	Node *specialized_node = usd_root->get_child(0);
+	REQUIRE(specialized_node != nullptr);
+	Dictionary specialized_metadata = specialized_node->get_meta(StringName("usd"), Dictionary());
+	CHECK((String)specialized_metadata.get("usd:composition_preservation_mode", String()) == String("read_only"));
+	const Array specializes = specialized_metadata.get("usd:specializes", Array());
+	REQUIRE(specializes.size() == 1);
+	CHECK((String)specializes[0] == String("/BaseAsset"));
+	memdelete(root);
+
+	REQUIRE(ResourceSaver::save(loaded_scene, save_path) == OK);
+
+	Ref<FileAccess> saved_file = FileAccess::open(save_path, FileAccess::READ);
+	REQUIRE(saved_file.is_valid());
+	const String saved_text = saved_file->get_as_text();
+	CHECK(saved_text.contains("def Xform \"SpecializedAsset\""));
+	CHECK(saved_text.contains("specializes = </BaseAsset>"));
+	CHECK(saved_text.contains("xformOp:transform"));
+}
+
 TEST_CASE("[SceneTree][USD] Skip synthetic preview lighting when saving USDA") {
 	const String source_path = TestUtils::get_data_path("usd/basic.usda");
 	const String save_path = TestUtils::get_temp_path("usd_skip_preview_nodes.usda");

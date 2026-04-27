@@ -76,11 +76,13 @@
 #include <pxr/usd/sdf/zipFile.h>
 #include <pxr/usd/usd/property.h>
 #include <pxr/usd/usd/attribute.h>
+#include <pxr/usd/usd/inherits.h>
 #include <pxr/usd/usd/payloads.h>
 #include <pxr/usd/usd/prim.h>
 #include <pxr/usd/usd/primRange.h>
 #include <pxr/usd/usd/references.h>
 #include <pxr/usd/usd/relationship.h>
+#include <pxr/usd/usd/specializes.h>
 #include <pxr/usd/usd/stage.h>
 #include <pxr/usd/usd/variantSets.h>
 #include <pxr/usd/usdUtils/usdzPackage.h>
@@ -598,6 +600,14 @@ Dictionary _serialize_payload(const SdfPayload &p_payload) {
 	return description;
 }
 
+Array _serialize_path_vector(const SdfPathVector &p_paths) {
+	Array paths;
+	for (const SdfPath &path : p_paths) {
+		paths.push_back(_to_godot_string(path.GetString()));
+	}
+	return paths;
+}
+
 Array _serialize_authored_references(const UsdPrim &p_prim) {
 	Array references;
 	HashSet<String> seen_references;
@@ -650,6 +660,50 @@ Array _serialize_authored_payloads(const UsdPrim &p_prim) {
 	return payloads;
 }
 
+Array _serialize_authored_inherits(const UsdPrim &p_prim) {
+	SdfPathVector paths;
+	HashSet<String> seen_paths;
+	const SdfPrimSpecHandleVector prim_stack = p_prim.GetPrimStack();
+	for (const SdfPrimSpecHandle &prim_spec : prim_stack) {
+		if (!prim_spec || !prim_spec->HasInheritPaths()) {
+			continue;
+		}
+
+		const SdfPathVector authored_paths = prim_spec->GetInheritPathList().GetAddedOrExplicitItems();
+		for (const SdfPath &path : authored_paths) {
+			const String key = _to_godot_string(path.GetString());
+			if (seen_paths.has(key)) {
+				continue;
+			}
+			seen_paths.insert(key);
+			paths.push_back(path);
+		}
+	}
+	return _serialize_path_vector(paths);
+}
+
+Array _serialize_authored_specializes(const UsdPrim &p_prim) {
+	SdfPathVector paths;
+	HashSet<String> seen_paths;
+	const SdfPrimSpecHandleVector prim_stack = p_prim.GetPrimStack();
+	for (const SdfPrimSpecHandle &prim_spec : prim_stack) {
+		if (!prim_spec || !prim_spec->HasSpecializes()) {
+			continue;
+		}
+
+		const SdfPathVector authored_paths = prim_spec->GetSpecializesList().GetAddedOrExplicitItems();
+		for (const SdfPath &path : authored_paths) {
+			const String key = _to_godot_string(path.GetString());
+			if (seen_paths.has(key)) {
+				continue;
+			}
+			seen_paths.insert(key);
+			paths.push_back(path);
+		}
+	}
+	return _serialize_path_vector(paths);
+}
+
 void _store_composition_arcs(const UsdPrim &p_prim, Object *p_target) {
 	const Array serialized_references = _serialize_authored_references(p_prim);
 	if (!serialized_references.is_empty()) {
@@ -660,6 +714,18 @@ void _store_composition_arcs(const UsdPrim &p_prim, Object *p_target) {
 	const Array serialized_payloads = _serialize_authored_payloads(p_prim);
 	if (!serialized_payloads.is_empty()) {
 		_set_usd_metadata(p_target, "usd:payloads", serialized_payloads);
+		_set_usd_metadata(p_target, "usd:composition_preservation_mode", "read_only");
+	}
+
+	const Array serialized_inherits = _serialize_authored_inherits(p_prim);
+	if (!serialized_inherits.is_empty()) {
+		_set_usd_metadata(p_target, "usd:inherits", serialized_inherits);
+		_set_usd_metadata(p_target, "usd:composition_preservation_mode", "read_only");
+	}
+
+	const Array serialized_specializes = _serialize_authored_specializes(p_prim);
+	if (!serialized_specializes.is_empty()) {
+		_set_usd_metadata(p_target, "usd:specializes", serialized_specializes);
 		_set_usd_metadata(p_target, "usd:composition_preservation_mode", "read_only");
 	}
 }
@@ -2418,7 +2484,10 @@ class UsdSceneSaver {
 	static bool _has_preserved_composition_arcs(const Object *p_object) {
 		ERR_FAIL_NULL_V(p_object, false);
 		const Dictionary metadata = _get_usd_metadata(p_object);
-		return !((Array)metadata.get("usd:references", Array())).is_empty() || !((Array)metadata.get("usd:payloads", Array())).is_empty();
+		return !((Array)metadata.get("usd:references", Array())).is_empty() ||
+				!((Array)metadata.get("usd:payloads", Array())).is_empty() ||
+				!((Array)metadata.get("usd:inherits", Array())).is_empty() ||
+				!((Array)metadata.get("usd:specializes", Array())).is_empty();
 	}
 
 	static real_t _meters_scale(double p_meters_per_unit) {
@@ -2849,6 +2918,24 @@ class UsdSceneSaver {
 		return true;
 	}
 
+	static SdfPathVector _deserialize_path_array(const Array &p_paths) {
+		SdfPathVector paths;
+		for (int i = 0; i < p_paths.size(); i++) {
+			if (p_paths[i].get_type() != Variant::STRING) {
+				continue;
+			}
+			const String path = p_paths[i];
+			if (path.is_empty()) {
+				continue;
+			}
+			const SdfPath sdf_path(path.utf8().get_data());
+			if (!sdf_path.IsEmpty()) {
+				paths.push_back(sdf_path);
+			}
+		}
+		return paths;
+	}
+
 	static bool _reapply_composition_arcs(const UsdPrim &p_prim, const Object *p_source_object) {
 		ERR_FAIL_NULL_V(p_source_object, false);
 		if (!p_prim) {
@@ -2897,6 +2984,30 @@ class UsdSceneSaver {
 				UsdPayloads usd_payloads = p_prim.GetPayloads();
 				if (usd_payloads) {
 					usd_payloads.SetPayloads(payload_items);
+					applied_any = true;
+				}
+			}
+		}
+
+		const Array inherits = metadata.get("usd:inherits", Array());
+		if (!inherits.is_empty()) {
+			const SdfPathVector inherit_items = _deserialize_path_array(inherits);
+			if (!inherit_items.empty()) {
+				UsdInherits usd_inherits = p_prim.GetInherits();
+				if (usd_inherits) {
+					usd_inherits.SetInherits(inherit_items);
+					applied_any = true;
+				}
+			}
+		}
+
+		const Array specializes = metadata.get("usd:specializes", Array());
+		if (!specializes.is_empty()) {
+			const SdfPathVector specialize_items = _deserialize_path_array(specializes);
+			if (!specialize_items.empty()) {
+				UsdSpecializes usd_specializes = p_prim.GetSpecializes();
+				if (usd_specializes) {
+					usd_specializes.SetSpecializes(specialize_items);
 					applied_any = true;
 				}
 			}
@@ -3913,7 +4024,9 @@ bool _usd_metadata_has_preserved_composition_boundary(const Dictionary &p_metada
 	return (bool)p_metadata.get("usd:variant_boundary", false) ||
 			!((Array)p_metadata.get("usd:variant_context", Array())).is_empty() ||
 			!((Array)p_metadata.get("usd:references", Array())).is_empty() ||
-			!((Array)p_metadata.get("usd:payloads", Array())).is_empty();
+			!((Array)p_metadata.get("usd:payloads", Array())).is_empty() ||
+			!((Array)p_metadata.get("usd:inherits", Array())).is_empty() ||
+			!((Array)p_metadata.get("usd:specializes", Array())).is_empty();
 }
 
 void _report_usd_save_mode(const String &p_message, bool p_warning = false) {
@@ -5109,13 +5222,13 @@ Error UsdSceneFormatSaver::save(const Ref<Resource> &p_resource, const String &p
 	UsdSceneSaver saver;
 	if (p_path.get_extension().to_lower() != "usdz") {
 		const bool has_composition_boundaries = _packed_scene_has_usd_composition_boundaries(packed_scene);
-		_report_usd_save_mode(vformat("exporting composed Godot scene to %s; USD variant sets, inactive branches, and composition arcs are not reconstructed by this path.", p_path), has_composition_boundaries);
+		_report_usd_save_mode(vformat("exporting composed Godot scene to %s; preserved read-only composition arcs stored on nodes are reauthored, but variant sets, inactive branches, and unsupported arcs are not reconstructed by this path.", p_path), has_composition_boundaries);
 		return saver.save(packed_scene, p_path);
 	}
 
 	const String package_source_path = p_path + ".tmp.usda";
 	const bool has_composition_boundaries = _packed_scene_has_usd_composition_boundaries(packed_scene);
-	_report_usd_save_mode(vformat("packaging composed Godot scene as USDZ at %s; original package contents, inactive variant branches, and composition arcs are not preserved by this path.", p_path), has_composition_boundaries);
+	_report_usd_save_mode(vformat("packaging composed Godot scene as USDZ at %s; preserved read-only composition arcs stored on nodes are reauthored, but original package contents, inactive variant branches, and unsupported arcs are not preserved by this path.", p_path), has_composition_boundaries);
 	Error save_error = saver.save(packed_scene, package_source_path);
 	if (save_error != OK) {
 		return save_error;
