@@ -3905,6 +3905,241 @@ struct SourceStageInstanceSaveInfo {
 	Dictionary stage_variant_sets;
 };
 
+struct CompositionBoundaryNodeState {
+	Node *node = nullptr;
+};
+
+bool _usd_metadata_has_preserved_composition_boundary(const Dictionary &p_metadata) {
+	return (bool)p_metadata.get("usd:variant_boundary", false) ||
+			!((Array)p_metadata.get("usd:variant_context", Array())).is_empty() ||
+			!((Array)p_metadata.get("usd:references", Array())).is_empty() ||
+			!((Array)p_metadata.get("usd:payloads", Array())).is_empty();
+}
+
+void _report_usd_save_mode(const String &p_message, bool p_warning = false) {
+	const String report = "USD save report: " + p_message;
+	if (p_warning) {
+		WARN_PRINT(report);
+	} else {
+		print_line(report);
+	}
+}
+
+bool _transforms_equal_approx(const Transform3D &p_left, const Transform3D &p_right) {
+	if (!p_left.origin.is_equal_approx(p_right.origin)) {
+		return false;
+	}
+	for (int i = 0; i < 3; i++) {
+		if (!p_left.basis.get_column(i).is_equal_approx(p_right.basis.get_column(i))) {
+			return false;
+		}
+	}
+	return true;
+}
+
+bool _generated_node_state_matches(Node *p_current, Node *p_expected, String *r_reason) {
+	ERR_FAIL_NULL_V(p_current, false);
+	ERR_FAIL_NULL_V(p_expected, false);
+
+	if (p_current->get_name() != p_expected->get_name()) {
+		if (r_reason != nullptr) {
+			*r_reason = vformat("name changed from '%s' to '%s'", p_expected->get_name(), p_current->get_name());
+		}
+		return false;
+	}
+
+	if (String(p_current->get_class()) != String(p_expected->get_class())) {
+		if (r_reason != nullptr) {
+			*r_reason = vformat("node type changed from '%s' to '%s'", p_expected->get_class(), p_current->get_class());
+		}
+		return false;
+	}
+
+	Node3D *current_3d = Object::cast_to<Node3D>(p_current);
+	Node3D *expected_3d = Object::cast_to<Node3D>(p_expected);
+	if ((current_3d == nullptr) != (expected_3d == nullptr)) {
+		if (r_reason != nullptr) {
+			*r_reason = "Node3D mapping changed";
+		}
+		return false;
+	}
+	if (current_3d != nullptr && expected_3d != nullptr) {
+		if (!_transforms_equal_approx(current_3d->get_transform(), expected_3d->get_transform())) {
+			if (r_reason != nullptr) {
+				*r_reason = "transform changed";
+			}
+			return false;
+		}
+		if (current_3d->is_visible() != expected_3d->is_visible()) {
+			if (r_reason != nullptr) {
+				*r_reason = "visibility changed";
+			}
+			return false;
+		}
+	}
+
+	MeshInstance3D *current_mesh = Object::cast_to<MeshInstance3D>(p_current);
+	MeshInstance3D *expected_mesh = Object::cast_to<MeshInstance3D>(p_expected);
+	if ((current_mesh == nullptr) != (expected_mesh == nullptr)) {
+		if (r_reason != nullptr) {
+			*r_reason = "mesh node mapping changed";
+		}
+		return false;
+	}
+	if (current_mesh != nullptr && expected_mesh != nullptr) {
+		const Ref<Mesh> current_mesh_resource = current_mesh->get_mesh();
+		const Ref<Mesh> expected_mesh_resource = expected_mesh->get_mesh();
+		const int current_surface_count = current_mesh_resource.is_valid() ? current_mesh_resource->get_surface_count() : 0;
+		const int expected_surface_count = expected_mesh_resource.is_valid() ? expected_mesh_resource->get_surface_count() : 0;
+		if (current_surface_count != expected_surface_count) {
+			if (r_reason != nullptr) {
+				*r_reason = "mesh surface count changed";
+			}
+			return false;
+		}
+	}
+
+	return true;
+}
+
+void _collect_generated_composition_boundary_nodes(Node *p_node, bool p_under_composition_boundary, HashMap<String, CompositionBoundaryNodeState> *r_nodes, Vector<String> *r_unmapped_nodes, int p_unmapped_limit = 12) {
+	ERR_FAIL_NULL(p_node);
+	ERR_FAIL_NULL(r_nodes);
+
+	const Dictionary metadata = _get_usd_metadata(p_node);
+	if ((bool)metadata.get("usd:generated_preview", false)) {
+		return;
+	}
+
+	const bool under_composition_boundary = p_under_composition_boundary || _usd_metadata_has_preserved_composition_boundary(metadata);
+	const String prim_path = metadata.get("usd:prim_path", String());
+
+	if (under_composition_boundary) {
+		if (!prim_path.is_empty()) {
+			CompositionBoundaryNodeState state;
+			state.node = p_node;
+			r_nodes->insert(prim_path, state);
+		} else if (r_unmapped_nodes != nullptr && r_unmapped_nodes->size() < p_unmapped_limit) {
+			r_unmapped_nodes->push_back(String(p_node->get_path()));
+		}
+	}
+
+	for (int i = 0; i < p_node->get_child_count(); i++) {
+		_collect_generated_composition_boundary_nodes(p_node->get_child(i), under_composition_boundary, r_nodes, r_unmapped_nodes, p_unmapped_limit);
+	}
+}
+
+void _warn_source_stage_instance_composition_boundary_edits(Node *p_stage_instance_root, const String &p_source_path, const Dictionary &p_variant_selections) {
+	ERR_FAIL_NULL(p_stage_instance_root);
+
+	Node *generated_root = nullptr;
+	for (int i = 0; i < p_stage_instance_root->get_child_count(); i++) {
+		Node *child = p_stage_instance_root->get_child(i);
+		if (_is_stage_instance_generated_root_node(child)) {
+			generated_root = child;
+			break;
+		}
+	}
+	if (generated_root == nullptr) {
+		return;
+	}
+
+	UsdStageRefPtr expected_stage = _open_stage_for_instance(p_source_path, p_variant_selections);
+	if (!expected_stage) {
+		return;
+	}
+
+	UsdSceneBuilder builder(expected_stage);
+	Node *expected_root = builder.build("_Generated");
+	if (expected_root == nullptr) {
+		return;
+	}
+
+	HashMap<String, CompositionBoundaryNodeState> current_nodes;
+	HashMap<String, CompositionBoundaryNodeState> expected_nodes;
+	Vector<String> unmapped_current_nodes;
+	_collect_generated_composition_boundary_nodes(generated_root, false, &current_nodes, &unmapped_current_nodes);
+	_collect_generated_composition_boundary_nodes(expected_root, false, &expected_nodes, nullptr);
+	if (current_nodes.is_empty() && unmapped_current_nodes.is_empty()) {
+		memdelete(expected_root);
+		return;
+	}
+
+	int warning_count = 0;
+	const int warning_limit = 12;
+	auto warn_once = [&](const String &p_message) {
+		if (warning_count >= warning_limit) {
+			return;
+		}
+		WARN_PRINT(vformat("USD source-preserving save detected generated edits below a composition boundary in %s: %s", p_source_path, p_message));
+		warning_count++;
+	};
+
+	for (const String &node_path : unmapped_current_nodes) {
+		warn_once(vformat("Godot-only child '%s' is under a generated variant/reference/payload boundary and will not be represented by variant-default preservation.", node_path));
+	}
+
+	for (const KeyValue<String, CompositionBoundaryNodeState> &current_entry : current_nodes) {
+		const CompositionBoundaryNodeState *expected_state = expected_nodes.getptr(current_entry.key);
+		if (expected_state == nullptr || expected_state->node == nullptr) {
+			warn_once(vformat("prim %s no longer exists in the freshly composed source stage.", current_entry.key));
+			continue;
+		}
+
+		String mismatch_reason;
+		if (!_generated_node_state_matches(current_entry.value.node, expected_state->node, &mismatch_reason)) {
+			warn_once(vformat("prim %s has a generated-node edit that cannot be merged into preserved USD composition (%s).", current_entry.key, mismatch_reason));
+		}
+	}
+
+	for (const KeyValue<String, CompositionBoundaryNodeState> &expected_entry : expected_nodes) {
+		if (!current_nodes.has(expected_entry.key)) {
+			warn_once(vformat("prim %s is missing from the generated subtree.", expected_entry.key));
+		}
+	}
+
+	if (warning_count == warning_limit) {
+		WARN_PRINT(vformat("USD source-preserving save detected additional generated edits below composition boundaries in %s; further warnings were suppressed.", p_source_path));
+	}
+
+	memdelete(expected_root);
+}
+
+bool _node_tree_has_usd_composition_boundaries(Node *p_node) {
+	ERR_FAIL_NULL_V(p_node, false);
+	if (Object::cast_to<UsdStageInstance>(p_node)) {
+		return true;
+	}
+
+	const Dictionary metadata = _get_usd_metadata(p_node);
+	if (_usd_metadata_has_preserved_composition_boundary(metadata)) {
+		return true;
+	}
+
+	for (int i = 0; i < p_node->get_child_count(); i++) {
+		if (_node_tree_has_usd_composition_boundaries(p_node->get_child(i))) {
+			return true;
+		}
+	}
+
+	return false;
+}
+
+bool _packed_scene_has_usd_composition_boundaries(const Ref<PackedScene> &p_scene) {
+	if (p_scene.is_null()) {
+		return false;
+	}
+
+	Node *root = p_scene->instantiate();
+	if (root == nullptr) {
+		return false;
+	}
+
+	const bool has_boundaries = _node_tree_has_usd_composition_boundaries(root);
+	memdelete(root);
+	return has_boundaries;
+}
+
 Error _copy_file_absolute_preserving_contents(const String &p_source_absolute_path, const String &p_destination_absolute_path) {
 	if (p_source_absolute_path.simplify_path() == p_destination_absolute_path.simplify_path()) {
 		return OK;
@@ -4147,6 +4382,7 @@ bool _try_get_source_stage_instance_save_info(const Ref<PackedScene> &p_scene, c
 	r_info->source_absolute_path = source_absolute_path;
 	r_info->variant_selections = stage_instance->get_variant_selections();
 	r_info->stage_variant_sets = stage->get_variant_sets();
+	_warn_source_stage_instance_composition_boundary_edits(root, r_info->source_path, r_info->variant_selections);
 	memdelete(root);
 	return true;
 }
@@ -4173,6 +4409,9 @@ bool _try_save_source_stage_instance(const Ref<PackedScene> &p_scene, const Stri
 		if (r_error != nullptr) {
 			*r_error = save_error;
 		}
+		if (save_error == OK) {
+			_report_usd_save_mode(vformat("authored selected variant defaults into source %s while preserving inactive variant data: %s -> %s", destination_extension.to_upper(), source_info.source_path, p_path));
+		}
 		return true;
 	}
 
@@ -4181,6 +4420,7 @@ bool _try_save_source_stage_instance(const Ref<PackedScene> &p_scene, const Stri
 		*r_error = copy_error;
 	}
 	ERR_FAIL_COND_V_MSG(copy_error != OK, true, vformat("Failed to preserve source USD file while saving: %s -> %s", source_info.source_path, p_path));
+	_report_usd_save_mode(vformat("preserved source USD file unchanged: %s -> %s", source_info.source_path, p_path));
 	return true;
 }
 
@@ -4278,6 +4518,7 @@ void UsdStageInstance::_notification(int p_what) {
 		case NOTIFICATION_SCENE_INSTANTIATED: {
 			_adopt_existing_generated_root();
 			if (stage.is_valid() && !stage->get_source_path().is_empty()) {
+				_warn_source_stage_instance_composition_boundary_edits(this, stage->get_source_path(), variant_selections);
 				rebuilt_after_scene_instantiation = rebuild() == OK;
 			}
 		} break;
@@ -4867,10 +5108,14 @@ Error UsdSceneFormatSaver::save(const Ref<Resource> &p_resource, const String &p
 
 	UsdSceneSaver saver;
 	if (p_path.get_extension().to_lower() != "usdz") {
+		const bool has_composition_boundaries = _packed_scene_has_usd_composition_boundaries(packed_scene);
+		_report_usd_save_mode(vformat("exporting composed Godot scene to %s; USD variant sets, inactive branches, and composition arcs are not reconstructed by this path.", p_path), has_composition_boundaries);
 		return saver.save(packed_scene, p_path);
 	}
 
 	const String package_source_path = p_path + ".tmp.usda";
+	const bool has_composition_boundaries = _packed_scene_has_usd_composition_boundaries(packed_scene);
+	_report_usd_save_mode(vformat("packaging composed Godot scene as USDZ at %s; original package contents, inactive variant branches, and composition arcs are not preserved by this path.", p_path), has_composition_boundaries);
 	Error save_error = saver.save(packed_scene, package_source_path);
 	if (save_error != OK) {
 		return save_error;
