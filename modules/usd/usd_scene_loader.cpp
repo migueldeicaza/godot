@@ -4059,7 +4059,7 @@ bool _try_get_source_stage_instance_save_info(const Ref<PackedScene> &p_scene, c
 
 bool _try_save_source_stage_instance(const Ref<PackedScene> &p_scene, const String &p_path, Error *r_error) {
 	const String destination_extension = p_path.get_extension().to_lower();
-	if (destination_extension != "usdz" && destination_extension != "usdc") {
+	if (!_is_usd_scene_extension(destination_extension)) {
 		return false;
 	}
 
@@ -4073,7 +4073,7 @@ bool _try_save_source_stage_instance(const Ref<PackedScene> &p_scene, const Stri
 		Error save_error = ERR_UNAVAILABLE;
 		if (destination_extension == "usdz") {
 			save_error = _save_source_usdz_with_variant_defaults(source_info.source_absolute_path, destination_absolute_path, p_path.get_file(), source_info.variant_selections);
-		} else if (destination_extension == "usdc") {
+		} else {
 			save_error = _save_source_usd_layer_with_variant_defaults(source_info.source_absolute_path, destination_absolute_path, p_path.get_file(), source_info.variant_selections);
 		}
 		if (r_error != nullptr) {
