@@ -35,6 +35,7 @@
 #include "core/io/file_access.h"
 #include "core/io/image.h"
 #include "core/io/resource_uid.h"
+#include "core/io/zip_io.h"
 #include "core/math/math_funcs.h"
 #include "core/object/callable_mp.h"
 #include "core/object/class_db.h"
@@ -72,6 +73,7 @@
 #include <pxr/usd/sdf/primSpec.h>
 #include <pxr/usd/sdf/schema.h>
 #include <pxr/usd/sdf/types.h>
+#include <pxr/usd/sdf/zipFile.h>
 #include <pxr/usd/usd/property.h>
 #include <pxr/usd/usd/attribute.h>
 #include <pxr/usd/usd/payloads.h>
@@ -3769,6 +3771,349 @@ public:
 	}
 };
 
+bool _variant_selections_match_stage_defaults(const Dictionary &p_variant_selections, const Dictionary &p_stage_variant_sets) {
+	for (const KeyValue<Variant, Variant> &prim_entry : p_variant_selections) {
+		if (prim_entry.value.get_type() != Variant::DICTIONARY) {
+			return false;
+		}
+
+		const Variant prim_variant_sets_variant = p_stage_variant_sets.get(prim_entry.key, Variant());
+		if (prim_variant_sets_variant.get_type() != Variant::DICTIONARY) {
+			return false;
+		}
+
+		const Dictionary prim_selections = prim_entry.value;
+		const Dictionary prim_variant_sets = prim_variant_sets_variant;
+		for (const KeyValue<Variant, Variant> &set_entry : prim_selections) {
+			if (set_entry.value.get_type() != Variant::STRING && set_entry.value.get_type() != Variant::STRING_NAME) {
+				return false;
+			}
+
+			const Variant set_description_variant = prim_variant_sets.get(set_entry.key, Variant());
+			if (set_description_variant.get_type() != Variant::DICTIONARY) {
+				return false;
+			}
+
+			const Dictionary set_description = set_description_variant;
+			if ((String)set_description.get("selection", String()) != (String)set_entry.value) {
+				return false;
+			}
+		}
+	}
+
+	return true;
+}
+
+Error _copy_file_absolute_preserving_contents(const String &p_source_absolute_path, const String &p_destination_absolute_path) {
+	if (p_source_absolute_path.simplify_path() == p_destination_absolute_path.simplify_path()) {
+		return OK;
+	}
+
+	const Error make_dir_error = DirAccess::make_dir_recursive_absolute(p_destination_absolute_path.get_base_dir());
+	ERR_FAIL_COND_V_MSG(make_dir_error != OK, make_dir_error, vformat("Failed to create destination directory for USDZ save: %s", p_destination_absolute_path.get_base_dir()));
+
+	return DirAccess::copy_absolute(p_source_absolute_path, p_destination_absolute_path);
+}
+
+bool _is_safe_usdz_member_path(const String &p_member_path) {
+	const String normalized_path = p_member_path.replace("\\", "/");
+	if (normalized_path.is_empty() || normalized_path.is_absolute_path() || normalized_path.contains(":")) {
+		return false;
+	}
+
+	const PackedStringArray path_parts = normalized_path.split("/", false);
+	for (int i = 0; i < path_parts.size(); i++) {
+		if (path_parts[i] == "." || path_parts[i] == "..") {
+			return false;
+		}
+	}
+
+	return true;
+}
+
+Error _extract_usdz_package(const String &p_source_absolute_path, const String &p_destination_directory, String *r_root_layer_path, Vector<String> *r_package_file_paths) {
+	ERR_FAIL_NULL_V(r_root_layer_path, ERR_INVALID_PARAMETER);
+	ERR_FAIL_NULL_V(r_package_file_paths, ERR_INVALID_PARAMETER);
+	*r_root_layer_path = String();
+	r_package_file_paths->clear();
+
+	Ref<FileAccess> zip_file_access;
+	zlib_filefunc_def io = zipio_create_io(&zip_file_access);
+	unzFile zip_file = unzOpen2(p_source_absolute_path.utf8().get_data(), &io);
+	ERR_FAIL_NULL_V_MSG(zip_file, ERR_CANT_OPEN, vformat("Failed to open source USDZ package: %s", p_source_absolute_path));
+
+	int zip_error = unzGoToFirstFile(zip_file);
+	if (zip_error != UNZ_OK) {
+		unzClose(zip_file);
+		return ERR_FILE_CORRUPT;
+	}
+
+	Vector<uint8_t> read_buffer;
+	read_buffer.resize(65536);
+	do {
+		unz_file_info64 file_info;
+		String member_path;
+		zip_error = godot_unzip_get_current_file_info(zip_file, file_info, member_path);
+		if (zip_error != UNZ_OK) {
+			unzClose(zip_file);
+			return ERR_FILE_CORRUPT;
+		}
+
+		member_path = member_path.replace("\\", "/");
+		if (!_is_safe_usdz_member_path(member_path)) {
+			unzClose(zip_file);
+			ERR_FAIL_V_MSG(ERR_FILE_CORRUPT, vformat("Unsafe path in USDZ package: %s", member_path));
+		}
+
+		const bool is_directory = member_path.ends_with("/");
+		const String destination_path = p_destination_directory.path_join(member_path);
+		if (is_directory) {
+			const Error make_dir_error = DirAccess::make_dir_recursive_absolute(destination_path);
+			if (make_dir_error != OK) {
+				unzClose(zip_file);
+				return make_dir_error;
+			}
+			continue;
+		}
+
+		if (r_root_layer_path->is_empty()) {
+			*r_root_layer_path = member_path;
+		}
+		r_package_file_paths->push_back(member_path);
+
+		const Error make_dir_error = DirAccess::make_dir_recursive_absolute(destination_path.get_base_dir());
+		if (make_dir_error != OK) {
+			unzClose(zip_file);
+			return make_dir_error;
+		}
+
+		zip_error = unzOpenCurrentFile(zip_file);
+		if (zip_error != UNZ_OK) {
+			unzClose(zip_file);
+			return ERR_FILE_CORRUPT;
+		}
+
+		Error open_error = OK;
+		Ref<FileAccess> destination_file = FileAccess::open(destination_path, FileAccess::WRITE, &open_error);
+		if (open_error != OK || destination_file.is_null()) {
+			unzCloseCurrentFile(zip_file);
+			unzClose(zip_file);
+			return open_error != OK ? open_error : ERR_CANT_CREATE;
+		}
+
+		while (true) {
+			const int bytes_read = unzReadCurrentFile(zip_file, read_buffer.ptrw(), read_buffer.size());
+			if (bytes_read < 0) {
+				unzCloseCurrentFile(zip_file);
+				unzClose(zip_file);
+				return ERR_FILE_CORRUPT;
+			}
+			if (bytes_read == 0) {
+				break;
+			}
+
+			destination_file->store_buffer(read_buffer.ptr(), bytes_read);
+			if (destination_file->get_error() != OK) {
+				unzCloseCurrentFile(zip_file);
+				unzClose(zip_file);
+				return destination_file->get_error();
+			}
+		}
+
+		zip_error = unzCloseCurrentFile(zip_file);
+		if (zip_error != UNZ_OK) {
+			unzClose(zip_file);
+			return ERR_FILE_CORRUPT;
+		}
+	} while (unzGoToNextFile(zip_file) == UNZ_OK);
+
+	unzClose(zip_file);
+	ERR_FAIL_COND_V_MSG(r_root_layer_path->is_empty(), ERR_FILE_CORRUPT, vformat("USDZ package has no root layer: %s", p_source_absolute_path));
+	return OK;
+}
+
+Error _author_variant_selections_in_root_layer(const String &p_root_layer_absolute_path, const Dictionary &p_variant_selections) {
+	if (p_variant_selections.is_empty()) {
+		return OK;
+	}
+
+	SdfLayerRefPtr root_layer = SdfLayer::FindOrOpen(p_root_layer_absolute_path.utf8().get_data());
+	ERR_FAIL_COND_V_MSG(!root_layer, ERR_CANT_OPEN, vformat("Failed to open USD root layer for variant authoring: %s", p_root_layer_absolute_path));
+
+	UsdStageRefPtr stage = UsdStage::Open(root_layer);
+	ERR_FAIL_COND_V_MSG(!stage, ERR_CANT_OPEN, vformat("Failed to compose USD root layer for variant authoring: %s", p_root_layer_absolute_path));
+
+	stage->SetEditTarget(root_layer);
+	_apply_variant_selections(stage, p_variant_selections);
+
+	const bool saved = root_layer->Save();
+	return saved ? OK : ERR_CANT_CREATE;
+}
+
+Error _create_usdz_package_from_extracted_files(const String &p_extracted_directory, const Vector<String> &p_package_file_paths, const String &p_root_layer_path, const String &p_package_path) {
+	ERR_FAIL_COND_V_MSG(p_package_file_paths.is_empty(), ERR_INVALID_PARAMETER, "USDZ package cannot be created without extracted package files.");
+
+	SdfZipFileWriter package_writer = SdfZipFileWriter::CreateNew(p_package_path.utf8().get_data());
+	ERR_FAIL_COND_V_MSG(!package_writer, ERR_CANT_CREATE, vformat("Failed to create USDZ package writer: %s", p_package_path));
+
+	const String root_layer_absolute_path = p_extracted_directory.path_join(p_root_layer_path);
+	if (package_writer.AddFile(root_layer_absolute_path.utf8().get_data(), p_root_layer_path.utf8().get_data()).empty()) {
+		package_writer.Discard();
+		ERR_FAIL_V_MSG(ERR_CANT_CREATE, vformat("Failed to add USDZ root layer to package: %s", p_root_layer_path));
+	}
+
+	for (int i = 0; i < p_package_file_paths.size(); i++) {
+		const String package_file_path = p_package_file_paths[i];
+		if (package_file_path == p_root_layer_path) {
+			continue;
+		}
+
+		const String extracted_file_path = p_extracted_directory.path_join(package_file_path);
+		if (package_writer.AddFile(extracted_file_path.utf8().get_data(), package_file_path.utf8().get_data()).empty()) {
+			package_writer.Discard();
+			ERR_FAIL_V_MSG(ERR_CANT_CREATE, vformat("Failed to add USDZ package member: %s", package_file_path));
+		}
+	}
+
+	const bool saved = package_writer.Save();
+	return saved ? OK : ERR_CANT_CREATE;
+}
+
+Error _save_source_usdz_with_variant_defaults(const String &p_source_absolute_path, const String &p_destination_absolute_path, const String &p_destination_file_name, const Dictionary &p_variant_selections) {
+	Error temp_dir_error = OK;
+	Ref<DirAccess> temp_dir = DirAccess::create_temp("godot_usdz_save_", false, &temp_dir_error);
+	ERR_FAIL_COND_V_MSG(temp_dir_error != OK || temp_dir.is_null(), temp_dir_error != OK ? temp_dir_error : ERR_CANT_CREATE, "Failed to create temporary directory for USDZ save.");
+
+	const String temp_directory = temp_dir->get_current_dir();
+	String root_layer_path;
+	Vector<String> package_file_paths;
+	Error extract_error = _extract_usdz_package(p_source_absolute_path, temp_directory, &root_layer_path, &package_file_paths);
+	ERR_FAIL_COND_V_MSG(extract_error != OK, extract_error, vformat("Failed to extract source USDZ package for variant save: %s", p_source_absolute_path));
+
+	const String root_layer_absolute_path = temp_directory.path_join(root_layer_path);
+	Error author_error = _author_variant_selections_in_root_layer(root_layer_absolute_path, p_variant_selections);
+	ERR_FAIL_COND_V_MSG(author_error != OK, author_error, vformat("Failed to author USDZ variant selections into root layer: %s", root_layer_path));
+
+	const String temp_package_path = temp_directory.path_join(p_destination_file_name.is_empty() ? "stage.usdz" : p_destination_file_name);
+	Error package_error = _create_usdz_package_from_extracted_files(temp_directory, package_file_paths, root_layer_path, temp_package_path);
+	ERR_FAIL_COND_V_MSG(package_error != OK, package_error, vformat("Failed to create USDZ package with variant defaults: %s", p_destination_absolute_path));
+
+	return _copy_file_absolute_preserving_contents(temp_package_path, p_destination_absolute_path);
+}
+
+Error _save_source_usd_layer_with_variant_defaults(const String &p_source_absolute_path, const String &p_destination_absolute_path, const String &p_destination_file_name, const Dictionary &p_variant_selections) {
+	Error temp_dir_error = OK;
+	Ref<DirAccess> temp_dir = DirAccess::create_temp("godot_usd_layer_save_", false, &temp_dir_error);
+	ERR_FAIL_COND_V_MSG(temp_dir_error != OK || temp_dir.is_null(), temp_dir_error != OK ? temp_dir_error : ERR_CANT_CREATE, "Failed to create temporary directory for USD layer save.");
+
+	const String temp_directory = temp_dir->get_current_dir();
+	const String temp_layer_path = temp_directory.path_join(p_destination_file_name.is_empty() ? ("stage." + p_source_absolute_path.get_extension()) : p_destination_file_name);
+	Error copy_error = _copy_file_absolute_preserving_contents(p_source_absolute_path, temp_layer_path);
+	ERR_FAIL_COND_V_MSG(copy_error != OK, copy_error, vformat("Failed to copy source USD layer for variant save: %s", p_source_absolute_path));
+
+	Error author_error = _author_variant_selections_in_root_layer(temp_layer_path, p_variant_selections);
+	ERR_FAIL_COND_V_MSG(author_error != OK, author_error, vformat("Failed to author USD variant selections into layer: %s", temp_layer_path));
+
+	return _copy_file_absolute_preserving_contents(temp_layer_path, p_destination_absolute_path);
+}
+
+bool _try_save_source_usdz_stage_instance(const Ref<PackedScene> &p_scene, const String &p_path, Error *r_error) {
+	if (p_path.get_extension().to_lower() != "usdz") {
+		return false;
+	}
+
+	Node *root = p_scene->instantiate();
+	ERR_FAIL_NULL_V_MSG(root, false, "USD saver could not instantiate the PackedScene.");
+
+	UsdStageInstance *stage_instance = Object::cast_to<UsdStageInstance>(root);
+	if (stage_instance == nullptr) {
+		memdelete(root);
+		return false;
+	}
+
+	const Ref<UsdStageResource> stage = stage_instance->get_stage();
+	if (stage.is_null() || stage->get_source_path().is_empty()) {
+		memdelete(root);
+		return false;
+	}
+
+	const String source_path = stage->get_source_path();
+	const String source_absolute_path = _get_absolute_path(source_path);
+	if (source_absolute_path.get_extension().to_lower() != "usdz") {
+		memdelete(root);
+		return false;
+	}
+
+	const Dictionary variant_selections = stage_instance->get_variant_selections();
+	const Dictionary stage_variant_sets = stage->get_variant_sets();
+	memdelete(root);
+
+	if (!_variant_selections_match_stage_defaults(variant_selections, stage_variant_sets)) {
+		const String destination_absolute_path = _get_absolute_path(p_path);
+		const Error save_error = _save_source_usdz_with_variant_defaults(source_absolute_path, destination_absolute_path, p_path.get_file(), variant_selections);
+		if (r_error != nullptr) {
+			*r_error = save_error;
+		}
+		return true;
+	}
+
+	const String destination_absolute_path = _get_absolute_path(p_path);
+	const Error copy_error = _copy_file_absolute_preserving_contents(source_absolute_path, destination_absolute_path);
+	if (r_error != nullptr) {
+		*r_error = copy_error;
+	}
+	ERR_FAIL_COND_V_MSG(copy_error != OK, true, vformat("Failed to preserve source USDZ package while saving: %s -> %s", source_path, p_path));
+	return true;
+}
+
+bool _try_save_source_usdc_stage_instance(const Ref<PackedScene> &p_scene, const String &p_path, Error *r_error) {
+	if (p_path.get_extension().to_lower() != "usdc") {
+		return false;
+	}
+
+	Node *root = p_scene->instantiate();
+	ERR_FAIL_NULL_V_MSG(root, false, "USD saver could not instantiate the PackedScene.");
+
+	UsdStageInstance *stage_instance = Object::cast_to<UsdStageInstance>(root);
+	if (stage_instance == nullptr) {
+		memdelete(root);
+		return false;
+	}
+
+	const Ref<UsdStageResource> stage = stage_instance->get_stage();
+	if (stage.is_null() || stage->get_source_path().is_empty()) {
+		memdelete(root);
+		return false;
+	}
+
+	const String source_path = stage->get_source_path();
+	const String source_absolute_path = _get_absolute_path(source_path);
+	if (source_absolute_path.get_extension().to_lower() != "usdc") {
+		memdelete(root);
+		return false;
+	}
+
+	const Dictionary variant_selections = stage_instance->get_variant_selections();
+	const Dictionary stage_variant_sets = stage->get_variant_sets();
+	memdelete(root);
+
+	const String destination_absolute_path = _get_absolute_path(p_path);
+	if (!_variant_selections_match_stage_defaults(variant_selections, stage_variant_sets)) {
+		const Error save_error = _save_source_usd_layer_with_variant_defaults(source_absolute_path, destination_absolute_path, p_path.get_file(), variant_selections);
+		if (r_error != nullptr) {
+			*r_error = save_error;
+		}
+		return true;
+	}
+
+	const Error copy_error = _copy_file_absolute_preserving_contents(source_absolute_path, destination_absolute_path);
+	if (r_error != nullptr) {
+		*r_error = copy_error;
+	}
+	ERR_FAIL_COND_V_MSG(copy_error != OK, true, vformat("Failed to preserve source USDC layer while saving: %s -> %s", source_path, p_path));
+	return true;
+}
+
 } // namespace
 
 void UsdStageResource::_bind_methods() {
@@ -4444,6 +4789,16 @@ Error UsdSceneFormatSaver::save(const Ref<Resource> &p_resource, const String &p
 	Ref<PackedScene> packed_scene = p_resource;
 	ERR_FAIL_COND_V_MSG(packed_scene.is_null(), ERR_UNAVAILABLE, "USD saver only supports PackedScene resources.");
 	ERR_FAIL_COND_V_MSG(!recognize_path(p_resource, p_path), ERR_FILE_UNRECOGNIZED, "USD saver only writes .usd, .usda, .usdc, and .usdz files.");
+
+	Error source_usdz_save_error = OK;
+	if (_try_save_source_usdz_stage_instance(packed_scene, p_path, &source_usdz_save_error)) {
+		return source_usdz_save_error;
+	}
+
+	Error source_usdc_save_error = OK;
+	if (_try_save_source_usdc_stage_instance(packed_scene, p_path, &source_usdc_save_error)) {
+		return source_usdc_save_error;
+	}
 
 	UsdSceneSaver saver;
 	if (p_path.get_extension().to_lower() != "usdz") {
