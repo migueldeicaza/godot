@@ -183,6 +183,16 @@ int _get_prim_path_depth(const String &p_prim_path) {
 	return depth;
 }
 
+bool _is_prim_path_at_or_under(const String &p_prim_path, const String &p_ancestor_path) {
+	if (p_prim_path == p_ancestor_path) {
+		return true;
+	}
+	if (p_ancestor_path == "/") {
+		return p_prim_path.begins_with("/");
+	}
+	return p_prim_path.begins_with(p_ancestor_path + "/");
+}
+
 Dictionary _collect_stage_metadata(const UsdStageRefPtr &p_stage) {
 	Dictionary metadata;
 	ERR_FAIL_COND_V(p_stage == nullptr, metadata);
@@ -827,9 +837,17 @@ class UsdSceneBuilder {
 	const UsdTimeCode time = UsdTimeCode::Default();
 	const double meters_per_unit = 1.0;
 	const TfToken up_axis;
+	const Dictionary variant_catalog;
 	mutable HashMap<String, Ref<Image>> image_cache;
 	mutable HashMap<String, Ref<Texture2D>> texture_cache;
 	mutable HashMap<String, Ref<Material>> material_cache;
+
+	struct VariantContextEntry {
+		String prim_path;
+		String variant_set;
+		String selection;
+		int path_depth = 0;
+	};
 
 	struct UsdShaderConnection {
 		UsdShadeShader shader;
@@ -861,11 +879,86 @@ class UsdSceneBuilder {
 		return Transform3D(root_basis, Vector3());
 	}
 
+	Dictionary _get_local_variant_sets(const String &p_prim_path) const {
+		const Variant local_variant_sets = variant_catalog.get(p_prim_path, Variant());
+		if (local_variant_sets.get_type() == Variant::DICTIONARY) {
+			return local_variant_sets;
+		}
+		return Dictionary();
+	}
+
+	Array _get_variant_context(const String &p_prim_path) const {
+		std::vector<VariantContextEntry> context_entries;
+
+		for (const KeyValue<Variant, Variant> &prim_entry : variant_catalog) {
+			if (prim_entry.value.get_type() != Variant::DICTIONARY) {
+				continue;
+			}
+
+			const String variant_owner_path = prim_entry.key;
+			if (!_is_prim_path_at_or_under(p_prim_path, variant_owner_path)) {
+				continue;
+			}
+
+			const Dictionary prim_variant_sets = prim_entry.value;
+			for (const KeyValue<Variant, Variant> &set_entry : prim_variant_sets) {
+				if (set_entry.value.get_type() != Variant::DICTIONARY) {
+					continue;
+				}
+
+				const Dictionary set_description = set_entry.value;
+				const String selection = set_description.get("selection", String());
+				if (selection.is_empty()) {
+					continue;
+				}
+
+				VariantContextEntry entry;
+				entry.prim_path = variant_owner_path;
+				entry.variant_set = set_entry.key;
+				entry.selection = selection;
+				entry.path_depth = _get_prim_path_depth(variant_owner_path);
+				context_entries.push_back(entry);
+			}
+		}
+
+		std::sort(context_entries.begin(), context_entries.end(), [](const VariantContextEntry &p_left, const VariantContextEntry &p_right) {
+			if (p_left.path_depth != p_right.path_depth) {
+				return p_left.path_depth < p_right.path_depth;
+			}
+			if (p_left.prim_path != p_right.prim_path) {
+				return p_left.prim_path < p_right.prim_path;
+			}
+			return p_left.variant_set < p_right.variant_set;
+		});
+
+		Array context;
+		for (const VariantContextEntry &entry : context_entries) {
+			Dictionary description;
+			description["prim_path"] = entry.prim_path;
+			description["variant_set"] = entry.variant_set;
+			description["selection"] = entry.selection;
+			context.push_back(description);
+		}
+		return context;
+	}
+
 	Dictionary _make_common_metadata(const UsdPrim &p_prim) const {
 		Dictionary metadata;
-		metadata["usd:prim_path"] = _to_godot_string(p_prim.GetPath().GetString());
+		const String prim_path = _to_godot_string(p_prim.GetPath().GetString());
+		metadata["usd:prim_path"] = prim_path;
 		metadata["usd:type_name"] = _to_godot_string(p_prim.GetTypeName().GetString());
 		metadata["usd:active"] = p_prim.IsActive();
+
+		const Dictionary local_variant_sets = _get_local_variant_sets(prim_path);
+		if (!local_variant_sets.is_empty()) {
+			metadata["usd:variant_boundary"] = true;
+			metadata["usd:variant_sets"] = local_variant_sets;
+		}
+
+		const Array variant_context = _get_variant_context(prim_path);
+		if (!variant_context.is_empty()) {
+			metadata["usd:variant_context"] = variant_context;
+		}
 
 		Array applied_schemas;
 		for (const TfToken &schema : p_prim.GetAppliedSchemas()) {
@@ -2262,7 +2355,8 @@ public:
 	explicit UsdSceneBuilder(const UsdStageRefPtr &p_stage) :
 			stage(p_stage),
 			meters_per_unit(UsdGeomGetStageMetersPerUnit(stage)),
-			up_axis(UsdGeomGetStageUpAxis(stage)) {}
+			up_axis(UsdGeomGetStageUpAxis(stage)),
+			variant_catalog(_collect_variant_sets(stage)) {}
 
 	Node *build(const String &p_scene_name) const {
 		Node3D *root = memnew(Node3D);
