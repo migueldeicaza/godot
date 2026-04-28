@@ -1687,14 +1687,18 @@ class UsdSceneBuilder {
 
 	UsdGeomPrimvar _find_uv_primvar(const UsdGeomMesh &p_mesh) const {
 		UsdGeomPrimvarsAPI primvars_api(p_mesh.GetPrim());
-		UsdGeomPrimvar uv_primvar = primvars_api.FindPrimvarWithInheritance(TfToken("st"));
-		if (uv_primvar && uv_primvar.HasValue()) {
-			return uv_primvar;
-		}
+		static const TfToken uv_tokens[] = {
+			TfToken("st"),
+			TfToken("map1"),
+			TfToken("UVMap"),
+			TfToken("uvmap"),
+		};
 
-		uv_primvar = primvars_api.FindPrimvarWithInheritance(TfToken("map1"));
-		if (uv_primvar && uv_primvar.HasValue()) {
-			return uv_primvar;
+		for (const TfToken &uv_token : uv_tokens) {
+			UsdGeomPrimvar uv_primvar = primvars_api.FindPrimvarWithInheritance(uv_token);
+			if (uv_primvar && uv_primvar.HasValue()) {
+				return uv_primvar;
+			}
 		}
 
 		return UsdGeomPrimvar();
