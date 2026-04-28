@@ -44,10 +44,13 @@
 #include "scene/3d/light_3d.h"
 #include "scene/3d/mesh_instance_3d.h"
 #include "scene/3d/node_3d.h"
+#include "scene/3d/path_3d.h"
+#include "scene/3d/skeleton_3d.h"
 #include "scene/3d/world_environment.h"
 #include "scene/main/node.h"
 #include "scene/main/scene_tree.h"
 #include "scene/resources/3d/primitive_meshes.h"
+#include "scene/resources/curve.h"
 #include "scene/resources/environment.h"
 #include "scene/resources/image_texture.h"
 #include "scene/resources/material.h"
@@ -87,6 +90,7 @@
 #include <pxr/usd/usd/variantSets.h>
 #include <pxr/usd/usdUtils/usdzPackage.h>
 #include <pxr/usd/usdGeom/camera.h>
+#include <pxr/usd/usdGeom/basisCurves.h>
 #include <pxr/usd/usdGeom/capsule.h>
 #include <pxr/usd/usdGeom/cone.h>
 #include <pxr/usd/usdGeom/cube.h>
@@ -113,6 +117,7 @@
 #include <pxr/usd/usdShade/material.h>
 #include <pxr/usd/usdShade/materialBindingAPI.h>
 #include <pxr/usd/usdShade/shader.h>
+#include <pxr/usd/usdSkel/skeleton.h>
 
 #include <algorithm>
 
@@ -2218,6 +2223,298 @@ class UsdSceneBuilder {
 		return mesh_instance;
 	}
 
+	static Array _to_float_array(const VtArray<float> &p_values) {
+		Array values;
+		for (size_t i = 0; i < p_values.size(); i++) {
+			values.push_back((double)p_values[i]);
+		}
+		return values;
+	}
+
+	static Array _to_int_array(const VtArray<int> &p_values) {
+		Array values;
+		for (size_t i = 0; i < p_values.size(); i++) {
+			values.push_back(p_values[i]);
+		}
+		return values;
+	}
+
+	static Array _to_token_array(const VtArray<TfToken> &p_values) {
+		Array values;
+		for (size_t i = 0; i < p_values.size(); i++) {
+			values.push_back(_to_godot_string(p_values[i].GetString()));
+		}
+		return values;
+	}
+
+	static String _joint_parent_path(const String &p_joint_path) {
+		const int slash = p_joint_path.rfind("/");
+		if (slash < 0) {
+			return String();
+		}
+		return p_joint_path.substr(0, slash);
+	}
+
+	static String _joint_leaf_name(const String &p_joint_path) {
+		const int slash = p_joint_path.rfind("/");
+		if (slash < 0) {
+			return p_joint_path;
+		}
+		return p_joint_path.substr(slash + 1);
+	}
+
+	static Ref<Curve3D> _build_linear_curve3d(const VtArray<GfVec3f> &p_points, int p_point_offset, int p_point_count, bool p_closed) {
+		ERR_FAIL_COND_V(p_point_count < 2, Ref<Curve3D>());
+
+		Ref<Curve3D> curve;
+		curve.instantiate();
+		for (int i = 0; i < p_point_count; i++) {
+			const GfVec3f &point = p_points[p_point_offset + i];
+			curve->add_point(Vector3(point[0], point[1], point[2]));
+		}
+		curve->set_closed(p_closed);
+		return curve;
+	}
+
+	static Ref<Curve3D> _build_bezier_curve3d(const VtArray<GfVec3f> &p_points, int p_point_offset, int p_point_count, bool p_closed) {
+		if (p_closed) {
+			ERR_FAIL_COND_V((p_point_count % 3) != 0 || p_point_count < 6, Ref<Curve3D>());
+		} else {
+			ERR_FAIL_COND_V(((p_point_count - 4) % 3) != 0 || p_point_count < 4, Ref<Curve3D>());
+		}
+
+		const int anchor_count = p_closed ? (p_point_count / 3) : ((p_point_count + 2) / 3);
+		ERR_FAIL_COND_V(anchor_count < 2, Ref<Curve3D>());
+
+		Ref<Curve3D> curve;
+		curve.instantiate();
+
+		for (int anchor_index = 0; anchor_index < anchor_count; anchor_index++) {
+			const GfVec3f &anchor = p_points[p_point_offset + anchor_index * 3];
+			curve->add_point(Vector3(anchor[0], anchor[1], anchor[2]));
+		}
+
+		const int segment_count = p_closed ? anchor_count : (anchor_count - 1);
+		for (int segment_index = 0; segment_index < segment_count; segment_index++) {
+			const int start = p_point_offset + segment_index * 3;
+			const int next_anchor_index = (segment_index + 1) % anchor_count;
+			const Vector3 anchor = curve->get_point_position(segment_index);
+			const Vector3 next_anchor = curve->get_point_position(next_anchor_index);
+			const GfVec3f &out_handle = p_points[start + 1];
+			const GfVec3f &in_handle = p_points[start + 2];
+			curve->set_point_out(segment_index, Vector3(out_handle[0], out_handle[1], out_handle[2]) - anchor);
+			curve->set_point_in(next_anchor_index, Vector3(in_handle[0], in_handle[1], in_handle[2]) - next_anchor);
+		}
+
+		curve->set_closed(p_closed);
+		return curve;
+	}
+
+	Node *_build_basis_curves_node(const UsdPrim &p_prim, HashSet<String> *r_handled_attributes, Dictionary *r_mapping_notes) const {
+		UsdGeomBasisCurves usd_curves(p_prim);
+		Node3D *basis_root = memnew(Node3D);
+
+		VtArray<GfVec3f> points;
+		VtArray<int> curve_vertex_counts;
+		if (!usd_curves.GetPointsAttr().Get(&points, time) || !usd_curves.GetCurveVertexCountsAttr().Get(&curve_vertex_counts, time)) {
+			(*r_mapping_notes)["usd:mapping_status"] = "BasisCurves prim was detected, but its points or curveVertexCounts could not be read.";
+			return basis_root;
+		}
+
+		TfToken curve_type = UsdGeomTokens->linear;
+		usd_curves.GetTypeAttr().Get(&curve_type, time);
+
+		TfToken basis = UsdGeomTokens->bezier;
+		usd_curves.GetBasisAttr().Get(&basis, time);
+
+		TfToken wrap = UsdGeomTokens->nonperiodic;
+		usd_curves.GetWrapAttr().Get(&wrap, time);
+
+		VtArray<float> widths;
+		usd_curves.GetWidthsAttr().Get(&widths, time);
+		const TfToken widths_interpolation = usd_curves.GetWidthsInterpolation();
+
+		_set_usd_metadata(basis_root, "usd:curve_type", _to_godot_string(curve_type.GetString()));
+		_set_usd_metadata(basis_root, "usd:curve_basis", _to_godot_string(basis.GetString()));
+		_set_usd_metadata(basis_root, "usd:curve_wrap", _to_godot_string(wrap.GetString()));
+		_set_usd_metadata(basis_root, "usd:curve_count", (int)curve_vertex_counts.size());
+		_set_usd_metadata(basis_root, "usd:curve_vertex_counts", _to_int_array(curve_vertex_counts));
+		if (!widths.empty()) {
+			_set_usd_metadata(basis_root, "usd:curve_widths", _to_float_array(widths));
+			_set_usd_metadata(basis_root, "usd:curve_widths_interpolation", _to_godot_string(widths_interpolation.GetString()));
+		}
+
+		r_handled_attributes->insert("points");
+		r_handled_attributes->insert("curveVertexCounts");
+		r_handled_attributes->insert("type");
+		r_handled_attributes->insert("basis");
+		r_handled_attributes->insert("wrap");
+		if (!widths.empty()) {
+			r_handled_attributes->insert("widths");
+		}
+
+		if (curve_type != UsdGeomTokens->linear && !(curve_type == UsdGeomTokens->cubic && basis == UsdGeomTokens->bezier)) {
+			(*r_mapping_notes)["usd:mapping_status"] = vformat("BasisCurves type=%s basis=%s is not mapped yet; only linear and cubic bezier curves are imported as Path3D nodes.",
+					_to_godot_string(curve_type.GetString()),
+					_to_godot_string(basis.GetString()));
+			return basis_root;
+		}
+
+		const bool closed = wrap == UsdGeomTokens->periodic;
+		int point_offset = 0;
+		for (int curve_index = 0; curve_index < (int)curve_vertex_counts.size(); curve_index++) {
+			const int curve_point_count = curve_vertex_counts[curve_index];
+			if (curve_point_count <= 0 || point_offset + curve_point_count > (int)points.size()) {
+				(*r_mapping_notes)["usd:mapping_status"] = "BasisCurves topology was invalid; generated Path3D children were truncated.";
+				break;
+			}
+
+			Ref<Curve3D> curve;
+			if (curve_type == UsdGeomTokens->linear) {
+				curve = _build_linear_curve3d(points, point_offset, curve_point_count, closed);
+			} else {
+				curve = _build_bezier_curve3d(points, point_offset, curve_point_count, closed);
+			}
+			if (curve.is_null()) {
+				(*r_mapping_notes)["usd:mapping_status"] = "BasisCurves topology could not be converted to Curve3D; generated Path3D children were truncated.";
+				break;
+			}
+
+			Path3D *path = memnew(Path3D);
+			path->set_name(curve_vertex_counts.size() == 1 ? String("Path") : vformat("Path%d", curve_index));
+			path->set_curve(curve);
+			_set_usd_metadata(path, "usd:generated_from_basis_curves", true);
+			_set_usd_metadata(path, "usd:source_prim_path", _to_godot_string(p_prim.GetPath().GetString()));
+			_set_usd_metadata(path, "usd:basis_curve_index", curve_index);
+			_set_usd_metadata(path, "usd:basis_curve_vertex_count", curve_point_count);
+			_set_usd_metadata(path, "usd:basis_curve_closed", closed);
+			basis_root->add_child(path);
+
+			point_offset += curve_point_count;
+		}
+
+		_set_usd_metadata(basis_root, "usd:generated_curve_children", basis_root->get_child_count());
+		_set_usd_metadata(basis_root, "usd:curve_mapping", "path3d_children");
+		return basis_root;
+	}
+
+	Node *_build_skeleton_node(const UsdPrim &p_prim, HashSet<String> *r_handled_attributes, Dictionary *r_mapping_notes) const {
+		UsdSkelSkeleton usd_skeleton(p_prim);
+		Skeleton3D *skeleton = memnew(Skeleton3D);
+
+		VtArray<TfToken> joints;
+		if (!usd_skeleton.GetJointsAttr().Get(&joints, time) || joints.empty()) {
+			(*r_mapping_notes)["usd:mapping_status"] = "Skeleton prim was detected, but its joints attribute could not be read.";
+			return skeleton;
+		}
+
+		VtArray<GfMatrix4d> rest_transforms;
+		const bool has_rest_transforms = usd_skeleton.GetRestTransformsAttr().Get(&rest_transforms, time) && rest_transforms.size() == joints.size();
+
+		VtArray<GfMatrix4d> bind_transforms;
+		const bool has_bind_transforms = usd_skeleton.GetBindTransformsAttr().Get(&bind_transforms, time) && bind_transforms.size() == joints.size();
+
+		_set_usd_metadata(skeleton, "usd:skeleton_joint_count", (int)joints.size());
+		_set_usd_metadata(skeleton, "usd:skeleton_joint_paths", _to_token_array(joints));
+		_set_usd_metadata(skeleton, "usd:skeleton_has_rest_transforms", has_rest_transforms);
+		_set_usd_metadata(skeleton, "usd:skeleton_has_bind_transforms", has_bind_transforms);
+		_set_usd_metadata(skeleton, "usd:skeleton_mapping", "skeleton3d_bones");
+
+		UsdRelationship animation_source_rel = p_prim.GetRelationship(TfToken("skel:animationSource"));
+		if (animation_source_rel) {
+			SdfPathVector targets;
+			animation_source_rel.GetTargets(&targets);
+			if (!targets.empty()) {
+				Array animation_sources;
+				for (const SdfPath &target : targets) {
+					animation_sources.push_back(_to_godot_string(target.GetString()));
+				}
+				_set_usd_metadata(skeleton, "usd:animation_sources", animation_sources);
+			}
+		}
+
+		r_handled_attributes->insert("joints");
+		if (has_rest_transforms) {
+			r_handled_attributes->insert("restTransforms");
+		}
+		if (has_bind_transforms) {
+			r_handled_attributes->insert("bindTransforms");
+		}
+
+		HashMap<String, int> bone_index_by_joint_path;
+		HashSet<String> used_bone_names;
+
+		for (int joint_index = 0; joint_index < (int)joints.size(); joint_index++) {
+			const String joint_path = _to_godot_string(joints[joint_index].GetString());
+			String bone_name = _joint_leaf_name(joint_path);
+			if (bone_name.is_empty()) {
+				bone_name = vformat("Bone%d", joint_index);
+			}
+			String unique_bone_name = bone_name;
+			for (int suffix = 1; used_bone_names.has(unique_bone_name); suffix++) {
+				unique_bone_name = vformat("%s_%d", bone_name, suffix);
+			}
+			used_bone_names.insert(unique_bone_name);
+
+			const int bone_index = skeleton->add_bone(unique_bone_name);
+			bone_index_by_joint_path.insert(joint_path, bone_index);
+			skeleton->set_bone_meta(bone_index, StringName("usd_joint_path"), joint_path);
+			skeleton->set_bone_meta(bone_index, StringName("usd_joint_index"), joint_index);
+		}
+
+		for (int joint_index = 0; joint_index < (int)joints.size(); joint_index++) {
+			const String joint_path = _to_godot_string(joints[joint_index].GetString());
+			const String parent_joint_path = _joint_parent_path(joint_path);
+			const int *bone_index_ptr = bone_index_by_joint_path.getptr(joint_path);
+			ERR_CONTINUE(bone_index_ptr == nullptr);
+			const int bone_index = *bone_index_ptr;
+
+			if (!parent_joint_path.is_empty()) {
+				const int *parent_bone_index_ptr = bone_index_by_joint_path.getptr(parent_joint_path);
+				if (parent_bone_index_ptr != nullptr) {
+					skeleton->set_bone_parent(bone_index, *parent_bone_index_ptr);
+				} else {
+					(*r_mapping_notes)["usd:mapping_status"] = "Skeleton joints referenced a missing parent path; unmatched joints were kept as skeleton roots.";
+				}
+				skeleton->set_bone_meta(bone_index, StringName("usd_joint_parent_path"), parent_joint_path);
+			}
+		}
+
+		Transform3D skeleton_world_inverse;
+		if (!has_rest_transforms && has_bind_transforms) {
+			UsdGeomXformable skeleton_xformable(p_prim);
+			skeleton_world_inverse = (_get_stage_correction_transform() * _gf_matrix_to_transform(skeleton_xformable.ComputeLocalToWorldTransform(time))).affine_inverse();
+			(*r_mapping_notes)["usd:mapping_status"] = "Skeleton restTransforms were missing; local rest pose was approximated from bindTransforms.";
+		}
+
+		for (int joint_index = 0; joint_index < (int)joints.size(); joint_index++) {
+			Transform3D local_rest;
+			if (has_rest_transforms) {
+				local_rest = _gf_matrix_to_transform(rest_transforms[joint_index]);
+			} else if (has_bind_transforms) {
+				const String joint_path = _to_godot_string(joints[joint_index].GetString());
+				const String parent_joint_path = _joint_parent_path(joint_path);
+				const Transform3D bind_transform = _get_stage_correction_transform() * _gf_matrix_to_transform(bind_transforms[joint_index]);
+				if (parent_joint_path.is_empty()) {
+					local_rest = skeleton_world_inverse * bind_transform;
+				} else {
+					const int *parent_bone_index_ptr = bone_index_by_joint_path.getptr(parent_joint_path);
+					if (parent_bone_index_ptr != nullptr) {
+						const Transform3D parent_bind_transform = _get_stage_correction_transform() * _gf_matrix_to_transform(bind_transforms[*parent_bone_index_ptr]);
+						local_rest = parent_bind_transform.affine_inverse() * bind_transform;
+					} else {
+						local_rest = bind_transform;
+					}
+				}
+			}
+
+			skeleton->set_bone_rest(joint_index, local_rest);
+		}
+		skeleton->reset_bone_poses();
+
+		return skeleton;
+	}
+
 	Node *_build_node_for_prim(const UsdPrim &p_prim) const {
 		HashSet<String> handled_attributes;
 		Dictionary mapping_notes = _make_common_metadata(p_prim);
@@ -2348,6 +2645,10 @@ class UsdSceneBuilder {
 				mapping_notes["usd:light_mapping"] = "UsdLuxCylinderLight was approximated as OmniLight3D.";
 				node = light;
 			}
+		} else if (p_prim.IsA<UsdGeomBasisCurves>()) {
+			node = _build_basis_curves_node(p_prim, &handled_attributes, &mapping_notes);
+		} else if (p_prim.IsA<UsdSkelSkeleton>()) {
+			node = _build_skeleton_node(p_prim, &handled_attributes, &mapping_notes);
 		} else if (p_prim.IsA<UsdGeomMesh>()) {
 			UsdGeomMesh usd_mesh(p_prim);
 			MeshInstance3D *mesh_instance = memnew(MeshInstance3D);

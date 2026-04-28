@@ -51,7 +51,10 @@ TEST_FORCE_LINK(test_usd_scene_loader)
 #include "scene/3d/light_3d.h"
 #include "scene/3d/mesh_instance_3d.h"
 #include "scene/3d/node_3d.h"
+#include "scene/3d/path_3d.h"
+#include "scene/3d/skeleton_3d.h"
 #include "scene/3d/world_environment.h"
+#include "scene/resources/curve.h"
 #include "scene/resources/environment.h"
 #include "scene/resources/material.h"
 #include "scene/resources/mesh.h"
@@ -329,6 +332,139 @@ TEST_CASE("[SceneTree][USD] Import emissive preview materials and additional lig
 	SpotLight3D *spot_light = Object::cast_to<SpotLight3D>(scene_root->get_child(2));
 	REQUIRE(spot_light != nullptr);
 	CHECK(spot_light->get_param(Light3D::PARAM_SPOT_ANGLE) == doctest::Approx(25.0f));
+
+	memdelete(root);
+}
+
+TEST_CASE("[SceneTree][USD] Import linear BasisCurves as Path3D children") {
+	const String usd_path = TestUtils::get_data_path("usd/basis_curves_linear.usda");
+
+	Error err = OK;
+	Ref<PackedScene> packed_scene = ResourceLoader::load(usd_path, "PackedScene", ResourceFormatLoader::CACHE_MODE_IGNORE, &err);
+	REQUIRE_MESSAGE(err == OK, "USD linear BasisCurves load failed.");
+	REQUIRE(packed_scene.is_valid());
+
+	Node *root = packed_scene->instantiate();
+	REQUIRE(root != nullptr);
+	REQUIRE(root->get_child_count() == 1);
+
+	Node *scene_root = root->get_child(0);
+	REQUIRE(scene_root != nullptr);
+	REQUIRE(scene_root->get_child_count() == 1);
+
+	Node3D *curves_root = Object::cast_to<Node3D>(scene_root->get_child(0));
+	REQUIRE(curves_root != nullptr);
+	Dictionary curves_metadata = curves_root->get_meta(StringName("usd"), Dictionary());
+	CHECK((String)curves_metadata.get("usd:type_name", String()) == String("BasisCurves"));
+	CHECK((String)curves_metadata.get("usd:curve_type", String()) == String("linear"));
+	CHECK((String)curves_metadata.get("usd:curve_wrap", String()) == String("periodic"));
+	CHECK((String)curves_metadata.get("usd:curve_mapping", String()) == String("path3d_children"));
+	CHECK((int)curves_metadata.get("usd:curve_count", 0) == 1);
+
+	Array vertex_counts = curves_metadata.get("usd:curve_vertex_counts", Array());
+	REQUIRE(vertex_counts.size() == 1);
+	CHECK((int)vertex_counts[0] == 5);
+
+	Path3D *path = Object::cast_to<Path3D>(curves_root->get_child(0));
+	REQUIRE(path != nullptr);
+	REQUIRE(path->get_curve().is_valid());
+	CHECK(path->get_curve()->get_point_count() == 5);
+	CHECK(path->get_curve()->is_closed());
+
+	memdelete(root);
+}
+
+TEST_CASE("[SceneTree][USD] Import cubic bezier BasisCurves as multiple Path3D children") {
+	const String usd_path = TestUtils::get_data_path("usd/basis_curves_bezier.usda");
+
+	Error err = OK;
+	Ref<PackedScene> packed_scene = ResourceLoader::load(usd_path, "PackedScene", ResourceFormatLoader::CACHE_MODE_IGNORE, &err);
+	REQUIRE_MESSAGE(err == OK, "USD bezier BasisCurves load failed.");
+	REQUIRE(packed_scene.is_valid());
+
+	Node *root = packed_scene->instantiate();
+	REQUIRE(root != nullptr);
+	REQUIRE(root->get_child_count() == 1);
+
+	Node *scene_root = root->get_child(0);
+	REQUIRE(scene_root != nullptr);
+	REQUIRE(scene_root->get_child_count() == 1);
+
+	Node3D *curves_root = Object::cast_to<Node3D>(scene_root->get_child(0));
+	REQUIRE(curves_root != nullptr);
+	Dictionary curves_metadata = curves_root->get_meta(StringName("usd"), Dictionary());
+	CHECK((String)curves_metadata.get("usd:type_name", String()) == String("BasisCurves"));
+	CHECK((String)curves_metadata.get("usd:curve_type", String()) == String("cubic"));
+	CHECK((String)curves_metadata.get("usd:curve_basis", String()) == String("bezier"));
+	CHECK((int)curves_metadata.get("usd:generated_curve_children", 0) == 2);
+
+	Array vertex_counts = curves_metadata.get("usd:curve_vertex_counts", Array());
+	REQUIRE(vertex_counts.size() == 2);
+	CHECK((int)vertex_counts[0] == 4);
+	CHECK((int)vertex_counts[1] == 7);
+
+	Path3D *first_path = Object::cast_to<Path3D>(curves_root->get_child(0));
+	Path3D *second_path = Object::cast_to<Path3D>(curves_root->get_child(1));
+	REQUIRE(first_path != nullptr);
+	REQUIRE(second_path != nullptr);
+	REQUIRE(first_path->get_curve().is_valid());
+	REQUIRE(second_path->get_curve().is_valid());
+	CHECK(first_path->get_curve()->get_point_count() == 2);
+	CHECK(second_path->get_curve()->get_point_count() == 3);
+	CHECK(first_path->get_curve()->get_point_out(0).length() > 0.0f);
+	CHECK(first_path->get_curve()->get_point_in(1).length() > 0.0f);
+	CHECK(second_path->get_curve()->get_point_out(1).length() > 0.0f);
+	CHECK(second_path->get_curve()->get_point_in(2).length() > 0.0f);
+
+	memdelete(root);
+}
+
+TEST_CASE("[SceneTree][USD] Import a structural UsdSkelSkeleton as Skeleton3D") {
+	const String usd_path = TestUtils::get_data_path("usd/skeleton_basic.usda");
+
+	Error err = OK;
+	Ref<PackedScene> packed_scene = ResourceLoader::load(usd_path, "PackedScene", ResourceFormatLoader::CACHE_MODE_IGNORE, &err);
+	REQUIRE_MESSAGE(err == OK, "USD skeleton load failed.");
+	REQUIRE(packed_scene.is_valid());
+
+	Node *root = packed_scene->instantiate();
+	REQUIRE(root != nullptr);
+	REQUIRE(root->get_child_count() == 1);
+
+	Node *scene_root = root->get_child(0);
+	REQUIRE(scene_root != nullptr);
+	REQUIRE(scene_root->get_child_count() == 1);
+
+	Skeleton3D *skeleton = Object::cast_to<Skeleton3D>(scene_root->get_child(0));
+	REQUIRE(skeleton != nullptr);
+	CHECK(skeleton->get_bone_count() == 3);
+	CHECK(skeleton->get_bone_name(0) == String("Shoulder"));
+	CHECK(skeleton->get_bone_name(1) == String("Elbow"));
+	CHECK(skeleton->get_bone_name(2) == String("Hand"));
+	CHECK(skeleton->get_bone_parent(0) == -1);
+	CHECK(skeleton->get_bone_parent(1) == 0);
+	CHECK(skeleton->get_bone_parent(2) == 1);
+
+	const Transform3D shoulder_rest = skeleton->get_bone_rest(0);
+	const Transform3D elbow_rest = skeleton->get_bone_rest(1);
+	const Transform3D hand_rest = skeleton->get_bone_rest(2);
+	CHECK(shoulder_rest.origin.is_equal_approx(Vector3(0.0f, 0.0f, 0.0f)));
+	CHECK(elbow_rest.origin.is_equal_approx(Vector3(0.0f, 0.0f, 2.0f)));
+	CHECK(hand_rest.origin.is_equal_approx(Vector3(0.0f, 0.0f, 2.0f)));
+
+	CHECK((String)skeleton->get_bone_meta(1, StringName("usd_joint_path")) == String("Shoulder/Elbow"));
+	CHECK((String)skeleton->get_bone_meta(2, StringName("usd_joint_parent_path")) == String("Shoulder/Elbow"));
+
+	Dictionary skeleton_metadata = skeleton->get_meta(StringName("usd"), Dictionary());
+	CHECK((String)skeleton_metadata.get("usd:type_name", String()) == String("Skeleton"));
+	CHECK((String)skeleton_metadata.get("usd:skeleton_mapping", String()) == String("skeleton3d_bones"));
+	CHECK((int)skeleton_metadata.get("usd:skeleton_joint_count", 0) == 3);
+	CHECK((bool)skeleton_metadata.get("usd:skeleton_has_rest_transforms", false));
+	CHECK((bool)skeleton_metadata.get("usd:skeleton_has_bind_transforms", true));
+
+	Array animation_sources = skeleton_metadata.get("usd:animation_sources", Array());
+	REQUIRE(animation_sources.size() == 1);
+	CHECK((String)animation_sources[0] == String("/Model/Skel/Anim1"));
 
 	memdelete(root);
 }
