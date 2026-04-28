@@ -3950,6 +3950,10 @@ class UsdSceneSaver {
 		return (bool)metadata.get("usd:generated_preview", false);
 	}
 
+	static bool _is_skipped_support_node(const Node *p_node) {
+		return Object::cast_to<AnimationPlayer>(p_node) != nullptr;
+	}
+
 	static bool _has_preserved_composition_arcs(const Object *p_object) {
 		ERR_FAIL_NULL_V(p_object, false);
 		const Dictionary metadata = _get_usd_metadata(p_object);
@@ -5190,6 +5194,524 @@ class UsdSceneSaver {
 		return true;
 	}
 
+	static Node *_find_node_for_source_prim_path(Node *p_root, const String &p_prim_path) {
+		ERR_FAIL_NULL_V(p_root, nullptr);
+		const Dictionary metadata = _get_usd_metadata(p_root);
+		if ((String)metadata.get("usd:prim_path", String()) == p_prim_path) {
+			return p_root;
+		}
+		for (int i = 0; i < p_root->get_child_count(); i++) {
+			if (Node *found = _find_node_for_source_prim_path(p_root->get_child(i), p_prim_path)) {
+				return found;
+			}
+		}
+		return nullptr;
+	}
+
+	static SdfPath _get_saved_path_for_node(const HashMap<ObjectID, SdfPath> &p_saved_paths, const Node *p_node) {
+		ERR_FAIL_NULL_V(p_node, SdfPath());
+		const SdfPath *saved_path = p_saved_paths.getptr(p_node->get_instance_id());
+		return saved_path != nullptr ? *saved_path : SdfPath();
+	}
+
+	static String _get_skeleton_joint_path(const Skeleton3D *p_skeleton, int p_bone_index) {
+		ERR_FAIL_NULL_V(p_skeleton, String());
+		if (p_skeleton->has_bone_meta(p_bone_index, StringName("usd_joint_path"))) {
+			return p_skeleton->get_bone_meta(p_bone_index, StringName("usd_joint_path"));
+		}
+		const int parent_index = p_skeleton->get_bone_parent(p_bone_index);
+		if (parent_index < 0) {
+			return p_skeleton->get_bone_name(p_bone_index);
+		}
+		return _get_skeleton_joint_path(p_skeleton, parent_index) + "/" + p_skeleton->get_bone_name(p_bone_index);
+	}
+
+	static Transform3D _compute_skeleton_world_rest(const Skeleton3D *p_skeleton, int p_bone_index) {
+		ERR_FAIL_NULL_V(p_skeleton, Transform3D());
+		const int parent_index = p_skeleton->get_bone_parent(p_bone_index);
+		if (parent_index < 0) {
+			return p_skeleton->get_bone_rest(p_bone_index);
+		}
+		return _compute_skeleton_world_rest(p_skeleton, parent_index) * p_skeleton->get_bone_rest(p_bone_index);
+	}
+
+	static void _write_skeleton_prim(const Skeleton3D *p_skeleton, UsdSkelSkeleton p_usd_skeleton) {
+		ERR_FAIL_NULL(p_skeleton);
+		if (!p_usd_skeleton) {
+			return;
+		}
+
+		VtArray<TfToken> joints;
+		VtArray<TfToken> joint_names;
+		VtArray<GfMatrix4d> rest_transforms;
+		VtArray<GfMatrix4d> bind_transforms;
+		joints.resize(p_skeleton->get_bone_count());
+		joint_names.resize(p_skeleton->get_bone_count());
+		rest_transforms.resize(p_skeleton->get_bone_count());
+		bind_transforms.resize(p_skeleton->get_bone_count());
+
+		for (int bone_index = 0; bone_index < p_skeleton->get_bone_count(); bone_index++) {
+			const String joint_path = _get_skeleton_joint_path(p_skeleton, bone_index);
+			joints[bone_index] = TfToken(joint_path.utf8().get_data());
+			joint_names[bone_index] = TfToken(String(p_skeleton->get_bone_name(bone_index)).utf8().get_data());
+			rest_transforms[bone_index] = _transform_to_gf_matrix(p_skeleton->get_bone_rest(bone_index));
+
+			Transform3D bind_transform = _compute_skeleton_world_rest(p_skeleton, bone_index);
+			if (p_skeleton->has_bone_meta(bone_index, StringName("usd_joint_bind_transform"))) {
+				const Variant bind_variant = p_skeleton->get_bone_meta(bone_index, StringName("usd_joint_bind_transform"));
+				if (bind_variant.get_type() == Variant::TRANSFORM3D) {
+					bind_transform = bind_variant;
+				}
+			}
+			bind_transforms[bone_index] = _transform_to_gf_matrix(bind_transform);
+		}
+
+		p_usd_skeleton.CreateJointsAttr().Set(joints);
+		p_usd_skeleton.CreateJointNamesAttr().Set(joint_names);
+		p_usd_skeleton.CreateRestTransformsAttr().Set(rest_transforms);
+		p_usd_skeleton.CreateBindTransformsAttr().Set(bind_transforms);
+	}
+
+	static bool _write_mesh_skinning_and_blend_shapes(const UsdStageRefPtr &p_stage, Node *p_scene_root, MeshInstance3D *p_mesh_instance, const UsdGeomMesh &p_usd_mesh, const SdfPath &p_mesh_path, const HashMap<ObjectID, SdfPath> &p_saved_paths) {
+		ERR_FAIL_NULL_V(p_scene_root, false);
+		ERR_FAIL_NULL_V(p_mesh_instance, false);
+		if (!p_usd_mesh) {
+			return false;
+		}
+
+		const Ref<Mesh> mesh = p_mesh_instance->get_mesh();
+		if (mesh.is_null()) {
+			return false;
+		}
+
+		const Dictionary metadata = _get_usd_metadata(p_mesh_instance);
+		const String skeleton_source_prim_path = metadata.get("usd:skel_skeleton_path", String());
+		UsdSkelBindingAPI binding_api = UsdSkelBindingAPI::Apply(p_usd_mesh.GetPrim());
+		if (!binding_api) {
+			return false;
+		}
+
+		if (!skeleton_source_prim_path.is_empty()) {
+			Node *skeleton_node = _find_node_for_source_prim_path(p_scene_root, skeleton_source_prim_path);
+			if (skeleton_node != nullptr) {
+				const SdfPath skeleton_saved_path = _get_saved_path_for_node(p_saved_paths, skeleton_node);
+				if (!skeleton_saved_path.IsEmpty()) {
+					SdfPathVector skeleton_targets;
+					skeleton_targets.push_back(skeleton_saved_path);
+					binding_api.CreateSkeletonRel().SetTargets(skeleton_targets);
+				}
+			}
+		}
+
+		const Variant geom_bind_variant = metadata.get("usd:skel_geom_bind_transform", Variant());
+		if (geom_bind_variant.get_type() == Variant::TRANSFORM3D) {
+			binding_api.CreateGeomBindTransformAttr().Set(_transform_to_gf_matrix((Transform3D)geom_bind_variant));
+		}
+
+		VtArray<int> joint_indices_values;
+		VtArray<float> joint_weights_values;
+		bool have_skinning = true;
+		for (int surface_index = 0; surface_index < mesh->get_surface_count(); surface_index++) {
+			const Array arrays = mesh->surface_get_arrays(surface_index);
+			if (arrays.size() != Mesh::ARRAY_MAX) {
+				continue;
+			}
+			const PackedVector3Array vertices = arrays[Mesh::ARRAY_VERTEX];
+			if (vertices.is_empty()) {
+				continue;
+			}
+			const PackedInt32Array bones = arrays[Mesh::ARRAY_BONES];
+			const PackedFloat32Array weights = arrays[Mesh::ARRAY_WEIGHTS];
+			if (bones.size() != vertices.size() * 4 || weights.size() != vertices.size() * 4) {
+				have_skinning = false;
+				break;
+			}
+			for (int i = 0; i < bones.size(); i++) {
+				joint_indices_values.push_back(bones[i]);
+				joint_weights_values.push_back(weights[i]);
+			}
+		}
+		if (have_skinning && !joint_indices_values.empty() && joint_indices_values.size() == joint_weights_values.size()) {
+			UsdGeomPrimvar joint_indices = binding_api.CreateJointIndicesPrimvar(false, 4);
+			UsdGeomPrimvar joint_weights = binding_api.CreateJointWeightsPrimvar(false, 4);
+			joint_indices.Set(joint_indices_values);
+			joint_weights.Set(joint_weights_values);
+		}
+
+		const Dictionary blend_shape_channels = metadata.get("usd:blend_shape_channels", Dictionary());
+		const Array blend_shape_names = metadata.get("usd:blend_shape_names", Array());
+		const Array blend_shape_targets = metadata.get("usd:blend_shape_targets", Array());
+		if (blend_shape_channels.is_empty() || blend_shape_names.is_empty()) {
+			return true;
+		}
+
+		const int mesh_blend_shape_count = mesh->get_blend_shape_count();
+		Vector<VtArray<GfVec3f>> blend_shape_offsets;
+		Vector<VtArray<GfVec3f>> blend_shape_normal_offsets;
+		blend_shape_offsets.resize(mesh_blend_shape_count);
+		blend_shape_normal_offsets.resize(mesh_blend_shape_count);
+
+		for (int surface_index = 0; surface_index < mesh->get_surface_count(); surface_index++) {
+			const Array arrays = mesh->surface_get_arrays(surface_index);
+			if (arrays.size() != Mesh::ARRAY_MAX) {
+				continue;
+			}
+			const PackedVector3Array vertices = arrays[Mesh::ARRAY_VERTEX];
+			if (vertices.is_empty()) {
+				continue;
+			}
+
+			const TypedArray<Array> surface_blend_shapes = mesh->surface_get_blend_shape_arrays(surface_index);
+			if (surface_blend_shapes.size() != mesh_blend_shape_count) {
+				continue;
+			}
+
+			for (int blend_shape_index = 0; blend_shape_index < mesh_blend_shape_count; blend_shape_index++) {
+				const Array blend_shape_surface = surface_blend_shapes[blend_shape_index];
+				if (blend_shape_surface.size() != Mesh::ARRAY_MAX) {
+					continue;
+				}
+				const PackedVector3Array blend_shape_vertices = blend_shape_surface[Mesh::ARRAY_VERTEX];
+				const Variant normals_variant = blend_shape_surface[Mesh::ARRAY_NORMAL];
+				const PackedVector3Array blend_shape_normals = normals_variant.get_type() == Variant::PACKED_VECTOR3_ARRAY ? (PackedVector3Array)normals_variant : PackedVector3Array();
+				for (int vertex_index = 0; vertex_index < vertices.size(); vertex_index++) {
+					const Vector3 vertex_delta = vertex_index < blend_shape_vertices.size() ? blend_shape_vertices[vertex_index] : Vector3();
+					blend_shape_offsets.write[blend_shape_index].push_back(GfVec3f(vertex_delta.x, vertex_delta.y, vertex_delta.z));
+					const Vector3 normal_delta = vertex_index < blend_shape_normals.size() ? blend_shape_normals[vertex_index] : Vector3();
+					blend_shape_normal_offsets.write[blend_shape_index].push_back(GfVec3f(normal_delta.x, normal_delta.y, normal_delta.z));
+				}
+			}
+		}
+
+		VtArray<TfToken> saved_blend_shape_names;
+		SdfPathVector saved_blend_shape_targets;
+		for (int blend_shape_name_index = 0; blend_shape_name_index < blend_shape_names.size(); blend_shape_name_index++) {
+			const String primary_name = blend_shape_names[blend_shape_name_index];
+			const int primary_channel_index = p_mesh_instance->find_blend_shape_by_name(StringName(primary_name));
+			if (primary_channel_index < 0 || primary_channel_index >= blend_shape_offsets.size()) {
+				continue;
+			}
+
+			SdfPath blend_shape_path = p_mesh_path.AppendChild(TfToken(_make_valid_identifier(primary_name).utf8().get_data()));
+			if (blend_shape_name_index < blend_shape_targets.size()) {
+				const String preferred_target_path = blend_shape_targets[blend_shape_name_index];
+				const SdfPath preferred_path(preferred_target_path.utf8().get_data());
+				if (preferred_path.IsAbsolutePath() && preferred_path.GetParentPath() == p_mesh_path) {
+					blend_shape_path = preferred_path;
+				}
+			}
+
+			UsdSkelBlendShape usd_blend_shape = UsdSkelBlendShape::Define(p_stage, blend_shape_path);
+			usd_blend_shape.CreateOffsetsAttr().Set(blend_shape_offsets[primary_channel_index]);
+			VtArray<int> point_indices;
+			point_indices.resize(blend_shape_offsets[primary_channel_index].size());
+			for (size_t point_index = 0; point_index < point_indices.size(); point_index++) {
+				point_indices[point_index] = (int)point_index;
+			}
+			usd_blend_shape.CreatePointIndicesAttr().Set(point_indices);
+
+			bool has_primary_normals = false;
+			for (size_t delta_index = 0; delta_index < blend_shape_normal_offsets[primary_channel_index].size(); delta_index++) {
+				if (blend_shape_normal_offsets[primary_channel_index][delta_index] != GfVec3f(0.0f)) {
+					has_primary_normals = true;
+					break;
+				}
+			}
+			if (has_primary_normals) {
+				usd_blend_shape.CreateNormalOffsetsAttr().Set(blend_shape_normal_offsets[primary_channel_index]);
+			}
+
+			const Array channel_entries = blend_shape_channels.get(primary_name, Array());
+			for (int channel_entry_index = 0; channel_entry_index < channel_entries.size(); channel_entry_index++) {
+				if (channel_entries[channel_entry_index].get_type() != Variant::DICTIONARY) {
+					continue;
+				}
+				const Dictionary channel_entry = channel_entries[channel_entry_index];
+				if ((bool)channel_entry.get("primary", false)) {
+					continue;
+				}
+
+				const String channel_name = channel_entry.get("channel_name", String());
+				const String inbetween_name = channel_entry.get("name", channel_name);
+				const int channel_index = p_mesh_instance->find_blend_shape_by_name(StringName(channel_name));
+				if (channel_index < 0 || channel_index >= blend_shape_offsets.size()) {
+					continue;
+				}
+
+				UsdSkelInbetweenShape inbetween = usd_blend_shape.CreateInbetween(TfToken(_make_valid_identifier(inbetween_name).utf8().get_data()));
+				if (!inbetween) {
+					continue;
+				}
+				inbetween.SetWeight((float)(double)channel_entry.get("weight", 0.0));
+				inbetween.SetOffsets(blend_shape_offsets[channel_index]);
+
+				bool has_inbetween_normals = false;
+				for (size_t delta_index = 0; delta_index < blend_shape_normal_offsets[channel_index].size(); delta_index++) {
+					if (blend_shape_normal_offsets[channel_index][delta_index] != GfVec3f(0.0f)) {
+						has_inbetween_normals = true;
+						break;
+					}
+				}
+				if (has_inbetween_normals) {
+					inbetween.SetNormalOffsets(blend_shape_normal_offsets[channel_index]);
+				}
+			}
+
+			saved_blend_shape_names.push_back(TfToken(primary_name.utf8().get_data()));
+			saved_blend_shape_targets.push_back(blend_shape_path);
+		}
+
+		if (!saved_blend_shape_names.empty()) {
+			binding_api.CreateBlendShapesAttr().Set(saved_blend_shape_names);
+			binding_api.CreateBlendShapeTargetsRel().SetTargets(saved_blend_shape_targets);
+		}
+
+		return true;
+	}
+
+	static void _collect_animation_players(Node *p_node, Vector<AnimationPlayer *> *r_players) {
+		ERR_FAIL_NULL(p_node);
+		ERR_FAIL_NULL(r_players);
+		if (AnimationPlayer *player = Object::cast_to<AnimationPlayer>(p_node)) {
+			r_players->push_back(player);
+		}
+		for (int i = 0; i < p_node->get_child_count(); i++) {
+			_collect_animation_players(p_node->get_child(i), r_players);
+		}
+	}
+
+	static void _collect_bound_blend_shape_meshes(Node *p_node, const String &p_skeleton_source_prim_path, const HashMap<ObjectID, SdfPath> &p_saved_paths, Vector<MeshInstance3D *> *r_meshes) {
+		ERR_FAIL_NULL(p_node);
+		ERR_FAIL_NULL(r_meshes);
+		if (MeshInstance3D *mesh_instance = Object::cast_to<MeshInstance3D>(p_node)) {
+			const Dictionary metadata = _get_usd_metadata(mesh_instance);
+			if ((String)metadata.get("usd:skel_skeleton_path", String()) == p_skeleton_source_prim_path &&
+					!_get_saved_path_for_node(p_saved_paths, mesh_instance).IsEmpty() &&
+					((Dictionary)metadata.get("usd:blend_shape_channels", Dictionary())).size() > 0) {
+				r_meshes->push_back(mesh_instance);
+			}
+		}
+		for (int i = 0; i < p_node->get_child_count(); i++) {
+			_collect_bound_blend_shape_meshes(p_node->get_child(i), p_skeleton_source_prim_path, p_saved_paths, r_meshes);
+		}
+	}
+
+	static Vector<UsdBlendShapeChannelSpec> _parse_saved_blend_shape_channel_specs(const Array &p_channel_entries) {
+		Vector<UsdBlendShapeChannelSpec> specs;
+		for (int i = 0; i < p_channel_entries.size(); i++) {
+			if (p_channel_entries[i].get_type() != Variant::DICTIONARY) {
+				continue;
+			}
+			const Dictionary entry = p_channel_entries[i];
+			const String channel_name = entry.get("channel_name", String());
+			if (channel_name.is_empty()) {
+				continue;
+			}
+			UsdBlendShapeChannelSpec spec;
+			spec.channel_name = channel_name;
+			spec.weight = MAX((float)(double)entry.get("weight", 1.0), 0.0001f);
+			spec.primary = (bool)entry.get("primary", false);
+			specs.push_back(spec);
+		}
+
+		struct ChannelComparator {
+			_FORCE_INLINE_ bool operator()(const UsdBlendShapeChannelSpec &p_a, const UsdBlendShapeChannelSpec &p_b) const {
+				if (Math::is_equal_approx(p_a.weight, p_b.weight)) {
+					if (p_a.primary != p_b.primary) {
+						return !p_a.primary && p_b.primary;
+					}
+					return p_a.channel_name < p_b.channel_name;
+				}
+				return p_a.weight < p_b.weight;
+			}
+		};
+
+		specs.sort_custom<ChannelComparator>();
+		return specs;
+	}
+
+	static void _write_saved_blend_shape_animations(const UsdStageRefPtr &p_stage, Node *p_scene_root, const HashMap<ObjectID, SdfPath> &p_saved_paths) {
+		ERR_FAIL_NULL(p_scene_root);
+		Vector<AnimationPlayer *> animation_players;
+		_collect_animation_players(p_scene_root, &animation_players);
+		if (animation_players.is_empty()) {
+			return;
+		}
+
+		List<Node *> stack;
+		stack.push_back(p_scene_root);
+		while (!stack.is_empty()) {
+			Node *node = stack.front()->get();
+			stack.pop_front();
+
+			for (int child_index = 0; child_index < node->get_child_count(); child_index++) {
+				stack.push_back(node->get_child(child_index));
+			}
+
+			Skeleton3D *skeleton = Object::cast_to<Skeleton3D>(node);
+			if (skeleton == nullptr) {
+				continue;
+			}
+
+			const Dictionary skeleton_metadata = _get_usd_metadata(skeleton);
+			const String skeleton_source_prim_path = skeleton_metadata.get("usd:prim_path", String());
+			const SdfPath skeleton_saved_path = _get_saved_path_for_node(p_saved_paths, skeleton);
+			if (skeleton_source_prim_path.is_empty() || skeleton_saved_path.IsEmpty()) {
+				continue;
+			}
+
+			Vector<MeshInstance3D *> bound_meshes;
+			_collect_bound_blend_shape_meshes(p_scene_root, skeleton_source_prim_path, p_saved_paths, &bound_meshes);
+			if (bound_meshes.is_empty()) {
+				continue;
+			}
+
+			for (int player_index = 0; player_index < animation_players.size(); player_index++) {
+				AnimationPlayer *player = animation_players[player_index];
+				LocalVector<StringName> animation_names;
+				player->get_animation_list(&animation_names);
+				for (uint32_t animation_name_index = 0; animation_name_index < animation_names.size(); animation_name_index++) {
+					const StringName animation_name_sname = animation_names[animation_name_index];
+					Ref<Animation> animation = player->get_animation(animation_name_sname);
+					if (animation.is_null()) {
+						continue;
+					}
+
+					struct BlendShapeExportTarget {
+						String primary_name;
+						Vector<UsdBlendShapeChannelSpec> channel_specs;
+						Vector<int> track_indices;
+					};
+
+					Vector<BlendShapeExportTarget> export_targets;
+					for (int mesh_index = 0; mesh_index < bound_meshes.size(); mesh_index++) {
+						MeshInstance3D *mesh_instance = bound_meshes[mesh_index];
+						const Dictionary mesh_metadata = _get_usd_metadata(mesh_instance);
+						const Dictionary blend_shape_channels = mesh_metadata.get("usd:blend_shape_channels", Dictionary());
+						const String mesh_path = String(p_scene_root->get_path_to(mesh_instance));
+						Array primary_names = blend_shape_channels.keys();
+						for (int primary_index = 0; primary_index < primary_names.size(); primary_index++) {
+							const String primary_name = primary_names[primary_index];
+							const Array channel_entries = blend_shape_channels.get(primary_name, Array());
+							const Vector<UsdBlendShapeChannelSpec> channel_specs = _parse_saved_blend_shape_channel_specs(channel_entries);
+							if (channel_specs.is_empty()) {
+								continue;
+							}
+
+							BlendShapeExportTarget export_target;
+							export_target.primary_name = primary_name;
+							export_target.channel_specs = channel_specs;
+							export_target.track_indices.resize(channel_specs.size());
+							for (int spec_index = 0; spec_index < channel_specs.size(); spec_index++) {
+								export_target.track_indices.write[spec_index] = -1;
+								const String expected_track_path = mesh_path + ":" + channel_specs[spec_index].channel_name;
+								for (int track_index = 0; track_index < animation->get_track_count(); track_index++) {
+									if (animation->track_get_type(track_index) == Animation::TYPE_BLEND_SHAPE &&
+											String(animation->track_get_path(track_index)) == expected_track_path) {
+										export_target.track_indices.write[spec_index] = track_index;
+										break;
+									}
+								}
+							}
+
+							bool has_any_track = false;
+							for (int spec_index = 0; spec_index < export_target.track_indices.size(); spec_index++) {
+								if (export_target.track_indices[spec_index] >= 0) {
+									has_any_track = true;
+									break;
+								}
+							}
+							if (has_any_track) {
+								export_targets.push_back(export_target);
+							}
+						}
+					}
+
+					if (export_targets.is_empty()) {
+						continue;
+					}
+
+					Vector<double> sample_times;
+					for (int export_index = 0; export_index < export_targets.size(); export_index++) {
+						for (int spec_index = 0; spec_index < export_targets[export_index].track_indices.size(); spec_index++) {
+							const int track_index = export_targets[export_index].track_indices[spec_index];
+							if (track_index < 0) {
+								continue;
+							}
+							for (int key_index = 0; key_index < animation->track_get_key_count(track_index); key_index++) {
+								sample_times.push_back(animation->track_get_key_time(track_index, key_index));
+							}
+						}
+					}
+					if (sample_times.is_empty()) {
+						continue;
+					}
+					sample_times.sort();
+					for (int sample_index = sample_times.size() - 1; sample_index > 0; sample_index--) {
+						if (Math::is_equal_approx(sample_times[sample_index], sample_times[sample_index - 1])) {
+							sample_times.remove_at(sample_index);
+						}
+					}
+
+					const double time_codes_per_second = animation->get_step() > 0.0 ? (1.0 / animation->get_step()) : 24.0;
+					UsdSkelAnimation usd_animation = UsdSkelAnimation::Define(p_stage, skeleton_saved_path.AppendChild(TfToken(_make_valid_identifier(String(animation_name_sname)).utf8().get_data())));
+					VtArray<TfToken> blend_shape_tokens;
+					blend_shape_tokens.resize(export_targets.size());
+					for (int export_index = 0; export_index < export_targets.size(); export_index++) {
+						blend_shape_tokens[export_index] = TfToken(export_targets[export_index].primary_name.utf8().get_data());
+					}
+					usd_animation.CreateBlendShapesAttr().Set(blend_shape_tokens);
+
+					const UsdAttribute blend_shape_weights_attr = usd_animation.CreateBlendShapeWeightsAttr();
+					for (int sample_index = 0; sample_index < sample_times.size(); sample_index++) {
+						const double sample_time_seconds = sample_times[sample_index];
+						VtArray<float> saved_weights;
+						saved_weights.resize(export_targets.size());
+						for (int export_index = 0; export_index < export_targets.size(); export_index++) {
+							float source_weight = 0.0f;
+							for (int spec_index = 0; spec_index < export_targets[export_index].channel_specs.size(); spec_index++) {
+								const int track_index = export_targets[export_index].track_indices[spec_index];
+								if (track_index < 0) {
+									continue;
+								}
+								for (int key_index = 0; key_index < animation->track_get_key_count(track_index); key_index++) {
+									if (Math::is_equal_approx(animation->track_get_key_time(track_index, key_index), sample_time_seconds)) {
+										const float channel_weight = animation->track_get_key_value(track_index, key_index);
+										source_weight += channel_weight * export_targets[export_index].channel_specs[spec_index].weight;
+										break;
+									}
+								}
+							}
+							saved_weights[export_index] = source_weight;
+						}
+						blend_shape_weights_attr.Set(saved_weights, UsdTimeCode(sample_time_seconds * time_codes_per_second));
+					}
+
+					SdfPathVector animation_targets;
+					animation_targets.push_back(usd_animation.GetPath());
+					UsdRelationship animation_source = skeleton_saved_path.IsEmpty() ? UsdRelationship() : p_stage->GetPrimAtPath(skeleton_saved_path).CreateRelationship(TfToken("skel:animationSource"), false);
+					if (animation_source) {
+						animation_source.SetTargets(animation_targets);
+					}
+				}
+			}
+		}
+	}
+
+	static void _write_saved_mesh_skel_data_recursive(const UsdStageRefPtr &p_stage, Node *p_scene_root, Node *p_node, const HashMap<ObjectID, SdfPath> &p_saved_paths) {
+		ERR_FAIL_NULL(p_scene_root);
+		ERR_FAIL_NULL(p_node);
+		if (MeshInstance3D *mesh_instance = Object::cast_to<MeshInstance3D>(p_node)) {
+			const SdfPath saved_path = _get_saved_path_for_node(p_saved_paths, mesh_instance);
+			if (!saved_path.IsEmpty()) {
+				_write_mesh_skinning_and_blend_shapes(p_stage, p_scene_root, mesh_instance, UsdGeomMesh(p_stage->GetPrimAtPath(saved_path)), saved_path, p_saved_paths);
+			}
+		}
+		for (int i = 0; i < p_node->get_child_count(); i++) {
+			_write_saved_mesh_skel_data_recursive(p_stage, p_scene_root, p_node->get_child(i), p_saved_paths);
+		}
+	}
+
 	static void _write_camera(const Camera3D *p_camera, UsdGeomCamera p_usd_camera, double p_meters_per_unit) {
 		GfCamera camera;
 		camera.SetClippingRange(GfRange1f((float)p_camera->get_near() / MAX((double)p_meters_per_unit, 0.000001), (float)p_camera->get_far() / MAX((double)p_meters_per_unit, 0.000001)));
@@ -5277,6 +5799,15 @@ class UsdSceneSaver {
 			return usd_light.GetPrim();
 		}
 
+		if (Skeleton3D *skeleton = Object::cast_to<Skeleton3D>(p_node)) {
+			UsdSkelSkeleton usd_skeleton = UsdSkelSkeleton::Define(p_stage, p_path);
+			_write_skeleton_prim(skeleton, usd_skeleton);
+			if (r_supports_transform != nullptr) {
+				*r_supports_transform = true;
+			}
+			return usd_skeleton.GetPrim();
+		}
+
 		if (MeshInstance3D *mesh_instance = Object::cast_to<MeshInstance3D>(p_node)) {
 			UsdGeomMesh usd_mesh = UsdGeomMesh::Define(p_stage, p_path);
 			Vector<UsdMeshSurfaceFaceRange> surface_face_ranges;
@@ -5332,8 +5863,11 @@ class UsdSceneSaver {
 		xformable.SetResetXformStack(resets_xform_stack);
 	}
 
-	static bool _serialize_node_recursive(const UsdStageRefPtr &p_stage, Node *p_node, const SdfPath &p_parent_path, const Transform3D &p_stage_correction_inverse, double p_meters_per_unit, const String &p_save_path, Vector<SdfPath> *r_top_level_paths) {
+	static bool _serialize_node_recursive(const UsdStageRefPtr &p_stage, Node *p_node, const SdfPath &p_parent_path, const Transform3D &p_stage_correction_inverse, double p_meters_per_unit, const String &p_save_path, Vector<SdfPath> *r_top_level_paths, HashMap<ObjectID, SdfPath> *r_saved_paths) {
 		if (_is_generated_preview_node(p_node)) {
+			return true;
+		}
+		if (_is_skipped_support_node(p_node)) {
 			return true;
 		}
 
@@ -5350,6 +5884,9 @@ class UsdSceneSaver {
 
 		if (p_parent_path.IsEmpty() && r_top_level_paths != nullptr) {
 			r_top_level_paths->push_back(prim_path);
+		}
+		if (r_saved_paths != nullptr) {
+			r_saved_paths->insert(p_node->get_instance_id(), prim_path);
 		}
 
 		const bool preserved_composition_arcs = _reapply_composition_arcs(prim, p_node);
@@ -5377,14 +5914,14 @@ class UsdSceneSaver {
 			const int seen_count = name_counts.has(child_base) ? name_counts[child_base] : 0;
 			name_counts.insert(child_base, seen_count + 1);
 			if (seen_count == 0) {
-				if (!_serialize_node_recursive(p_stage, child, prim_path, p_stage_correction_inverse, p_meters_per_unit, p_save_path, nullptr)) {
+				if (!_serialize_node_recursive(p_stage, child, prim_path, p_stage_correction_inverse, p_meters_per_unit, p_save_path, nullptr, r_saved_paths)) {
 					return false;
 				}
 			} else {
 				String unique_name = vformat("%s_%d", child_base, seen_count + 1);
 				const String original_name = child->get_name();
 				child->set_name(unique_name);
-				const bool ok = _serialize_node_recursive(p_stage, child, prim_path, p_stage_correction_inverse, p_meters_per_unit, p_save_path, nullptr);
+				const bool ok = _serialize_node_recursive(p_stage, child, prim_path, p_stage_correction_inverse, p_meters_per_unit, p_save_path, nullptr, r_saved_paths);
 				child->set_name(original_name);
 				if (!ok) {
 					return false;
@@ -5421,12 +5958,16 @@ public:
 
 		const Transform3D stage_correction_inverse = _get_stage_correction_transform(context.meters_per_unit, context.up_axis).affine_inverse();
 		Vector<SdfPath> top_level_paths;
+		HashMap<ObjectID, SdfPath> saved_paths;
 		for (int i = 0; i < context.top_level_nodes.size(); i++) {
-			if (!_serialize_node_recursive(stage, context.top_level_nodes[i], SdfPath(), stage_correction_inverse, context.meters_per_unit, p_path, &top_level_paths)) {
+			if (!_serialize_node_recursive(stage, context.top_level_nodes[i], SdfPath(), stage_correction_inverse, context.meters_per_unit, p_path, &top_level_paths, &saved_paths)) {
 				memdelete(root);
 				return ERR_INVALID_DATA;
 			}
 		}
+
+		_write_saved_mesh_skel_data_recursive(stage, root, root, saved_paths);
+		_write_saved_blend_shape_animations(stage, root, saved_paths);
 
 		if (!top_level_paths.is_empty()) {
 			const String default_prim_path = !context.default_prim_path.is_empty() ? context.default_prim_path : _to_godot_string(top_level_paths[0].GetString());
