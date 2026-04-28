@@ -58,6 +58,7 @@ run_probe "$script_dir/composition_path_arcs_probe.gd" "$repo_root/tests/data/us
 run_probe "$script_dir/composition_path_arcs_probe.gd" "$repo_root/tests/data/usd/composition_specializes_source.usda" "$tmp_dir/composition_specializes_saved.usda" "usd:specializes" "/BaseAsset"
 run_probe "$script_dir/blend_shape_piecewise_probe.gd"
 run_probe "$script_dir/blend_shape_roundtrip_probe.gd" "$tmp_dir/blend_shape_roundtrip.usda"
+run_probe "$script_dir/skeleton_roundtrip_probe.gd" "$tmp_dir/skeleton_roundtrip.usda"
 
 if [[ -d "$blender_fixture_dir" ]]; then
 	run_probe "$script_dir/skeleton_probe.gd" "$blender_fixture_dir"

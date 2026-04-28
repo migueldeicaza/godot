@@ -3951,7 +3951,11 @@ class UsdSceneSaver {
 	}
 
 	static bool _is_skipped_support_node(const Node *p_node) {
-		return Object::cast_to<AnimationPlayer>(p_node) != nullptr;
+		if (Object::cast_to<AnimationPlayer>(p_node) != nullptr) {
+			return true;
+		}
+		const Dictionary metadata = _get_usd_metadata(p_node);
+		return (String)metadata.get("usd:type_name", String()) == String("SkelAnimation");
 	}
 
 	static bool _has_preserved_composition_arcs(const Object *p_object) {
@@ -5530,7 +5534,47 @@ class UsdSceneSaver {
 		return specs;
 	}
 
-	static void _write_saved_blend_shape_animations(const UsdStageRefPtr &p_stage, Node *p_scene_root, const HashMap<ObjectID, SdfPath> &p_saved_paths) {
+	struct SavedSkeletonJointAnimationTarget {
+		int bone_index = -1;
+		String joint_path;
+		Vector3 rest_position;
+		Quaternion rest_rotation;
+		Vector3 rest_scale = Vector3(1.0f, 1.0f, 1.0f);
+		int position_track = -1;
+		int rotation_track = -1;
+		int scale_track = -1;
+	};
+
+	struct SavedBlendShapeAnimationTarget {
+		String primary_name;
+		Vector<UsdBlendShapeChannelSpec> channel_specs;
+		Vector<int> track_indices;
+	};
+
+	static void _append_unique_track_key_times(const Ref<Animation> &p_animation, int p_track_index, Vector<double> *r_sample_times) {
+		ERR_FAIL_NULL(r_sample_times);
+		if (p_animation.is_null() || p_track_index < 0) {
+			return;
+		}
+		for (int key_index = 0; key_index < p_animation->track_get_key_count(p_track_index); key_index++) {
+			r_sample_times->push_back(p_animation->track_get_key_time(p_track_index, key_index));
+		}
+	}
+
+	static void _sort_dedupe_sample_times(Vector<double> *r_sample_times) {
+		ERR_FAIL_NULL(r_sample_times);
+		if (r_sample_times->is_empty()) {
+			return;
+		}
+		r_sample_times->sort();
+		for (int sample_index = r_sample_times->size() - 1; sample_index > 0; sample_index--) {
+			if (Math::is_equal_approx((*r_sample_times)[sample_index], (*r_sample_times)[sample_index - 1])) {
+				r_sample_times->remove_at(sample_index);
+			}
+		}
+	}
+
+	static void _write_saved_skeleton_animations(const UsdStageRefPtr &p_stage, Node *p_scene_root, const HashMap<ObjectID, SdfPath> &p_saved_paths) {
 		ERR_FAIL_NULL(p_scene_root);
 		Vector<AnimationPlayer *> animation_players;
 		_collect_animation_players(p_scene_root, &animation_players);
@@ -5562,9 +5606,6 @@ class UsdSceneSaver {
 
 			Vector<MeshInstance3D *> bound_meshes;
 			_collect_bound_blend_shape_meshes(p_scene_root, skeleton_source_prim_path, p_saved_paths, &bound_meshes);
-			if (bound_meshes.is_empty()) {
-				continue;
-			}
 
 			for (int player_index = 0; player_index < animation_players.size(); player_index++) {
 				AnimationPlayer *player = animation_players[player_index];
@@ -5577,13 +5618,44 @@ class UsdSceneSaver {
 						continue;
 					}
 
-					struct BlendShapeExportTarget {
-						String primary_name;
-						Vector<UsdBlendShapeChannelSpec> channel_specs;
-						Vector<int> track_indices;
-					};
+					const String skeleton_path = String(p_scene_root->get_path_to(skeleton));
 
-					Vector<BlendShapeExportTarget> export_targets;
+					Vector<SavedSkeletonJointAnimationTarget> joint_targets;
+					for (int bone_index = 0; bone_index < skeleton->get_bone_count(); bone_index++) {
+						SavedSkeletonJointAnimationTarget joint_target;
+						joint_target.bone_index = bone_index;
+						joint_target.joint_path = _get_skeleton_joint_path(skeleton, bone_index);
+						const Transform3D bone_rest = skeleton->get_bone_rest(bone_index);
+						joint_target.rest_position = bone_rest.origin;
+						joint_target.rest_rotation = bone_rest.basis.get_rotation_quaternion();
+						joint_target.rest_scale = bone_rest.basis.get_scale();
+
+						const String track_path = skeleton_path + ":" + skeleton->get_bone_name(bone_index);
+						for (int track_index = 0; track_index < animation->get_track_count(); track_index++) {
+							if (String(animation->track_get_path(track_index)) != track_path) {
+								continue;
+							}
+							switch (animation->track_get_type(track_index)) {
+								case Animation::TYPE_POSITION_3D:
+									joint_target.position_track = track_index;
+									break;
+								case Animation::TYPE_ROTATION_3D:
+									joint_target.rotation_track = track_index;
+									break;
+								case Animation::TYPE_SCALE_3D:
+									joint_target.scale_track = track_index;
+									break;
+								default:
+									break;
+							}
+						}
+
+						if (joint_target.position_track >= 0 || joint_target.rotation_track >= 0 || joint_target.scale_track >= 0) {
+							joint_targets.push_back(joint_target);
+						}
+					}
+
+					Vector<SavedBlendShapeAnimationTarget> blend_shape_targets;
 					for (int mesh_index = 0; mesh_index < bound_meshes.size(); mesh_index++) {
 						MeshInstance3D *mesh_instance = bound_meshes[mesh_index];
 						const Dictionary mesh_metadata = _get_usd_metadata(mesh_instance);
@@ -5598,93 +5670,154 @@ class UsdSceneSaver {
 								continue;
 							}
 
-							BlendShapeExportTarget export_target;
-							export_target.primary_name = primary_name;
-							export_target.channel_specs = channel_specs;
-							export_target.track_indices.resize(channel_specs.size());
+							SavedBlendShapeAnimationTarget blend_shape_target;
+							blend_shape_target.primary_name = primary_name;
+							blend_shape_target.channel_specs = channel_specs;
+							blend_shape_target.track_indices.resize(channel_specs.size());
 							for (int spec_index = 0; spec_index < channel_specs.size(); spec_index++) {
-								export_target.track_indices.write[spec_index] = -1;
+								blend_shape_target.track_indices.write[spec_index] = -1;
 								const String expected_track_path = mesh_path + ":" + channel_specs[spec_index].channel_name;
 								for (int track_index = 0; track_index < animation->get_track_count(); track_index++) {
 									if (animation->track_get_type(track_index) == Animation::TYPE_BLEND_SHAPE &&
 											String(animation->track_get_path(track_index)) == expected_track_path) {
-										export_target.track_indices.write[spec_index] = track_index;
+										blend_shape_target.track_indices.write[spec_index] = track_index;
 										break;
 									}
 								}
 							}
 
 							bool has_any_track = false;
-							for (int spec_index = 0; spec_index < export_target.track_indices.size(); spec_index++) {
-								if (export_target.track_indices[spec_index] >= 0) {
+							for (int spec_index = 0; spec_index < blend_shape_target.track_indices.size(); spec_index++) {
+								if (blend_shape_target.track_indices[spec_index] >= 0) {
 									has_any_track = true;
 									break;
 								}
 							}
 							if (has_any_track) {
-								export_targets.push_back(export_target);
+								blend_shape_targets.push_back(blend_shape_target);
 							}
 						}
 					}
 
-					if (export_targets.is_empty()) {
+					if (joint_targets.is_empty() && blend_shape_targets.is_empty()) {
 						continue;
 					}
 
 					Vector<double> sample_times;
-					for (int export_index = 0; export_index < export_targets.size(); export_index++) {
-						for (int spec_index = 0; spec_index < export_targets[export_index].track_indices.size(); spec_index++) {
-							const int track_index = export_targets[export_index].track_indices[spec_index];
-							if (track_index < 0) {
-								continue;
-							}
-							for (int key_index = 0; key_index < animation->track_get_key_count(track_index); key_index++) {
-								sample_times.push_back(animation->track_get_key_time(track_index, key_index));
-							}
+					for (int joint_index = 0; joint_index < joint_targets.size(); joint_index++) {
+						_append_unique_track_key_times(animation, joint_targets[joint_index].position_track, &sample_times);
+						_append_unique_track_key_times(animation, joint_targets[joint_index].rotation_track, &sample_times);
+						_append_unique_track_key_times(animation, joint_targets[joint_index].scale_track, &sample_times);
+					}
+					for (int export_index = 0; export_index < blend_shape_targets.size(); export_index++) {
+						for (int spec_index = 0; spec_index < blend_shape_targets[export_index].track_indices.size(); spec_index++) {
+							_append_unique_track_key_times(animation, blend_shape_targets[export_index].track_indices[spec_index], &sample_times);
 						}
 					}
 					if (sample_times.is_empty()) {
 						continue;
 					}
-					sample_times.sort();
-					for (int sample_index = sample_times.size() - 1; sample_index > 0; sample_index--) {
-						if (Math::is_equal_approx(sample_times[sample_index], sample_times[sample_index - 1])) {
-							sample_times.remove_at(sample_index);
-						}
-					}
+					_sort_dedupe_sample_times(&sample_times);
 
 					const double time_codes_per_second = animation->get_step() > 0.0 ? (1.0 / animation->get_step()) : 24.0;
 					UsdSkelAnimation usd_animation = UsdSkelAnimation::Define(p_stage, skeleton_saved_path.AppendChild(TfToken(_make_valid_identifier(String(animation_name_sname)).utf8().get_data())));
-					VtArray<TfToken> blend_shape_tokens;
-					blend_shape_tokens.resize(export_targets.size());
-					for (int export_index = 0; export_index < export_targets.size(); export_index++) {
-						blend_shape_tokens[export_index] = TfToken(export_targets[export_index].primary_name.utf8().get_data());
-					}
-					usd_animation.CreateBlendShapesAttr().Set(blend_shape_tokens);
-
-					const UsdAttribute blend_shape_weights_attr = usd_animation.CreateBlendShapeWeightsAttr();
-					for (int sample_index = 0; sample_index < sample_times.size(); sample_index++) {
-						const double sample_time_seconds = sample_times[sample_index];
-						VtArray<float> saved_weights;
-						saved_weights.resize(export_targets.size());
-						for (int export_index = 0; export_index < export_targets.size(); export_index++) {
-							float source_weight = 0.0f;
-							for (int spec_index = 0; spec_index < export_targets[export_index].channel_specs.size(); spec_index++) {
-								const int track_index = export_targets[export_index].track_indices[spec_index];
-								if (track_index < 0) {
-									continue;
-								}
-								for (int key_index = 0; key_index < animation->track_get_key_count(track_index); key_index++) {
-									if (Math::is_equal_approx(animation->track_get_key_time(track_index, key_index), sample_time_seconds)) {
-										const float channel_weight = animation->track_get_key_value(track_index, key_index);
-										source_weight += channel_weight * export_targets[export_index].channel_specs[spec_index].weight;
-										break;
-									}
-								}
-							}
-							saved_weights[export_index] = source_weight;
+					if (joint_targets.size() > 0) {
+						VtArray<TfToken> joints;
+						joints.resize(joint_targets.size());
+						for (int joint_index = 0; joint_index < joint_targets.size(); joint_index++) {
+							joints[joint_index] = TfToken(joint_targets[joint_index].joint_path.utf8().get_data());
 						}
-						blend_shape_weights_attr.Set(saved_weights, UsdTimeCode(sample_time_seconds * time_codes_per_second));
+						usd_animation.CreateJointsAttr().Set(joints);
+					}
+
+					if (joint_targets.size() > 0) {
+						bool has_position_tracks = false;
+						bool has_rotation_tracks = false;
+						bool has_scale_tracks = false;
+						for (int joint_index = 0; joint_index < joint_targets.size(); joint_index++) {
+							has_position_tracks = has_position_tracks || joint_targets[joint_index].position_track >= 0;
+							has_rotation_tracks = has_rotation_tracks || joint_targets[joint_index].rotation_track >= 0;
+							has_scale_tracks = has_scale_tracks || joint_targets[joint_index].scale_track >= 0;
+						}
+
+						if (has_position_tracks) {
+							const UsdAttribute translations_attr = usd_animation.CreateTranslationsAttr();
+							for (int sample_index = 0; sample_index < sample_times.size(); sample_index++) {
+								const double sample_time_seconds = sample_times[sample_index];
+								VtArray<GfVec3f> translations;
+								translations.resize(joint_targets.size());
+								for (int joint_index = 0; joint_index < joint_targets.size(); joint_index++) {
+									Vector3 value = joint_targets[joint_index].rest_position;
+									if (joint_targets[joint_index].position_track >= 0) {
+										value = animation->position_track_interpolate(joint_targets[joint_index].position_track, sample_time_seconds);
+									}
+									translations[joint_index] = GfVec3f(value.x, value.y, value.z);
+								}
+								translations_attr.Set(translations, UsdTimeCode(sample_time_seconds * time_codes_per_second));
+							}
+						}
+
+						if (has_rotation_tracks) {
+							const UsdAttribute rotations_attr = usd_animation.CreateRotationsAttr();
+							for (int sample_index = 0; sample_index < sample_times.size(); sample_index++) {
+								const double sample_time_seconds = sample_times[sample_index];
+								VtArray<GfQuatf> rotations;
+								rotations.resize(joint_targets.size());
+								for (int joint_index = 0; joint_index < joint_targets.size(); joint_index++) {
+									Quaternion value = joint_targets[joint_index].rest_rotation;
+									if (joint_targets[joint_index].rotation_track >= 0) {
+										value = animation->rotation_track_interpolate(joint_targets[joint_index].rotation_track, sample_time_seconds);
+									}
+									rotations[joint_index] = GfQuatf(value.w, value.x, value.y, value.z);
+								}
+								rotations_attr.Set(rotations, UsdTimeCode(sample_time_seconds * time_codes_per_second));
+							}
+						}
+
+						if (has_scale_tracks) {
+							const UsdAttribute scales_attr = usd_animation.CreateScalesAttr();
+							for (int sample_index = 0; sample_index < sample_times.size(); sample_index++) {
+								const double sample_time_seconds = sample_times[sample_index];
+								VtArray<GfVec3h> scales;
+								scales.resize(joint_targets.size());
+								for (int joint_index = 0; joint_index < joint_targets.size(); joint_index++) {
+									Vector3 value = joint_targets[joint_index].rest_scale;
+									if (joint_targets[joint_index].scale_track >= 0) {
+										value = animation->scale_track_interpolate(joint_targets[joint_index].scale_track, sample_time_seconds);
+									}
+									scales[joint_index] = GfVec3h((GfHalf)value.x, (GfHalf)value.y, (GfHalf)value.z);
+								}
+								scales_attr.Set(scales, UsdTimeCode(sample_time_seconds * time_codes_per_second));
+							}
+						}
+					}
+
+					if (!blend_shape_targets.is_empty()) {
+						VtArray<TfToken> blend_shape_tokens;
+						blend_shape_tokens.resize(blend_shape_targets.size());
+						for (int export_index = 0; export_index < blend_shape_targets.size(); export_index++) {
+							blend_shape_tokens[export_index] = TfToken(blend_shape_targets[export_index].primary_name.utf8().get_data());
+						}
+						usd_animation.CreateBlendShapesAttr().Set(blend_shape_tokens);
+
+						const UsdAttribute blend_shape_weights_attr = usd_animation.CreateBlendShapeWeightsAttr();
+						for (int sample_index = 0; sample_index < sample_times.size(); sample_index++) {
+							const double sample_time_seconds = sample_times[sample_index];
+							VtArray<float> saved_weights;
+							saved_weights.resize(blend_shape_targets.size());
+							for (int export_index = 0; export_index < blend_shape_targets.size(); export_index++) {
+								float source_weight = 0.0f;
+								for (int spec_index = 0; spec_index < blend_shape_targets[export_index].channel_specs.size(); spec_index++) {
+									const int track_index = blend_shape_targets[export_index].track_indices[spec_index];
+									if (track_index < 0) {
+										continue;
+									}
+									source_weight += animation->blend_shape_track_interpolate(track_index, sample_time_seconds) * blend_shape_targets[export_index].channel_specs[spec_index].weight;
+								}
+								saved_weights[export_index] = source_weight;
+							}
+							blend_shape_weights_attr.Set(saved_weights, UsdTimeCode(sample_time_seconds * time_codes_per_second));
+						}
 					}
 
 					SdfPathVector animation_targets;
@@ -5967,7 +6100,7 @@ public:
 		}
 
 		_write_saved_mesh_skel_data_recursive(stage, root, root, saved_paths);
-		_write_saved_blend_shape_animations(stage, root, saved_paths);
+		_write_saved_skeleton_animations(stage, root, saved_paths);
 
 		if (!top_level_paths.is_empty()) {
 			const String default_prim_path = !context.default_prim_path.is_empty() ? context.default_prim_path : _to_godot_string(top_level_paths[0].GetString());

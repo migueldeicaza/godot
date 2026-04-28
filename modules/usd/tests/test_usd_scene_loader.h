@@ -505,6 +505,51 @@ TEST_CASE("[SceneTree][USD] Import a structural UsdSkelSkeleton as Skeleton3D") 
 	memdelete(root);
 }
 
+TEST_CASE("[SceneTree][USD] Round-trip a baked UsdSkelAnimation joint track through USDA save") {
+	PreviewLightingModeScope preview_lighting_mode_scope;
+	preview_lighting_mode_scope.set(0);
+
+	const String source_path = TestUtils::get_data_path("usd/skeleton_basic.usda");
+	const String save_path = TestUtils::get_temp_path("usd_skeleton_roundtrip_saved.usda");
+
+	Error err = OK;
+	Ref<PackedScene> loaded_scene = ResourceLoader::load(source_path, "PackedScene", ResourceFormatLoader::CACHE_MODE_IGNORE, &err);
+	REQUIRE_MESSAGE(err == OK, "USD skeleton source load failed.");
+	REQUIRE(loaded_scene.is_valid());
+	REQUIRE(ResourceSaver::save(loaded_scene, save_path) == OK);
+
+	Ref<PackedScene> reloaded_scene = ResourceLoader::load(save_path, "PackedScene", ResourceFormatLoader::CACHE_MODE_IGNORE, &err);
+	REQUIRE_MESSAGE(err == OK, "USD skeleton round-trip reload failed.");
+	REQUIRE(reloaded_scene.is_valid());
+
+	Node *root = reloaded_scene->instantiate();
+	REQUIRE(root != nullptr);
+
+	Skeleton3D *skeleton = Object::cast_to<Skeleton3D>(_find_prim_node(root, "/Model/Skel"));
+	REQUIRE(skeleton != nullptr);
+	CHECK(skeleton->get_bone_count() == 3);
+	CHECK(skeleton->get_bone_name(1) == String("Elbow"));
+
+	AnimationPlayer *player = nullptr;
+	for (int i = 0; i < root->get_child_count(); i++) {
+		player = Object::cast_to<AnimationPlayer>(root->get_child(i));
+		if (player != nullptr) {
+			break;
+		}
+	}
+	REQUIRE(player != nullptr);
+	REQUIRE(player->has_animation("Anim1"));
+
+	Ref<Animation> animation = player->get_animation("Anim1");
+	REQUIRE(animation.is_valid());
+	CHECK(animation->get_track_count() == 1);
+	CHECK(animation->track_get_type(0) == Animation::TYPE_ROTATION_3D);
+	CHECK(String(animation->track_get_path(0)) == String("Model/Skel:Elbow"));
+	CHECK(animation->track_get_key_count(0) == 2);
+
+	memdelete(root);
+}
+
 TEST_CASE("[SceneTree][USD] Bind a skinned USD mesh to the imported Skeleton3D") {
 	const String usd_path = TestUtils::get_data_path("usd/skeleton_skin_basic.usda");
 
