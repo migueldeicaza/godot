@@ -139,6 +139,16 @@ func _test_blendshape_fixture(base_dir: String) -> void:
 		_require(plane_mesh.find_blend_shape_by_name(&"Key_1") == 0, "Blend shape fixture lost the authored blend shape name.")
 		var mesh_metadata: Dictionary = _metadata(plane_mesh)
 		_require(mesh_metadata.get("usd:blend_shape_mapping", "") == "array_mesh_relative", "Blend shape fixture should record the mesh blend shape mapping.")
+		var blend_shape_arrays: Array = plane_mesh.mesh.surface_get_blend_shape_arrays(0)
+		_require(blend_shape_arrays.size() == 1, "Blend shape fixture should have one surface blend shape array.")
+		if blend_shape_arrays.size() == 1 and mesh_metadata.get("usd:blend_shape_has_normal_offsets", {}).get("Key_1", false):
+			var blend_shape_surface: Array = blend_shape_arrays[0]
+			var blend_shape_normals_variant: Variant = blend_shape_surface[Mesh.ARRAY_NORMAL]
+			_require(blend_shape_normals_variant is PackedVector3Array, "Blend shape fixture should expose PackedVector3Array normal deltas when authored.")
+			var blend_shape_normals: PackedVector3Array = blend_shape_normals_variant
+			_require(blend_shape_normals.size() == 6, "Blend shape fixture should preserve triangulated normal deltas.")
+			if blend_shape_normals.size() > 0:
+				_require(is_equal_approx(blend_shape_normals[0].z, 0.25), "Blend shape fixture lost the authored primary normal delta.")
 
 	var animation_player: AnimationPlayer = null
 	for child in blend_shape_root.get_children():

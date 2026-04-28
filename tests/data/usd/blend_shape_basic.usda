@@ -37,7 +37,12 @@ def Xform "root"
             def BlendShape "Key_1"
             {
                 uniform vector3f[] offsets = [(0.2, 0.0, 0.5), (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), (-0.2, 0.0, 0.5)]
+                uniform vector3f[] normalOffsets = [(0.0, 0.0, 0.25), (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), (0.0, 0.0, 0.25)]
                 uniform int[] pointIndices = [0, 1, 2, 3]
+                uniform vector3f[] inbetweens:HalfKey = [(0.1, 0.0, 0.2), (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), (-0.1, 0.0, 0.2)] (
+                    weight = 0.5
+                )
+                uniform vector3f[] inbetweens:HalfKey:normalOffsets = [(0.0, 0.0, 0.125), (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), (0.0, 0.0, 0.125)]
             }
         }
 

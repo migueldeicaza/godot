@@ -616,14 +616,28 @@ TEST_CASE("[SceneTree][USD] Import USD blend shapes and bake blendShapeWeights a
 
 	Dictionary mesh_metadata = mesh_instance->get_meta(StringName("usd"), Dictionary());
 	CHECK((String)mesh_metadata.get("usd:blend_shape_mapping", String()) == String("array_mesh_relative"));
+	Dictionary blend_shape_has_normal_offsets = mesh_metadata.get("usd:blend_shape_has_normal_offsets", Dictionary());
+	CHECK((bool)blend_shape_has_normal_offsets.get("Key_1", false));
+	Dictionary blend_shape_inbetweens = mesh_metadata.get("usd:blend_shape_inbetweens", Dictionary());
+	REQUIRE(blend_shape_inbetweens.has("Key_1"));
+	Array key_inbetweens = blend_shape_inbetweens["Key_1"];
+	REQUIRE(key_inbetweens.size() == 1);
+	Dictionary half_key = key_inbetweens[0];
+	CHECK((String)half_key.get("name", String()) == String("HalfKey"));
+	CHECK((double)half_key.get("weight", 0.0) == doctest::Approx(0.5));
+	CHECK((int)half_key.get("offset_count", 0) == 4);
+	CHECK((int)half_key.get("normal_offset_count", 0) == 4);
 
 	TypedArray<Array> blend_shape_arrays = mesh_instance->get_mesh()->surface_get_blend_shape_arrays(0);
 	REQUIRE(blend_shape_arrays.size() == 1);
 	Array blend_shape_surface = blend_shape_arrays[0];
 	REQUIRE(blend_shape_surface.size() == Mesh::ARRAY_MAX);
 	PackedVector3Array blend_shape_vertices = blend_shape_surface[Mesh::ARRAY_VERTEX];
+	PackedVector3Array blend_shape_normals = blend_shape_surface[Mesh::ARRAY_NORMAL];
 	CHECK(blend_shape_vertices.size() == 6);
 	CHECK(blend_shape_vertices[0].z == doctest::Approx(0.5f));
+	CHECK(blend_shape_normals.size() == 6);
+	CHECK(blend_shape_normals[0].z == doctest::Approx(0.25f));
 
 	AnimationPlayer *player = nullptr;
 	for (int i = 0; i < root->get_child_count(); i++) {

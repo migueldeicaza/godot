@@ -850,6 +850,8 @@ struct UsdBlendShapeData {
 	String name;
 	String target_path;
 	HashMap<int, Vector3> position_offsets_by_point;
+	HashMap<int, Vector3> normal_offsets_by_point;
+	Array inbetweens_metadata;
 };
 
 struct UsdMeshSurfaceFaceRange {
@@ -1949,11 +1951,58 @@ class UsdSceneBuilder {
 				blend_shape_data.position_offsets_by_point.insert(point_index, Vector3(offset[0], offset[1], offset[2]));
 			}
 
-			if (blend_shape.GetNormalOffsetsAttr().HasAuthoredValueOpinion()) {
-				(*r_mapping_notes)["usd:blend_shape_status"] = "Blend shape normalOffsets were authored, but only position offsets are imported in the current loader.";
+			VtArray<GfVec3f> normal_offsets;
+			const bool has_normal_offsets = blend_shape.GetNormalOffsetsAttr().Get(&normal_offsets, time) && !normal_offsets.empty();
+			if (has_normal_offsets) {
+				if ((int)normal_offsets.size() != (int)offsets.size()) {
+					(*r_mapping_notes)["usd:blend_shape_status"] = "Blend shape normalOffsets did not match offsets; those normal deltas were skipped.";
+				} else {
+					for (int offset_index = 0; offset_index < (int)normal_offsets.size(); offset_index++) {
+						const int point_index = has_point_indices ? point_indices[offset_index] : offset_index;
+						if (point_index < 0 || point_index >= p_point_count) {
+							continue;
+						}
+						const GfVec3f &normal_offset = normal_offsets[offset_index];
+						blend_shape_data.normal_offsets_by_point.insert(point_index, Vector3(normal_offset[0], normal_offset[1], normal_offset[2]));
+					}
+				}
 			}
-			if (!blend_shape.GetAuthoredInbetweens().empty()) {
-				(*r_mapping_notes)["usd:blend_shape_status"] = "Blend shape inbetweens were authored, but only the primary target shape is imported in the current loader.";
+
+			const std::vector<UsdSkelInbetweenShape> authored_inbetweens = blend_shape.GetAuthoredInbetweens();
+			for (const UsdSkelInbetweenShape &inbetween : authored_inbetweens) {
+				if (!inbetween) {
+					continue;
+				}
+
+				Dictionary inbetween_metadata;
+				const String attr_name = _to_godot_string(inbetween.GetAttr().GetName().GetString());
+				inbetween_metadata["attr_name"] = attr_name;
+				String display_name = attr_name;
+				if (display_name.begins_with("inbetweens:")) {
+					display_name = display_name.substr(String("inbetweens:").length());
+				}
+				inbetween_metadata["name"] = display_name;
+
+				float weight = 0.0f;
+				if (inbetween.GetWeight(&weight)) {
+					inbetween_metadata["weight"] = weight;
+				}
+
+				VtArray<GfVec3f> inbetween_offsets;
+				if (inbetween.GetOffsets(&inbetween_offsets)) {
+					inbetween_metadata["offset_count"] = (int)inbetween_offsets.size();
+				}
+
+				VtArray<GfVec3f> inbetween_normal_offsets;
+				if (inbetween.GetNormalOffsets(&inbetween_normal_offsets)) {
+					inbetween_metadata["normal_offset_count"] = (int)inbetween_normal_offsets.size();
+				}
+
+				blend_shape_data.inbetweens_metadata.push_back(inbetween_metadata);
+			}
+
+			if (!authored_inbetweens.empty()) {
+				(*r_mapping_notes)["usd:blend_shape_status"] = "Blend shape inbetweens were preserved as metadata; only the primary target shape is imported as a live Godot blend shape.";
 			}
 
 			blend_shapes.push_back(blend_shape_data);
@@ -2245,15 +2294,26 @@ class UsdSceneBuilder {
 				for (int blend_shape_index = 0; blend_shape_index < blend_shapes.size(); blend_shape_index++) {
 					PackedVector3Array blend_shape_vertices;
 					blend_shape_vertices.resize(surface.vertices.size());
+					PackedVector3Array blend_shape_normals;
+					if (!surface.normals.is_empty()) {
+						blend_shape_normals.resize(surface.normals.size());
+					}
 					for (int vertex_index = 0; vertex_index < surface.vertices.size(); vertex_index++) {
 						const int point_index = surface.authored_point_indices[vertex_index];
 						const Vector3 *offset_ptr = blend_shapes[blend_shape_index].position_offsets_by_point.getptr(point_index);
 						blend_shape_vertices.set(vertex_index, offset_ptr != nullptr ? *offset_ptr : Vector3());
+						if (!surface.normals.is_empty()) {
+							const Vector3 *normal_offset_ptr = blend_shapes[blend_shape_index].normal_offsets_by_point.getptr(point_index);
+							blend_shape_normals.set(vertex_index, normal_offset_ptr != nullptr ? *normal_offset_ptr : Vector3());
+						}
 					}
 
 					Array blend_shape_arrays;
 					blend_shape_arrays.resize(Mesh::ARRAY_MAX);
 					blend_shape_arrays[Mesh::ARRAY_VERTEX] = blend_shape_vertices;
+					if (!surface.normals.is_empty()) {
+						blend_shape_arrays[Mesh::ARRAY_NORMAL] = blend_shape_normals;
+					}
 					surface_blend_shapes.push_back(blend_shape_arrays);
 				}
 			}
@@ -2306,12 +2366,22 @@ class UsdSceneBuilder {
 		if (!blend_shapes.is_empty()) {
 			Array blend_shape_names;
 			Array blend_shape_targets;
+			Dictionary blend_shape_has_normal_offsets;
+			Dictionary blend_shape_inbetweens;
 			for (int blend_shape_index = 0; blend_shape_index < blend_shapes.size(); blend_shape_index++) {
 				blend_shape_names.push_back(blend_shapes[blend_shape_index].name);
 				blend_shape_targets.push_back(blend_shapes[blend_shape_index].target_path);
+				blend_shape_has_normal_offsets[blend_shapes[blend_shape_index].name] = !blend_shapes[blend_shape_index].normal_offsets_by_point.is_empty();
+				if (!blend_shapes[blend_shape_index].inbetweens_metadata.is_empty()) {
+					blend_shape_inbetweens[blend_shapes[blend_shape_index].name] = blend_shapes[blend_shape_index].inbetweens_metadata;
+				}
 			}
 			(*r_mapping_notes)["usd:blend_shape_names"] = blend_shape_names;
 			(*r_mapping_notes)["usd:blend_shape_targets"] = blend_shape_targets;
+			(*r_mapping_notes)["usd:blend_shape_has_normal_offsets"] = blend_shape_has_normal_offsets;
+			if (!blend_shape_inbetweens.is_empty()) {
+				(*r_mapping_notes)["usd:blend_shape_inbetweens"] = blend_shape_inbetweens;
+			}
 			(*r_mapping_notes)["usd:blend_shape_mapping"] = "array_mesh_relative";
 		}
 
