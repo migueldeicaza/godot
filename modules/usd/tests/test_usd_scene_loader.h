@@ -60,6 +60,10 @@ TEST_FORCE_LINK(test_usd_scene_loader)
 #include "scene/resources/material.h"
 #include "scene/resources/mesh.h"
 #include "scene/resources/packed_scene.h"
+#include "modules/usd/usd_scene_loader.h"
+#ifdef TOOLS_ENABLED
+#include "modules/usd/usd_scene_importer.h"
+#endif
 
 namespace TestUsdSceneLoader {
 
@@ -823,6 +827,51 @@ TEST_CASE("[SceneTree][USD] Import USD blend shapes and bake blendShapeWeights a
 
 	memdelete(root);
 }
+
+#ifdef TOOLS_ENABLED
+TEST_CASE("[SceneTree][USD] UsdSceneFormatImporter bakes a variant USD file into a static scene root") {
+	const String usd_path = TestUtils::get_data_path("usd/variant_stage.usda");
+
+	Ref<UsdSceneFormatImporter> importer;
+	importer.instantiate();
+	REQUIRE(importer.is_valid());
+
+	HashMap<StringName, Variant> options;
+	Error err = OK;
+	Node *root = importer->import_scene(usd_path, EditorSceneFormatImporter::IMPORT_SCENE, options, nullptr, &err);
+	REQUIRE_MESSAGE(err == OK, "UsdSceneFormatImporter failed to import the default variant stage.");
+	REQUIRE(root != nullptr);
+	CHECK(Object::cast_to<UsdStageInstance>(root) == nullptr);
+	CHECK(root->get_node_or_null(NodePath("_Generated")) == nullptr);
+	CHECK(_find_prim_node(root, "/Model/RedCube") != nullptr);
+	CHECK(_find_prim_node(root, "/Model/BlueSphere") == nullptr);
+
+	memdelete(root);
+}
+
+TEST_CASE("[SceneTree][USD] UsdSceneFormatImporter applies importer-side variant overrides") {
+	const String usd_path = TestUtils::get_data_path("usd/variant_stage.usda");
+
+	Ref<UsdSceneFormatImporter> importer;
+	importer.instantiate();
+	REQUIRE(importer.is_valid());
+
+	HashMap<StringName, Variant> options;
+	options.insert(StringName("usd/variant_selections"), String("{\"/Model\":{\"modelingVariant\":\"blue\"},\"/Model/Nested\":{\"detail\":\"sphere\"}}"));
+
+	Error err = OK;
+	Node *root = importer->import_scene(usd_path, EditorSceneFormatImporter::IMPORT_SCENE, options, nullptr, &err);
+	REQUIRE_MESSAGE(err == OK, "UsdSceneFormatImporter failed to import the overridden variant stage.");
+	REQUIRE(root != nullptr);
+	CHECK(Object::cast_to<UsdStageInstance>(root) == nullptr);
+	CHECK(_find_prim_node(root, "/Model/RedCube") == nullptr);
+	CHECK(_find_prim_node(root, "/Model/BlueSphere") != nullptr);
+	CHECK(_find_prim_node(root, "/Model/Nested/NestedSphere") != nullptr);
+	CHECK(_find_prim_node(root, "/Model/Nested/NestedCube") == nullptr);
+
+	memdelete(root);
+}
+#endif
 
 TEST_CASE("[SceneTree][USD] Import point-based USD blend shapes and bake blendShapeWeights animation tracks") {
 	const String usd_path = TestUtils::get_data_path("usd/points_blend_shape_basic.usda");

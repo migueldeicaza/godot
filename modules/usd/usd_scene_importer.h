@@ -1,5 +1,5 @@
 /**************************************************************************/
-/*  register_types.cpp                                                    */
+/*  usd_scene_importer.h                                                  */
 /**************************************************************************/
 /*                         This file is part of:                          */
 /*                             GODOT ENGINE                               */
@@ -28,69 +28,19 @@
 /* SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.                 */
 /**************************************************************************/
 
-#include "register_types.h"
+#pragma once
 
-#include "usd_scene_loader.h"
 #ifdef TOOLS_ENABLED
-#include "usd_scene_importer.h"
-#endif
 
-#include "core/config/project_settings.h"
-#include "core/io/resource_loader.h"
-#include "core/io/resource_saver.h"
-#include "core/object/class_db.h"
-#ifdef TOOLS_ENABLED
 #include "editor/import/3d/resource_importer_scene.h"
-#endif
 
-static Ref<UsdSceneFormatLoader> usd_scene_format_loader;
-static Ref<UsdSceneFormatSaver> usd_scene_format_saver;
-#ifdef TOOLS_ENABLED
-static Ref<UsdSceneFormatImporter> usd_scene_format_importer;
-#endif
+class UsdSceneFormatImporter : public EditorSceneFormatImporter {
+	GDCLASS(UsdSceneFormatImporter, EditorSceneFormatImporter);
 
-void initialize_usd_module(ModuleInitializationLevel p_level) {
-	if (p_level != MODULE_INITIALIZATION_LEVEL_SCENE) {
-	#ifdef TOOLS_ENABLED
-		if (p_level == MODULE_INITIALIZATION_LEVEL_EDITOR) {
-			GDREGISTER_CLASS(UsdSceneFormatImporter);
-			usd_scene_format_importer.instantiate();
-			ResourceImporterScene::add_scene_importer(usd_scene_format_importer);
-		}
-	#endif
-		return;
-	}
+public:
+	virtual void get_extensions(List<String> *r_extensions) const override;
+	virtual Node *import_scene(const String &p_path, uint32_t p_flags, const HashMap<StringName, Variant> &p_options, List<String> *r_missing_deps, Error *r_err = nullptr) override;
+	virtual void get_import_options(const String &p_path, List<ResourceImporter::ImportOption> *r_options) override;
+};
 
-	GLOBAL_DEF(PropertyInfo(Variant::INT, "filesystem/import/usd/preview_lighting_mode", PROPERTY_HINT_ENUM, "Never,When Missing,Always"), 1);
-
-	GDREGISTER_CLASS(UsdStageResource);
-	GDREGISTER_CLASS(UsdStageInstance);
-
-	usd_scene_format_loader.instantiate();
-	ResourceLoader::add_resource_format_loader(usd_scene_format_loader, true);
-
-	usd_scene_format_saver.instantiate();
-	ResourceSaver::add_resource_format_saver(usd_scene_format_saver, true);
-}
-
-void uninitialize_usd_module(ModuleInitializationLevel p_level) {
-	if (p_level != MODULE_INITIALIZATION_LEVEL_SCENE) {
-	#ifdef TOOLS_ENABLED
-		if (p_level == MODULE_INITIALIZATION_LEVEL_EDITOR && usd_scene_format_importer.is_valid()) {
-			ResourceImporterScene::remove_scene_importer(usd_scene_format_importer);
-			usd_scene_format_importer.unref();
-		}
-	#endif
-		return;
-	}
-
-	if (usd_scene_format_loader.is_valid()) {
-		ResourceLoader::remove_resource_format_loader(usd_scene_format_loader);
-		usd_scene_format_loader.unref();
-	}
-
-	if (usd_scene_format_saver.is_valid()) {
-		ResourceSaver::remove_resource_format_saver(usd_scene_format_saver);
-		usd_scene_format_saver.unref();
-	}
-}
+#endif // TOOLS_ENABLED
