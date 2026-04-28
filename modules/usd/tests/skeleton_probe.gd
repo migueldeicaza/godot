@@ -138,7 +138,7 @@ func _test_blendshape_fixture(base_dir: String) -> void:
 		_require(plane_mesh.get_blend_shape_count() == 1, "Blend shape fixture should now create one Godot blend shape.")
 		_require(plane_mesh.find_blend_shape_by_name(&"Key_1") == 0, "Blend shape fixture lost the authored blend shape name.")
 		var mesh_metadata: Dictionary = _metadata(plane_mesh)
-		_require(mesh_metadata.get("usd:blend_shape_mapping", "") == "array_mesh_relative", "Blend shape fixture should record the mesh blend shape mapping.")
+		_require(mesh_metadata.get("usd:blend_shape_mapping", "") == "array_mesh_relative_piecewise", "Blend shape fixture should record the mesh blend shape mapping.")
 		var blend_shape_arrays: Array = plane_mesh.mesh.surface_get_blend_shape_arrays(0)
 		_require(blend_shape_arrays.size() == 1, "Blend shape fixture should have one surface blend shape array.")
 		if blend_shape_arrays.size() == 1 and mesh_metadata.get("usd:blend_shape_has_normal_offsets", {}).get("Key_1", false):

@@ -846,12 +846,26 @@ struct UsdSkinningData {
 	bool has_authored_joint_weights = false;
 };
 
+struct UsdInbetweenShapeData {
+	String name;
+	float weight = 0.0f;
+	HashMap<int, Vector3> position_offsets_by_point;
+	HashMap<int, Vector3> normal_offsets_by_point;
+};
+
 struct UsdBlendShapeData {
 	String name;
 	String target_path;
 	HashMap<int, Vector3> position_offsets_by_point;
 	HashMap<int, Vector3> normal_offsets_by_point;
+	Vector<UsdInbetweenShapeData> inbetweens;
 	Array inbetweens_metadata;
+};
+
+struct UsdBlendShapeChannelSpec {
+	String channel_name;
+	float weight = 0.0f;
+	bool primary = false;
 };
 
 struct UsdMeshSurfaceFaceRange {
@@ -1974,6 +1988,7 @@ class UsdSceneBuilder {
 					continue;
 				}
 
+				UsdInbetweenShapeData inbetween_data;
 				Dictionary inbetween_metadata;
 				const String attr_name = _to_godot_string(inbetween.GetAttr().GetName().GetString());
 				inbetween_metadata["attr_name"] = attr_name;
@@ -1981,23 +1996,60 @@ class UsdSceneBuilder {
 				if (display_name.begins_with("inbetweens:")) {
 					display_name = display_name.substr(String("inbetweens:").length());
 				}
+				inbetween_data.name = display_name;
 				inbetween_metadata["name"] = display_name;
 
 				float weight = 0.0f;
 				if (inbetween.GetWeight(&weight)) {
+					inbetween_data.weight = weight;
 					inbetween_metadata["weight"] = weight;
 				}
 
 				VtArray<GfVec3f> inbetween_offsets;
 				if (inbetween.GetOffsets(&inbetween_offsets)) {
 					inbetween_metadata["offset_count"] = (int)inbetween_offsets.size();
+					if (has_point_indices) {
+						if ((int)inbetween_offsets.size() == (int)point_indices.size()) {
+							for (int offset_index = 0; offset_index < (int)inbetween_offsets.size(); offset_index++) {
+								const int point_index = point_indices[offset_index];
+								if (point_index < 0 || point_index >= p_point_count) {
+									continue;
+								}
+								const GfVec3f &offset = inbetween_offsets[offset_index];
+								inbetween_data.position_offsets_by_point.insert(point_index, Vector3(offset[0], offset[1], offset[2]));
+							}
+						}
+					} else if ((int)inbetween_offsets.size() == p_point_count) {
+						for (int offset_index = 0; offset_index < (int)inbetween_offsets.size(); offset_index++) {
+							const GfVec3f &offset = inbetween_offsets[offset_index];
+							inbetween_data.position_offsets_by_point.insert(offset_index, Vector3(offset[0], offset[1], offset[2]));
+						}
+					}
 				}
 
 				VtArray<GfVec3f> inbetween_normal_offsets;
 				if (inbetween.GetNormalOffsets(&inbetween_normal_offsets)) {
 					inbetween_metadata["normal_offset_count"] = (int)inbetween_normal_offsets.size();
+					if (has_point_indices) {
+						if ((int)inbetween_normal_offsets.size() == (int)point_indices.size()) {
+							for (int offset_index = 0; offset_index < (int)inbetween_normal_offsets.size(); offset_index++) {
+								const int point_index = point_indices[offset_index];
+								if (point_index < 0 || point_index >= p_point_count) {
+									continue;
+								}
+								const GfVec3f &normal_offset = inbetween_normal_offsets[offset_index];
+								inbetween_data.normal_offsets_by_point.insert(point_index, Vector3(normal_offset[0], normal_offset[1], normal_offset[2]));
+							}
+						}
+					} else if ((int)inbetween_normal_offsets.size() == p_point_count) {
+						for (int offset_index = 0; offset_index < (int)inbetween_normal_offsets.size(); offset_index++) {
+							const GfVec3f &normal_offset = inbetween_normal_offsets[offset_index];
+							inbetween_data.normal_offsets_by_point.insert(offset_index, Vector3(normal_offset[0], normal_offset[1], normal_offset[2]));
+						}
+					}
 				}
 
+				blend_shape_data.inbetweens.push_back(inbetween_data);
 				blend_shape_data.inbetweens_metadata.push_back(inbetween_metadata);
 			}
 
@@ -2262,6 +2314,9 @@ class UsdSceneBuilder {
 			mesh->set_blend_shape_mode(Mesh::BLEND_SHAPE_MODE_RELATIVE);
 			for (int blend_shape_index = 0; blend_shape_index < blend_shapes.size(); blend_shape_index++) {
 				mesh->add_blend_shape(blend_shapes[blend_shape_index].name);
+				for (int inbetween_index = 0; inbetween_index < blend_shapes[blend_shape_index].inbetweens.size(); inbetween_index++) {
+					mesh->add_blend_shape(_make_inbetween_blend_shape_channel_name(blend_shapes[blend_shape_index].name, blend_shapes[blend_shape_index].inbetweens[inbetween_index].name));
+				}
 			}
 		}
 		for (int i = 0; i < surfaces.size(); i++) {
@@ -2292,29 +2347,37 @@ class UsdSceneBuilder {
 			TypedArray<Array> surface_blend_shapes;
 			if (!blend_shapes.is_empty()) {
 				for (int blend_shape_index = 0; blend_shape_index < blend_shapes.size(); blend_shape_index++) {
-					PackedVector3Array blend_shape_vertices;
-					blend_shape_vertices.resize(surface.vertices.size());
-					PackedVector3Array blend_shape_normals;
-					if (!surface.normals.is_empty()) {
-						blend_shape_normals.resize(surface.normals.size());
-					}
-					for (int vertex_index = 0; vertex_index < surface.vertices.size(); vertex_index++) {
-						const int point_index = surface.authored_point_indices[vertex_index];
-						const Vector3 *offset_ptr = blend_shapes[blend_shape_index].position_offsets_by_point.getptr(point_index);
-						blend_shape_vertices.set(vertex_index, offset_ptr != nullptr ? *offset_ptr : Vector3());
+					auto append_blend_shape_surface = [&](const HashMap<int, Vector3> &p_position_offsets_by_point, const HashMap<int, Vector3> &p_normal_offsets_by_point) {
+						PackedVector3Array blend_shape_vertices;
+						blend_shape_vertices.resize(surface.vertices.size());
+						PackedVector3Array blend_shape_normals;
 						if (!surface.normals.is_empty()) {
-							const Vector3 *normal_offset_ptr = blend_shapes[blend_shape_index].normal_offsets_by_point.getptr(point_index);
-							blend_shape_normals.set(vertex_index, normal_offset_ptr != nullptr ? *normal_offset_ptr : Vector3());
+							blend_shape_normals.resize(surface.normals.size());
 						}
-					}
+						for (int vertex_index = 0; vertex_index < surface.vertices.size(); vertex_index++) {
+							const int point_index = surface.authored_point_indices[vertex_index];
+							const Vector3 *offset_ptr = p_position_offsets_by_point.getptr(point_index);
+							blend_shape_vertices.set(vertex_index, offset_ptr != nullptr ? *offset_ptr : Vector3());
+							if (!surface.normals.is_empty()) {
+								const Vector3 *normal_offset_ptr = p_normal_offsets_by_point.getptr(point_index);
+								blend_shape_normals.set(vertex_index, normal_offset_ptr != nullptr ? *normal_offset_ptr : Vector3());
+							}
+						}
 
-					Array blend_shape_arrays;
-					blend_shape_arrays.resize(Mesh::ARRAY_MAX);
-					blend_shape_arrays[Mesh::ARRAY_VERTEX] = blend_shape_vertices;
-					if (!surface.normals.is_empty()) {
-						blend_shape_arrays[Mesh::ARRAY_NORMAL] = blend_shape_normals;
+						Array blend_shape_arrays;
+						blend_shape_arrays.resize(Mesh::ARRAY_MAX);
+						blend_shape_arrays[Mesh::ARRAY_VERTEX] = blend_shape_vertices;
+						if (!surface.normals.is_empty()) {
+							blend_shape_arrays[Mesh::ARRAY_NORMAL] = blend_shape_normals;
+						}
+						surface_blend_shapes.push_back(blend_shape_arrays);
+					};
+
+					append_blend_shape_surface(blend_shapes[blend_shape_index].position_offsets_by_point, blend_shapes[blend_shape_index].normal_offsets_by_point);
+					for (int inbetween_index = 0; inbetween_index < blend_shapes[blend_shape_index].inbetweens.size(); inbetween_index++) {
+						const UsdInbetweenShapeData &inbetween = blend_shapes[blend_shape_index].inbetweens[inbetween_index];
+						append_blend_shape_surface(inbetween.position_offsets_by_point, inbetween.normal_offsets_by_point);
 					}
-					surface_blend_shapes.push_back(blend_shape_arrays);
 				}
 			}
 
@@ -2368,6 +2431,7 @@ class UsdSceneBuilder {
 			Array blend_shape_targets;
 			Dictionary blend_shape_has_normal_offsets;
 			Dictionary blend_shape_inbetweens;
+			Dictionary blend_shape_channels;
 			for (int blend_shape_index = 0; blend_shape_index < blend_shapes.size(); blend_shape_index++) {
 				blend_shape_names.push_back(blend_shapes[blend_shape_index].name);
 				blend_shape_targets.push_back(blend_shapes[blend_shape_index].target_path);
@@ -2375,14 +2439,32 @@ class UsdSceneBuilder {
 				if (!blend_shapes[blend_shape_index].inbetweens_metadata.is_empty()) {
 					blend_shape_inbetweens[blend_shapes[blend_shape_index].name] = blend_shapes[blend_shape_index].inbetweens_metadata;
 				}
+
+				Array channel_entries;
+				Dictionary primary_channel;
+				primary_channel["channel_name"] = blend_shapes[blend_shape_index].name;
+				primary_channel["weight"] = 1.0;
+				primary_channel["primary"] = true;
+				channel_entries.push_back(primary_channel);
+				for (int inbetween_index = 0; inbetween_index < blend_shapes[blend_shape_index].inbetweens.size(); inbetween_index++) {
+					const UsdInbetweenShapeData &inbetween = blend_shapes[blend_shape_index].inbetweens[inbetween_index];
+					Dictionary inbetween_channel;
+					inbetween_channel["channel_name"] = _make_inbetween_blend_shape_channel_name(blend_shapes[blend_shape_index].name, inbetween.name);
+					inbetween_channel["weight"] = inbetween.weight;
+					inbetween_channel["primary"] = false;
+					inbetween_channel["name"] = inbetween.name;
+					channel_entries.push_back(inbetween_channel);
+				}
+				blend_shape_channels[blend_shapes[blend_shape_index].name] = channel_entries;
 			}
 			(*r_mapping_notes)["usd:blend_shape_names"] = blend_shape_names;
 			(*r_mapping_notes)["usd:blend_shape_targets"] = blend_shape_targets;
 			(*r_mapping_notes)["usd:blend_shape_has_normal_offsets"] = blend_shape_has_normal_offsets;
+			(*r_mapping_notes)["usd:blend_shape_channels"] = blend_shape_channels;
 			if (!blend_shape_inbetweens.is_empty()) {
 				(*r_mapping_notes)["usd:blend_shape_inbetweens"] = blend_shape_inbetweens;
 			}
-			(*r_mapping_notes)["usd:blend_shape_mapping"] = "array_mesh_relative";
+			(*r_mapping_notes)["usd:blend_shape_mapping"] = "array_mesh_relative_piecewise";
 		}
 
 		result.mesh = mesh->get_surface_count() > 0 ? mesh : Ref<ArrayMesh>();
@@ -2724,6 +2806,136 @@ class UsdSceneBuilder {
 			values.push_back(_to_godot_string(p_values[i].GetString()));
 		}
 		return values;
+	}
+
+	static String _make_inbetween_blend_shape_channel_name(const String &p_blend_shape_name, const String &p_inbetween_name) {
+		return p_blend_shape_name + "__inbetween__" + p_inbetween_name;
+	}
+
+	struct UsdBlendShapeChannelWeightComparator {
+		_FORCE_INLINE_ bool operator()(const UsdBlendShapeChannelSpec &p_a, const UsdBlendShapeChannelSpec &p_b) const {
+			if (Math::is_equal_approx(p_a.weight, p_b.weight)) {
+				if (p_a.primary != p_b.primary) {
+					return !p_a.primary && p_b.primary;
+				}
+				return p_a.channel_name < p_b.channel_name;
+			}
+			return p_a.weight < p_b.weight;
+		}
+	};
+
+	static Vector<UsdBlendShapeChannelSpec> _parse_blend_shape_channel_specs(const Variant &p_channel_metadata) {
+		Vector<UsdBlendShapeChannelSpec> specs;
+		if (p_channel_metadata.get_type() != Variant::ARRAY) {
+			return specs;
+		}
+
+		const Array channel_array = p_channel_metadata;
+		for (int i = 0; i < channel_array.size(); i++) {
+			if (channel_array[i].get_type() != Variant::DICTIONARY) {
+				continue;
+			}
+			const Dictionary channel_dict = channel_array[i];
+			const String channel_name = channel_dict.get("channel_name", String());
+			if (channel_name.is_empty()) {
+				continue;
+			}
+
+			UsdBlendShapeChannelSpec spec;
+			spec.channel_name = channel_name;
+			spec.weight = (float)(double)channel_dict.get("weight", 1.0);
+			spec.primary = (bool)channel_dict.get("primary", false);
+			spec.weight = MAX(spec.weight, 0.0001f);
+			specs.push_back(spec);
+		}
+
+		specs.sort_custom<UsdBlendShapeChannelWeightComparator>();
+		return specs;
+	}
+
+	static HashMap<String, float> _evaluate_blend_shape_channel_weights(float p_source_weight, const Vector<UsdBlendShapeChannelSpec> &p_specs) {
+		HashMap<String, float> weights_by_channel;
+		if (p_specs.is_empty() || p_source_weight <= 0.0f) {
+			return weights_by_channel;
+		}
+
+		if (p_specs.size() == 1) {
+			weights_by_channel.insert(p_specs[0].channel_name, p_source_weight / p_specs[0].weight);
+			return weights_by_channel;
+		}
+
+		if (p_source_weight < p_specs[0].weight) {
+			weights_by_channel.insert(p_specs[0].channel_name, p_source_weight / p_specs[0].weight);
+			return weights_by_channel;
+		}
+
+		for (int spec_index = 0; spec_index < p_specs.size() - 1; spec_index++) {
+			const UsdBlendShapeChannelSpec &current = p_specs[spec_index];
+			const UsdBlendShapeChannelSpec &next = p_specs[spec_index + 1];
+			if (p_source_weight <= next.weight) {
+				const float span = MAX(next.weight - current.weight, 0.0001f);
+				const float alpha = CLAMP((p_source_weight - current.weight) / span, 0.0f, 1.0f);
+				weights_by_channel.insert(current.channel_name, 1.0f - alpha);
+				weights_by_channel.insert(next.channel_name, alpha);
+				return weights_by_channel;
+			}
+		}
+
+		weights_by_channel.insert(p_specs[p_specs.size() - 1].channel_name, p_source_weight / p_specs[p_specs.size() - 1].weight);
+		return weights_by_channel;
+	}
+
+	static Vector<double> _build_blend_shape_sample_times(const UsdAttribute &p_blend_shape_weights_attr, int p_animation_blend_shape_index, const Vector<UsdBlendShapeChannelSpec> &p_specs, const std::vector<double> &p_base_sample_times) {
+		Vector<double> sample_times;
+		for (double sample_time : p_base_sample_times) {
+			sample_times.push_back(sample_time);
+		}
+
+		if (!p_blend_shape_weights_attr || p_specs.size() <= 1 || p_base_sample_times.size() <= 1) {
+			return sample_times;
+		}
+
+		for (int sample_index = 0; sample_index < (int)p_base_sample_times.size() - 1; sample_index++) {
+			const double start_sample_time = p_base_sample_times[sample_index];
+			const double end_sample_time = p_base_sample_times[sample_index + 1];
+
+			VtArray<float> start_weights;
+			VtArray<float> end_weights;
+			if (!p_blend_shape_weights_attr.Get(&start_weights, start_sample_time) || !p_blend_shape_weights_attr.Get(&end_weights, end_sample_time)) {
+				continue;
+			}
+			if (p_animation_blend_shape_index >= (int)start_weights.size() || p_animation_blend_shape_index >= (int)end_weights.size()) {
+				continue;
+			}
+
+			const float start_weight = start_weights[p_animation_blend_shape_index];
+			const float end_weight = end_weights[p_animation_blend_shape_index];
+			if (Math::is_equal_approx(start_weight, end_weight)) {
+				continue;
+			}
+
+			const float low_weight = MIN(start_weight, end_weight);
+			const float high_weight = MAX(start_weight, end_weight);
+			for (int spec_index = 0; spec_index < p_specs.size() - 1; spec_index++) {
+				const float threshold = p_specs[spec_index].weight;
+				if (threshold <= low_weight || threshold >= high_weight) {
+					continue;
+				}
+				const double alpha = (threshold - start_weight) / (end_weight - start_weight);
+				if (alpha <= 0.0 || alpha >= 1.0) {
+					continue;
+				}
+				sample_times.push_back(start_sample_time + (end_sample_time - start_sample_time) * alpha);
+			}
+		}
+
+		sample_times.sort();
+		for (int i = sample_times.size() - 1; i > 0; i--) {
+			if (Math::is_equal_approx(sample_times[i], sample_times[i - 1])) {
+				sample_times.remove_at(i);
+			}
+		}
+		return sample_times;
 	}
 
 	static String _joint_parent_path(const String &p_joint_path) {
@@ -3487,42 +3699,85 @@ class UsdSceneBuilder {
 					continue;
 				}
 
-				HashMap<String, int> mesh_blend_shape_indices;
+				HashMap<String, bool> mesh_blend_shape_names;
 				for (int blend_shape_index = 0; blend_shape_index < mesh_instance->get_blend_shape_count(); blend_shape_index++) {
-					mesh_blend_shape_indices.insert(String(mesh_instance->get_mesh()->get_blend_shape_name(blend_shape_index)), blend_shape_index);
+					mesh_blend_shape_names.insert(String(mesh_instance->get_mesh()->get_blend_shape_name(blend_shape_index)), true);
 				}
 
+				const Dictionary mesh_blend_shape_channels = mesh_metadata.get("usd:blend_shape_channels", Dictionary());
 				const String mesh_path = String(p_scene_root->get_path_to(mesh_instance));
 				for (int animation_blend_shape_index = 0; animation_blend_shape_index < (int)animation_blend_shape_names.size(); animation_blend_shape_index++) {
 					const String blend_shape_name = _to_godot_string(animation_blend_shape_names[animation_blend_shape_index].GetString());
-					const int *mesh_blend_shape_index_ptr = mesh_blend_shape_indices.getptr(blend_shape_name);
-					if (mesh_blend_shape_index_ptr == nullptr) {
+					Vector<UsdBlendShapeChannelSpec> channel_specs = _parse_blend_shape_channel_specs(mesh_blend_shape_channels.get(blend_shape_name, Variant()));
+					if (channel_specs.is_empty()) {
+						UsdBlendShapeChannelSpec fallback_spec;
+						fallback_spec.channel_name = blend_shape_name;
+						fallback_spec.weight = 1.0f;
+						fallback_spec.primary = true;
+						channel_specs.push_back(fallback_spec);
+					}
+
+					bool has_all_channels = true;
+					for (int channel_index = 0; channel_index < channel_specs.size(); channel_index++) {
+						if (!mesh_blend_shape_names.has(channel_specs[channel_index].channel_name)) {
+							has_all_channels = false;
+							break;
+						}
+					}
+					if (!has_all_channels) {
 						continue;
 					}
 
-					bool add_blend_shape_track = false;
-					for (double sample_time : sample_times) {
+					const Vector<double> blend_shape_sample_times = _build_blend_shape_sample_times(blend_shape_weights_attr, animation_blend_shape_index, channel_specs, sample_times);
+					HashMap<String, bool> add_blend_shape_track_by_channel;
+					for (int channel_index = 0; channel_index < channel_specs.size(); channel_index++) {
+						add_blend_shape_track_by_channel.insert(channel_specs[channel_index].channel_name, false);
+					}
+					for (int sample_index = 0; sample_index < blend_shape_sample_times.size(); sample_index++) {
+						const double sample_time = blend_shape_sample_times[sample_index];
 						VtArray<float> blend_shape_weights;
 						if (blend_shape_weights_attr.Get(&blend_shape_weights, sample_time) && animation_blend_shape_index < (int)blend_shape_weights.size()) {
-							if (!Math::is_equal_approx(blend_shape_weights[animation_blend_shape_index], 0.0f)) {
-								add_blend_shape_track = true;
-								break;
+							const HashMap<String, float> evaluated_weights = _evaluate_blend_shape_channel_weights(blend_shape_weights[animation_blend_shape_index], channel_specs);
+							for (int channel_index = 0; channel_index < channel_specs.size(); channel_index++) {
+								const String &channel_name = channel_specs[channel_index].channel_name;
+								const float *channel_weight_ptr = evaluated_weights.getptr(channel_name);
+								if (channel_weight_ptr != nullptr && !Math::is_equal_approx(*channel_weight_ptr, 0.0f)) {
+									add_blend_shape_track_by_channel[channel_name] = true;
+								}
 							}
 						}
 					}
-					if (!add_blend_shape_track) {
-						continue;
+
+					HashMap<String, int> blend_shape_tracks_by_channel;
+					for (int channel_index = 0; channel_index < channel_specs.size(); channel_index++) {
+						const String &channel_name = channel_specs[channel_index].channel_name;
+						const bool *add_blend_shape_track_ptr = add_blend_shape_track_by_channel.getptr(channel_name);
+						if (add_blend_shape_track_ptr == nullptr || !*add_blend_shape_track_ptr) {
+							continue;
+						}
+						const int blend_shape_track = animation->get_track_count();
+						animation->add_track(Animation::TYPE_BLEND_SHAPE);
+						animation->track_set_path(blend_shape_track, NodePath(mesh_path + ":" + channel_name));
+						animation->track_set_imported(blend_shape_track, true);
+						blend_shape_tracks_by_channel.insert(channel_name, blend_shape_track);
 					}
 
-					const int blend_shape_track = animation->get_track_count();
-					animation->add_track(Animation::TYPE_BLEND_SHAPE);
-					animation->track_set_path(blend_shape_track, NodePath(mesh_path + ":" + blend_shape_name));
-					animation->track_set_imported(blend_shape_track, true);
-
-					for (double sample_time : sample_times) {
+					for (int sample_index = 0; sample_index < blend_shape_sample_times.size(); sample_index++) {
+						const double sample_time = blend_shape_sample_times[sample_index];
 						VtArray<float> blend_shape_weights;
-						if (blend_shape_weights_attr.Get(&blend_shape_weights, sample_time) && animation_blend_shape_index < (int)blend_shape_weights.size()) {
-							animation->blend_shape_track_insert_key(blend_shape_track, (sample_time - start_time) / time_codes_per_second, blend_shape_weights[animation_blend_shape_index]);
+						if (!blend_shape_weights_attr.Get(&blend_shape_weights, sample_time) || animation_blend_shape_index >= (int)blend_shape_weights.size()) {
+							continue;
+						}
+						const HashMap<String, float> evaluated_weights = _evaluate_blend_shape_channel_weights(blend_shape_weights[animation_blend_shape_index], channel_specs);
+						for (int channel_index = 0; channel_index < channel_specs.size(); channel_index++) {
+							const String &channel_name = channel_specs[channel_index].channel_name;
+							const int *blend_shape_track_ptr = blend_shape_tracks_by_channel.getptr(channel_name);
+							if (blend_shape_track_ptr == nullptr) {
+								continue;
+							}
+							const float *channel_weight_ptr = evaluated_weights.getptr(channel_name);
+							const float channel_weight = channel_weight_ptr != nullptr ? *channel_weight_ptr : 0.0f;
+							animation->blend_shape_track_insert_key(*blend_shape_track_ptr, (sample_time - start_time) / time_codes_per_second, channel_weight);
 							added_any_tracks = true;
 						}
 					}

@@ -56,6 +56,7 @@ run_probe "$script_dir/composition_probe.gd" "$repo_root/tests/data/usd/composit
 run_probe "$script_dir/composition_probe.gd" "$repo_root/tests/data/usd/composition_payload_source.usda" "$tmp_dir/composition_payload_saved.usda" "usd:payloads" "./composition_payload_target.usda" "/PayloadAsset"
 run_probe "$script_dir/composition_path_arcs_probe.gd" "$repo_root/tests/data/usd/composition_inherits_source.usda" "$tmp_dir/composition_inherits_saved.usda" "usd:inherits" "/BaseAsset"
 run_probe "$script_dir/composition_path_arcs_probe.gd" "$repo_root/tests/data/usd/composition_specializes_source.usda" "$tmp_dir/composition_specializes_saved.usda" "usd:specializes" "/BaseAsset"
+run_probe "$script_dir/blend_shape_piecewise_probe.gd"
 
 if [[ -d "$blender_fixture_dir" ]]; then
 	run_probe "$script_dir/skeleton_probe.gd" "$blender_fixture_dir"

@@ -611,13 +611,18 @@ TEST_CASE("[SceneTree][USD] Import USD blend shapes and bake blendShapeWeights a
 	REQUIRE(mesh_instance != nullptr);
 	REQUIRE(skeleton != nullptr);
 	REQUIRE(mesh_instance->get_mesh().is_valid());
-	CHECK(mesh_instance->get_blend_shape_count() == 1);
+	CHECK(mesh_instance->get_blend_shape_count() == 2);
 	CHECK(mesh_instance->find_blend_shape_by_name(StringName("Key_1")) == 0);
+	CHECK(mesh_instance->find_blend_shape_by_name(StringName("Key_1__inbetween__HalfKey")) == 1);
 
 	Dictionary mesh_metadata = mesh_instance->get_meta(StringName("usd"), Dictionary());
-	CHECK((String)mesh_metadata.get("usd:blend_shape_mapping", String()) == String("array_mesh_relative"));
+	CHECK((String)mesh_metadata.get("usd:blend_shape_mapping", String()) == String("array_mesh_relative_piecewise"));
 	Dictionary blend_shape_has_normal_offsets = mesh_metadata.get("usd:blend_shape_has_normal_offsets", Dictionary());
 	CHECK((bool)blend_shape_has_normal_offsets.get("Key_1", false));
+	Dictionary blend_shape_channels = mesh_metadata.get("usd:blend_shape_channels", Dictionary());
+	REQUIRE(blend_shape_channels.has("Key_1"));
+	Array key_channels = blend_shape_channels["Key_1"];
+	REQUIRE(key_channels.size() == 2);
 	Dictionary blend_shape_inbetweens = mesh_metadata.get("usd:blend_shape_inbetweens", Dictionary());
 	REQUIRE(blend_shape_inbetweens.has("Key_1"));
 	Array key_inbetweens = blend_shape_inbetweens["Key_1"];
@@ -629,7 +634,7 @@ TEST_CASE("[SceneTree][USD] Import USD blend shapes and bake blendShapeWeights a
 	CHECK((int)half_key.get("normal_offset_count", 0) == 4);
 
 	TypedArray<Array> blend_shape_arrays = mesh_instance->get_mesh()->surface_get_blend_shape_arrays(0);
-	REQUIRE(blend_shape_arrays.size() == 1);
+	REQUIRE(blend_shape_arrays.size() == 2);
 	Array blend_shape_surface = blend_shape_arrays[0];
 	REQUIRE(blend_shape_surface.size() == Mesh::ARRAY_MAX);
 	PackedVector3Array blend_shape_vertices = blend_shape_surface[Mesh::ARRAY_VERTEX];
@@ -638,6 +643,11 @@ TEST_CASE("[SceneTree][USD] Import USD blend shapes and bake blendShapeWeights a
 	CHECK(blend_shape_vertices[0].z == doctest::Approx(0.5f));
 	CHECK(blend_shape_normals.size() == 6);
 	CHECK(blend_shape_normals[0].z == doctest::Approx(0.25f));
+	Array inbetween_blend_shape_surface = blend_shape_arrays[1];
+	REQUIRE(inbetween_blend_shape_surface.size() == Mesh::ARRAY_MAX);
+	PackedVector3Array inbetween_blend_shape_vertices = inbetween_blend_shape_surface[Mesh::ARRAY_VERTEX];
+	CHECK(inbetween_blend_shape_vertices.size() == 6);
+	CHECK(inbetween_blend_shape_vertices[0].z == doctest::Approx(0.2f));
 
 	AnimationPlayer *player = nullptr;
 	for (int i = 0; i < root->get_child_count(); i++) {
@@ -651,16 +661,25 @@ TEST_CASE("[SceneTree][USD] Import USD blend shapes and bake blendShapeWeights a
 	Ref<Animation> animation = player->get_animation("Anim");
 	REQUIRE(animation.is_valid());
 
-	bool found_blend_shape_track = false;
+	bool found_primary_blend_shape_track = false;
+	bool found_inbetween_blend_shape_track = false;
 	for (int track_index = 0; track_index < animation->get_track_count(); track_index++) {
 		if (animation->track_get_type(track_index) == Animation::TYPE_BLEND_SHAPE &&
 				String(animation->track_get_path(track_index)) == String("root/Plane/Plane:Key_1")) {
-			found_blend_shape_track = true;
-			CHECK(animation->track_get_key_count(track_index) == 3);
-			break;
+			found_primary_blend_shape_track = true;
+			CHECK(animation->track_get_key_count(track_index) == 5);
+			CHECK((double)animation->track_get_key_value(track_index, 2) == doctest::Approx(0.5));
+		}
+		if (animation->track_get_type(track_index) == Animation::TYPE_BLEND_SHAPE &&
+				String(animation->track_get_path(track_index)) == String("root/Plane/Plane:Key_1__inbetween__HalfKey")) {
+			found_inbetween_blend_shape_track = true;
+			CHECK(animation->track_get_key_count(track_index) == 5);
+			CHECK((double)animation->track_get_key_value(track_index, 1) == doctest::Approx(1.0));
+			CHECK((double)animation->track_get_key_value(track_index, 2) == doctest::Approx(0.5));
 		}
 	}
-	CHECK(found_blend_shape_track);
+	CHECK(found_primary_blend_shape_track);
+	CHECK(found_inbetween_blend_shape_track);
 
 	memdelete(root);
 }
