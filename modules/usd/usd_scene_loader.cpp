@@ -6603,6 +6603,49 @@ public:
 		_write_saved_skeleton_animations(p_stage, p_scene_root, p_saved_paths, true);
 	}
 
+	static void write_saved_rig_data_for_source_save(const UsdStageRefPtr &p_stage, Node *p_scene_root, const HashMap<ObjectID, SdfPath> &p_saved_paths) {
+		ERR_FAIL_NULL(p_scene_root);
+		ERR_FAIL_COND(p_stage == nullptr);
+
+		List<Node *> stack;
+		stack.push_back(p_scene_root);
+		while (!stack.is_empty()) {
+			Node *node = stack.front()->get();
+			stack.pop_front();
+
+			for (int child_index = 0; child_index < node->get_child_count(); child_index++) {
+				stack.push_back(node->get_child(child_index));
+			}
+
+			Skeleton3D *skeleton = Object::cast_to<Skeleton3D>(node);
+			if (skeleton == nullptr) {
+				continue;
+			}
+
+			const SdfPath skeleton_saved_path = _get_saved_path_for_node(p_saved_paths, skeleton);
+			if (skeleton_saved_path.IsEmpty()) {
+				continue;
+			}
+
+			UsdPrim skeleton_prim = p_stage->GetPrimAtPath(skeleton_saved_path);
+			if (!skeleton_prim || !skeleton_prim.IsA<UsdSkelSkeleton>()) {
+				continue;
+			}
+
+			const UsdEditTarget previous_edit_target = p_stage->GetEditTarget();
+			const SdfLayerHandle skeleton_layer = _get_strongest_prim_stack_layer(skeleton_prim);
+			if (skeleton_layer) {
+				p_stage->SetEditTarget(UsdEditTarget(skeleton_layer));
+			}
+			_write_skeleton_prim(skeleton, UsdSkelSkeleton(skeleton_prim));
+			if (skeleton_layer) {
+				p_stage->SetEditTarget(previous_edit_target);
+			}
+		}
+
+		_write_saved_mesh_skel_data_recursive(p_stage, p_scene_root, p_scene_root, p_saved_paths);
+	}
+
 	Error save(const Ref<PackedScene> &p_scene, const String &p_path) const {
 		ERR_FAIL_COND_V_MSG(p_scene.is_null(), ERR_INVALID_PARAMETER, "USD saver requires a valid PackedScene resource.");
 
@@ -6764,12 +6807,43 @@ bool _node_trees_match_for_source_rig_save(Node *p_current, Node *p_expected, St
 	return true;
 }
 
-bool _scene_has_supported_source_skeleton_animations(Node *p_root) {
+bool _scene_has_supported_source_rig_content(Node *p_root) {
 	ERR_FAIL_NULL_V(p_root, false);
+
+	bool found_source_rig_content = false;
+
+	List<Node *> node_stack;
+	node_stack.push_back(p_root);
+	while (!node_stack.is_empty()) {
+		Node *node = node_stack.front()->get();
+		node_stack.pop_front();
+
+		for (int child_index = 0; child_index < node->get_child_count(); child_index++) {
+			node_stack.push_back(node->get_child(child_index));
+		}
+
+		if (Object::cast_to<Skeleton3D>(node) != nullptr) {
+			const Dictionary metadata = _get_usd_metadata(node);
+			const String prim_path = metadata.get("usd:prim_path", String());
+			if (!prim_path.is_empty()) {
+				found_source_rig_content = true;
+			}
+			continue;
+		}
+
+		if (Object::cast_to<MeshInstance3D>(node) != nullptr) {
+			const Dictionary metadata = _get_usd_metadata(node);
+			const String prim_path = metadata.get("usd:prim_path", String());
+			const String skeleton_path = metadata.get("usd:skel_skeleton_path", String());
+			const Dictionary blend_shape_channels = metadata.get("usd:blend_shape_channels", Dictionary());
+			if (!prim_path.is_empty() && (!skeleton_path.is_empty() || !blend_shape_channels.is_empty())) {
+				found_source_rig_content = true;
+			}
+		}
+	}
 
 	Vector<AnimationPlayer *> animation_players;
 	UsdSceneSaver::collect_animation_players_for_source_save(p_root, &animation_players);
-	bool found_source_animation = false;
 	for (int player_index = 0; player_index < animation_players.size(); player_index++) {
 		AnimationPlayer *player = animation_players[player_index];
 		LocalVector<StringName> animation_names;
@@ -6784,11 +6858,11 @@ bool _scene_has_supported_source_skeleton_animations(Node *p_root) {
 			if (animation_prim_path.is_empty()) {
 				return false;
 			}
-			found_source_animation = true;
+			found_source_rig_content = true;
 		}
 	}
 
-	return found_source_animation;
+	return found_source_rig_content;
 }
 
 void _collect_source_prim_saved_paths(Node *p_node, HashMap<ObjectID, SdfPath> *r_saved_paths) {
@@ -7271,7 +7345,7 @@ Error _create_usdz_package_from_extracted_files(const String &p_extracted_direct
 	return saved ? OK : ERR_CANT_CREATE;
 }
 
-Error _author_source_loaded_skeleton_animation_edits_in_root_layer(const String &p_root_layer_absolute_path, Node *p_scene_root) {
+Error _author_source_loaded_rig_edits_in_root_layer(const String &p_root_layer_absolute_path, Node *p_scene_root) {
 	ERR_FAIL_NULL_V(p_scene_root, ERR_INVALID_PARAMETER);
 
 	SdfLayerRefPtr root_layer = SdfLayer::FindOrOpen(p_root_layer_absolute_path.utf8().get_data());
@@ -7282,13 +7356,14 @@ Error _author_source_loaded_skeleton_animation_edits_in_root_layer(const String 
 
 	HashMap<ObjectID, SdfPath> source_saved_paths;
 	_collect_source_prim_saved_paths(p_scene_root, &source_saved_paths);
+	UsdSceneSaver::write_saved_rig_data_for_source_save(stage, p_scene_root, source_saved_paths);
 	UsdSceneSaver::write_saved_skeleton_animations_for_source_save(stage, p_scene_root, source_saved_paths);
 
 	const bool saved = root_layer->Save();
 	return saved ? OK : ERR_CANT_CREATE;
 }
 
-Error _save_source_usd_layer_with_skeleton_animation_edits(const String &p_source_absolute_path, const String &p_destination_absolute_path, const String &p_destination_file_name, Node *p_scene_root) {
+Error _save_source_usd_layer_with_rig_edits(const String &p_source_absolute_path, const String &p_destination_absolute_path, const String &p_destination_file_name, Node *p_scene_root) {
 	Error temp_dir_error = OK;
 	Ref<DirAccess> temp_dir = DirAccess::create_temp("godot_usd_rig_save_", false, &temp_dir_error);
 	ERR_FAIL_COND_V_MSG(temp_dir_error != OK || temp_dir.is_null(), temp_dir_error != OK ? temp_dir_error : ERR_CANT_CREATE, "Failed to create temporary directory for source-aware USD rig save.");
@@ -7298,13 +7373,13 @@ Error _save_source_usd_layer_with_skeleton_animation_edits(const String &p_sourc
 	Error copy_error = _copy_file_absolute_preserving_contents(p_source_absolute_path, temp_layer_path);
 	ERR_FAIL_COND_V_MSG(copy_error != OK, copy_error, vformat("Failed to copy source USD layer for source-aware rig save: %s", p_source_absolute_path));
 
-	Error author_error = _author_source_loaded_skeleton_animation_edits_in_root_layer(temp_layer_path, p_scene_root);
+	Error author_error = _author_source_loaded_rig_edits_in_root_layer(temp_layer_path, p_scene_root);
 	ERR_FAIL_COND_V_MSG(author_error != OK, author_error, vformat("Failed to author source-aware USD rig edits into layer: %s", temp_layer_path));
 
 	return _copy_file_absolute_preserving_contents(temp_layer_path, p_destination_absolute_path);
 }
 
-Error _save_source_usdz_with_skeleton_animation_edits(const String &p_source_absolute_path, const String &p_destination_absolute_path, const String &p_destination_file_name, Node *p_scene_root) {
+Error _save_source_usdz_with_rig_edits(const String &p_source_absolute_path, const String &p_destination_absolute_path, const String &p_destination_file_name, Node *p_scene_root) {
 	Error temp_dir_error = OK;
 	Ref<DirAccess> temp_dir = DirAccess::create_temp("godot_usdz_rig_save_", false, &temp_dir_error);
 	ERR_FAIL_COND_V_MSG(temp_dir_error != OK || temp_dir.is_null(), temp_dir_error != OK ? temp_dir_error : ERR_CANT_CREATE, "Failed to create temporary directory for source-aware USDZ rig save.");
@@ -7316,7 +7391,7 @@ Error _save_source_usdz_with_skeleton_animation_edits(const String &p_source_abs
 	ERR_FAIL_COND_V_MSG(extract_error != OK, extract_error, vformat("Failed to extract source USDZ package for source-aware rig save: %s", p_source_absolute_path));
 
 	const String root_layer_absolute_path = temp_directory.path_join(root_layer_path);
-	Error author_error = _author_source_loaded_skeleton_animation_edits_in_root_layer(root_layer_absolute_path, p_scene_root);
+	Error author_error = _author_source_loaded_rig_edits_in_root_layer(root_layer_absolute_path, p_scene_root);
 	ERR_FAIL_COND_V_MSG(author_error != OK, author_error, vformat("Failed to author source-aware USDZ rig edits into root layer: %s", root_layer_path));
 
 	const String temp_package_path = temp_directory.path_join(p_destination_file_name.is_empty() ? "stage.usdz" : p_destination_file_name);
@@ -7459,7 +7534,7 @@ bool _try_get_source_loaded_rig_save_info(const Ref<PackedScene> &p_scene, const
 		return false;
 	}
 
-	if (!_scene_has_supported_source_skeleton_animations(root)) {
+	if (!_scene_has_supported_source_rig_content(root)) {
 		memdelete(root);
 		return false;
 	}
@@ -7509,9 +7584,9 @@ bool _try_save_source_loaded_rig_scene(const Ref<PackedScene> &p_scene, const St
 	const String destination_absolute_path = _get_absolute_path(p_path);
 	Error save_error = ERR_UNAVAILABLE;
 	if (destination_extension == "usdz") {
-		save_error = _save_source_usdz_with_skeleton_animation_edits(source_info.source_absolute_path, destination_absolute_path, p_path.get_file(), root);
+		save_error = _save_source_usdz_with_rig_edits(source_info.source_absolute_path, destination_absolute_path, p_path.get_file(), root);
 	} else {
-		save_error = _save_source_usd_layer_with_skeleton_animation_edits(source_info.source_absolute_path, destination_absolute_path, p_path.get_file(), root);
+		save_error = _save_source_usd_layer_with_rig_edits(source_info.source_absolute_path, destination_absolute_path, p_path.get_file(), root);
 	}
 	memdelete(root);
 
@@ -7519,7 +7594,7 @@ bool _try_save_source_loaded_rig_scene(const Ref<PackedScene> &p_scene, const St
 		*r_error = save_error;
 	}
 	ERR_FAIL_COND_V_MSG(save_error != OK, true, vformat("Failed source-aware USD rig save: %s -> %s", source_info.source_path, p_path));
-	_report_usd_save_mode(vformat("preserved source %s structure and authored source-aware UsdSkelAnimation edits in place: %s -> %s", destination_extension.to_upper(), source_info.source_path, p_path));
+	_report_usd_save_mode(vformat("preserved source %s structure and authored source-aware rig edits in place: %s -> %s", destination_extension.to_upper(), source_info.source_path, p_path));
 	return true;
 }
 
