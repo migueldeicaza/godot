@@ -488,6 +488,51 @@ TEST_CASE("[SceneTree][USD] Import a structural UsdSkelSkeleton as Skeleton3D") 
 	memdelete(root);
 }
 
+TEST_CASE("[SceneTree][USD] Bind a skinned USD mesh to the imported Skeleton3D") {
+	const String usd_path = TestUtils::get_data_path("usd/skeleton_skin_basic.usda");
+
+	Error err = OK;
+	Ref<PackedScene> packed_scene = ResourceLoader::load(usd_path, "PackedScene", ResourceFormatLoader::CACHE_MODE_IGNORE, &err);
+	REQUIRE_MESSAGE(err == OK, "USD skinned mesh load failed.");
+	REQUIRE(packed_scene.is_valid());
+
+	Node *root = packed_scene->instantiate();
+	REQUIRE(root != nullptr);
+	REQUIRE(root->get_child_count() == 1);
+
+	Node3D *scene_root = Object::cast_to<Node3D>(root->get_child(0));
+	REQUIRE(scene_root != nullptr);
+	REQUIRE(scene_root->get_child_count() == 2);
+
+	Skeleton3D *skeleton = Object::cast_to<Skeleton3D>(scene_root->get_child(0));
+	MeshInstance3D *mesh_instance = Object::cast_to<MeshInstance3D>(scene_root->get_child(1));
+	REQUIRE(skeleton != nullptr);
+	REQUIRE(mesh_instance != nullptr);
+	REQUIRE(mesh_instance->get_mesh().is_valid());
+
+	Dictionary mesh_metadata = mesh_instance->get_meta(StringName("usd"), Dictionary());
+	CHECK((String)mesh_metadata.get("usd:skel_skeleton_path", String()) == String("/Model/Skel"));
+
+	Ref<Skin> skin = mesh_instance->get_skin();
+	REQUIRE(skin.is_valid());
+	CHECK(mesh_instance->get_node_or_null(mesh_instance->get_skeleton_path()) == skeleton);
+	CHECK(skin->get_bind_count() == skeleton->get_bone_count());
+
+	Array arrays = mesh_instance->get_mesh()->surface_get_arrays(0);
+	REQUIRE(arrays.size() == Mesh::ARRAY_MAX);
+
+	PackedInt32Array bones = arrays[Mesh::ARRAY_BONES];
+	PackedFloat32Array weights = arrays[Mesh::ARRAY_WEIGHTS];
+	CHECK(bones.size() == 12);
+	CHECK(weights.size() == 12);
+	CHECK(bones[0] == 0);
+	CHECK(weights[0] == doctest::Approx(1.0f));
+	CHECK(bones[4] == 1);
+	CHECK(weights[4] == doctest::Approx(1.0f));
+
+	memdelete(root);
+}
+
 TEST_CASE("[SceneTree][USD] Add preview sun and environment when a stage has no authored lights") {
 	PreviewLightingModeScope preview_lighting_mode_scope;
 	preview_lighting_mode_scope.set(1);

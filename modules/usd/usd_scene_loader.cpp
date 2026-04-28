@@ -121,6 +121,7 @@
 #include <pxr/usd/usdShade/materialBindingAPI.h>
 #include <pxr/usd/usdShade/shader.h>
 #include <pxr/usd/usdSkel/animation.h>
+#include <pxr/usd/usdSkel/bindingAPI.h>
 #include <pxr/usd/usdSkel/skeleton.h>
 
 #include <algorithm>
@@ -784,12 +785,33 @@ bool _read_interpolated_value(const VtArray<T> &p_values, const TfToken &p_inter
 	return true;
 }
 
+int _get_interpolated_value_index(const TfToken &p_interpolation, int p_face_index, int p_face_vertex_index, int p_point_index, int p_value_count) {
+	int value_index = -1;
+	if (p_interpolation == UsdGeomTokens->constant) {
+		value_index = 0;
+	} else if (p_interpolation == UsdGeomTokens->uniform) {
+		value_index = p_face_index;
+	} else if (p_interpolation == UsdGeomTokens->faceVarying) {
+		value_index = p_face_vertex_index;
+	} else {
+		value_index = p_point_index;
+	}
+
+	if (value_index < 0 || value_index >= p_value_count) {
+		return -1;
+	}
+
+	return value_index;
+}
+
 struct UsdSurfaceAccumulator {
 	PackedVector3Array vertices;
 	PackedInt32Array indices;
 	PackedVector3Array normals;
 	PackedVector2Array uvs;
 	PackedColorArray colors;
+	PackedInt32Array bones;
+	PackedFloat32Array weights;
 	PackedInt32Array authored_face_indices;
 	PackedInt32Array authored_point_indices;
 	Ref<Material> material;
@@ -807,6 +829,7 @@ struct UsdMeshBuildResult {
 	Array material_paths;
 	Array material_subsets;
 	Array geom_subsets;
+	bool has_skinning = false;
 };
 
 struct UsdMeshSurfaceFaceRange {
@@ -1829,6 +1852,28 @@ class UsdSceneBuilder {
 			_mark_primvar_handled(display_color_primvar, r_handled_attributes);
 		}
 
+		UsdGeomPrimvarsAPI primvars_api(p_mesh.GetPrim());
+		UsdGeomPrimvar joint_indices_primvar = primvars_api.FindPrimvarWithInheritance(TfToken("skel:jointIndices"));
+		UsdGeomPrimvar joint_weights_primvar = primvars_api.FindPrimvarWithInheritance(TfToken("skel:jointWeights"));
+		VtArray<int> joint_indices_values;
+		VtArray<float> joint_weights_values;
+		const bool has_joint_indices = joint_indices_primvar && joint_indices_primvar.ComputeFlattened(&joint_indices_values, time);
+		const bool has_joint_weights = joint_weights_primvar && joint_weights_primvar.ComputeFlattened(&joint_weights_values, time);
+		const TfToken joint_indices_interpolation = has_joint_indices ? joint_indices_primvar.GetInterpolation() : UsdGeomTokens->vertex;
+		const TfToken joint_weights_interpolation = has_joint_weights ? joint_weights_primvar.GetInterpolation() : UsdGeomTokens->vertex;
+		const int joint_indices_element_size = has_joint_indices ? MAX(joint_indices_primvar.GetElementSize(), 1) : 0;
+		const int joint_weights_element_size = has_joint_weights ? MAX(joint_weights_primvar.GetElementSize(), 1) : 0;
+		const bool has_skinning = has_joint_indices && has_joint_weights && joint_indices_element_size == joint_weights_element_size;
+		if (has_joint_indices) {
+			_mark_primvar_handled(joint_indices_primvar, r_handled_attributes);
+		}
+		if (has_joint_weights) {
+			_mark_primvar_handled(joint_weights_primvar, r_handled_attributes);
+		}
+		if ((has_joint_indices || has_joint_weights) && !has_skinning) {
+			(*r_mapping_notes)["usd:skinning_status"] = "Skel joint influences were authored, but jointIndices/jointWeights could not be paired for import.";
+		}
+
 		Vector<UsdSurfaceAccumulator> surfaces;
 		surfaces.push_back(UsdSurfaceAccumulator());
 		surfaces.write[0].binding_kind = "mesh";
@@ -1930,6 +1975,71 @@ class UsdSceneBuilder {
 						surface.colors.push_back(Color(1, 1, 1, 1));
 					}
 				}
+
+				if (has_skinning) {
+					const int joint_indices_value_count = joint_indices_values.size() / joint_indices_element_size;
+					const int joint_weights_value_count = joint_weights_values.size() / joint_weights_element_size;
+					const int joint_indices_value_index = _get_interpolated_value_index(joint_indices_interpolation, face, face_vertex_index, point_index, joint_indices_value_count);
+					const int joint_weights_value_index = _get_interpolated_value_index(joint_weights_interpolation, face, face_vertex_index, point_index, joint_weights_value_count);
+
+					struct InfluenceEntry {
+						int joint = 0;
+						float weight = 0.0f;
+					};
+
+					LocalVector<InfluenceEntry> influences;
+					if (joint_indices_value_index >= 0 && joint_weights_value_index >= 0) {
+						for (int influence_index = 0; influence_index < joint_indices_element_size; influence_index++) {
+							const int joint_value_index = joint_indices_value_index * joint_indices_element_size + influence_index;
+							const int weight_value_index = joint_weights_value_index * joint_weights_element_size + influence_index;
+							if (joint_value_index >= (int)joint_indices_values.size() || weight_value_index >= (int)joint_weights_values.size()) {
+								break;
+							}
+
+							const float weight = joint_weights_values[weight_value_index];
+							if (weight <= 0.0f) {
+								continue;
+							}
+
+							InfluenceEntry entry;
+							entry.joint = joint_indices_values[joint_value_index];
+							entry.weight = weight;
+							influences.push_back(entry);
+						}
+					}
+
+					int packed_bones[4] = { 0, 0, 0, 0 };
+					float packed_weights[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
+					for (int influence_index = 0; influence_index < influences.size(); influence_index++) {
+						const InfluenceEntry &entry = influences[influence_index];
+						for (int slot = 0; slot < 4; slot++) {
+							if (entry.weight > packed_weights[slot]) {
+								for (int shift = 3; shift > slot; shift--) {
+									packed_bones[shift] = packed_bones[shift - 1];
+									packed_weights[shift] = packed_weights[shift - 1];
+								}
+								packed_bones[slot] = entry.joint;
+								packed_weights[slot] = entry.weight;
+								break;
+							}
+						}
+					}
+
+					float total_weight = 0.0f;
+					for (int influence_index = 0; influence_index < 4; influence_index++) {
+						total_weight += packed_weights[influence_index];
+					}
+					if (total_weight > 0.0f) {
+						for (int influence_index = 0; influence_index < 4; influence_index++) {
+							packed_weights[influence_index] /= total_weight;
+						}
+					}
+
+					for (int influence_index = 0; influence_index < 4; influence_index++) {
+						surface.bones.push_back(packed_bones[influence_index]);
+						surface.weights.push_back(packed_weights[influence_index]);
+					}
+				}
 			};
 
 			for (int corner = 1; corner < count - 1; corner++) {
@@ -1975,6 +2085,11 @@ class UsdSceneBuilder {
 			}
 			if (!surface.colors.is_empty()) {
 				arrays[Mesh::ARRAY_COLOR] = surface.colors;
+			}
+			if (!surface.bones.is_empty() && !surface.weights.is_empty()) {
+				arrays[Mesh::ARRAY_BONES] = surface.bones;
+				arrays[Mesh::ARRAY_WEIGHTS] = surface.weights;
+				result.has_skinning = true;
 			}
 
 			mesh->add_surface_from_arrays(Mesh::PRIMITIVE_TRIANGLES, arrays);
@@ -2489,27 +2604,30 @@ class UsdSceneBuilder {
 			}
 		}
 
-		Transform3D skeleton_world_inverse;
+		const Transform3D skeleton_world_inverse = (_get_stage_correction_transform() * _gf_matrix_to_transform(UsdGeomXformable(p_prim).ComputeLocalToWorldTransform(time))).affine_inverse();
 		if (!has_rest_transforms && has_bind_transforms) {
-			UsdGeomXformable skeleton_xformable(p_prim);
-			skeleton_world_inverse = (_get_stage_correction_transform() * _gf_matrix_to_transform(skeleton_xformable.ComputeLocalToWorldTransform(time))).affine_inverse();
 			(*r_mapping_notes)["usd:mapping_status"] = "Skeleton restTransforms were missing; local rest pose was approximated from bindTransforms.";
 		}
 
 		for (int joint_index = 0; joint_index < (int)joints.size(); joint_index++) {
+			if (has_bind_transforms) {
+				const Transform3D bind_transform = skeleton_world_inverse * (_get_stage_correction_transform() * _gf_matrix_to_transform(bind_transforms[joint_index]));
+				skeleton->set_bone_meta(joint_index, StringName("usd_joint_bind_transform"), bind_transform);
+			}
+
 			Transform3D local_rest;
 			if (has_rest_transforms) {
 				local_rest = _gf_matrix_to_transform(rest_transforms[joint_index]);
 			} else if (has_bind_transforms) {
 				const String joint_path = _to_godot_string(joints[joint_index].GetString());
 				const String parent_joint_path = _joint_parent_path(joint_path);
-				const Transform3D bind_transform = _get_stage_correction_transform() * _gf_matrix_to_transform(bind_transforms[joint_index]);
+				const Transform3D bind_transform = skeleton_world_inverse * (_get_stage_correction_transform() * _gf_matrix_to_transform(bind_transforms[joint_index]));
 				if (parent_joint_path.is_empty()) {
-					local_rest = skeleton_world_inverse * bind_transform;
+					local_rest = bind_transform;
 				} else {
 					const int *parent_bone_index_ptr = bone_index_by_joint_path.getptr(parent_joint_path);
 					if (parent_bone_index_ptr != nullptr) {
-						const Transform3D parent_bind_transform = _get_stage_correction_transform() * _gf_matrix_to_transform(bind_transforms[*parent_bone_index_ptr]);
+						const Transform3D parent_bind_transform = skeleton_world_inverse * (_get_stage_correction_transform() * _gf_matrix_to_transform(bind_transforms[*parent_bone_index_ptr]));
 						local_rest = parent_bind_transform.affine_inverse() * bind_transform;
 					} else {
 						local_rest = bind_transform;
@@ -2672,6 +2790,22 @@ class UsdSceneBuilder {
 				}
 				if (!mesh_result.geom_subsets.is_empty()) {
 					mapping_notes["usd:geom_subsets"] = mesh_result.geom_subsets;
+				}
+				if (mesh_result.has_skinning) {
+					UsdSkelBindingAPI skel_binding_api(p_prim);
+					UsdSkelSkeleton bound_skeleton = skel_binding_api.GetInheritedSkeleton();
+					if (bound_skeleton) {
+						mapping_notes["usd:skel_skeleton_path"] = _to_godot_string(bound_skeleton.GetPath().GetString());
+					} else if (skel_binding_api.GetSkeletonRel()) {
+						handled_attributes.insert("skel:skeleton");
+					}
+
+					GfMatrix4d geom_bind_matrix(1.0);
+					UsdGeomPrimvar geom_bind_primvar = UsdGeomPrimvarsAPI(p_prim).FindPrimvarWithInheritance(TfToken("skel:geomBindTransform"));
+					if (geom_bind_primvar && geom_bind_primvar.Get(&geom_bind_matrix, time)) {
+						mapping_notes["usd:skel_geom_bind_transform"] = _get_stage_correction_transform() * _gf_matrix_to_transform(geom_bind_matrix);
+						_mark_primvar_handled(geom_bind_primvar, &handled_attributes);
+					}
 				}
 			} else {
 				mapping_notes["usd:mesh_status"] = "Mesh geometry was detected, but no triangulated surface could be generated.";
@@ -2975,6 +3109,66 @@ class UsdSceneBuilder {
 		return true;
 	}
 
+	Ref<Skin> _build_mesh_skin(Skeleton3D *p_skeleton, const Transform3D &p_geom_bind_transform) const {
+		ERR_FAIL_NULL_V(p_skeleton, Ref<Skin>());
+
+		Ref<Skin> skin;
+		skin.instantiate();
+		skin->set_bind_count(p_skeleton->get_bone_count());
+
+		for (int bone_index = 0; bone_index < p_skeleton->get_bone_count(); bone_index++) {
+			Transform3D bind_transform = p_skeleton->get_bone_global_rest(bone_index);
+			if (p_skeleton->has_bone_meta(bone_index, StringName("usd_joint_bind_transform"))) {
+				bind_transform = p_skeleton->get_bone_meta(bone_index, StringName("usd_joint_bind_transform"));
+			}
+
+			skin->set_bind_bone(bone_index, bone_index);
+			skin->set_bind_pose(bone_index, bind_transform.affine_inverse() * p_geom_bind_transform);
+		}
+
+		return skin;
+	}
+
+	void _append_skin_bindings(Node3D *p_root) const {
+		ERR_FAIL_NULL(p_root);
+
+		List<Node *> stack;
+		stack.push_back(p_root);
+		while (!stack.is_empty()) {
+			Node *node = stack.front()->get();
+			stack.pop_front();
+
+			for (int i = 0; i < node->get_child_count(); i++) {
+				stack.push_back(node->get_child(i));
+			}
+
+			MeshInstance3D *mesh_instance = Object::cast_to<MeshInstance3D>(node);
+			if (mesh_instance == nullptr || mesh_instance->get_mesh().is_null()) {
+				continue;
+			}
+
+			const Dictionary metadata = _get_usd_metadata(mesh_instance);
+			const String skeleton_prim_path = metadata.get("usd:skel_skeleton_path", String());
+			if (skeleton_prim_path.is_empty()) {
+				continue;
+			}
+
+			Skeleton3D *skeleton = Object::cast_to<Skeleton3D>(_find_node_for_prim_path(p_root, skeleton_prim_path));
+			if (skeleton == nullptr) {
+				_set_usd_metadata(mesh_instance, "usd:skinning_status", vformat("Skinned mesh referenced missing skeleton prim: %s", skeleton_prim_path));
+				continue;
+			}
+
+			Transform3D geom_bind_transform;
+			if (metadata.has("usd:skel_geom_bind_transform")) {
+				geom_bind_transform = metadata["usd:skel_geom_bind_transform"];
+			}
+
+			mesh_instance->set_skin(_build_mesh_skin(skeleton, geom_bind_transform));
+			mesh_instance->set_skeleton_path(mesh_instance->get_path_to(skeleton));
+		}
+	}
+
 	void _append_skeleton_animations(Node3D *p_root) const {
 		ERR_FAIL_NULL(p_root);
 
@@ -3050,6 +3244,7 @@ public:
 			_append_preview_lighting(root, preview_reason);
 		}
 
+		_append_skin_bindings(root);
 		_append_skeleton_animations(root);
 
 		return root;
