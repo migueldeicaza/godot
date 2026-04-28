@@ -640,6 +640,101 @@ TEST_CASE("[SceneTree][USD] Bind a skinned USD points prim to the imported Skele
 	memdelete(root);
 }
 
+TEST_CASE("[SceneTree][USD] Preserve 8-weight USD skinning on imported meshes") {
+	const String usd_path = TestUtils::get_data_path("usd/skeleton_eight_weights.usda");
+
+	Error err = OK;
+	Ref<PackedScene> packed_scene = ResourceLoader::load(usd_path, "PackedScene", ResourceFormatLoader::CACHE_MODE_IGNORE, &err);
+	REQUIRE_MESSAGE(err == OK, "USD eight-weight skinning load failed.");
+	REQUIRE(packed_scene.is_valid());
+
+	Node *root = packed_scene->instantiate();
+	REQUIRE(root != nullptr);
+
+	MeshInstance3D *mesh_instance = Object::cast_to<MeshInstance3D>(_find_prim_node(root, "/Model/Ribbon"));
+	Skeleton3D *skeleton = Object::cast_to<Skeleton3D>(_find_prim_node(root, "/Model/Skel"));
+	REQUIRE(mesh_instance != nullptr);
+	REQUIRE(skeleton != nullptr);
+	REQUIRE(mesh_instance->get_mesh().is_valid());
+	CHECK((mesh_instance->get_mesh()->surface_get_format(0) & Mesh::ARRAY_FLAG_USE_8_BONE_WEIGHTS) != 0);
+
+	Array arrays = mesh_instance->get_mesh()->surface_get_arrays(0);
+	REQUIRE(arrays.size() == Mesh::ARRAY_MAX);
+	PackedVector3Array vertices = arrays[Mesh::ARRAY_VERTEX];
+	PackedInt32Array bones = arrays[Mesh::ARRAY_BONES];
+	PackedFloat32Array weights = arrays[Mesh::ARRAY_WEIGHTS];
+	CHECK(vertices.size() == 3);
+	CHECK(bones.size() == 24);
+	CHECK(weights.size() == 24);
+
+	float total_weight = 0.0f;
+	for (int i = 0; i < 8; i++) {
+		total_weight += weights[i];
+	}
+	CHECK(total_weight == doctest::Approx(1.0f));
+	CHECK(bones[0] == 0);
+	CHECK(bones[1] == 1);
+	CHECK(bones[2] == 2);
+	CHECK(bones[3] == 3);
+
+	Ref<Skin> skin = mesh_instance->get_skin();
+	REQUIRE(skin.is_valid());
+	CHECK(mesh_instance->get_node_or_null(mesh_instance->get_skeleton_path()) == skeleton);
+
+	memdelete(root);
+}
+
+TEST_CASE("[SceneTree][USD] Import multiple SkelAnimation clips including a mixed joint-and-blendshape clip") {
+	const String usd_path = TestUtils::get_data_path("usd/skeleton_multi_anim_blendshape.usda");
+
+	Error err = OK;
+	Ref<PackedScene> packed_scene = ResourceLoader::load(usd_path, "PackedScene", ResourceFormatLoader::CACHE_MODE_IGNORE, &err);
+	REQUIRE_MESSAGE(err == OK, "USD multi-clip rigging load failed.");
+	REQUIRE(packed_scene.is_valid());
+
+	Node *root = packed_scene->instantiate();
+	REQUIRE(root != nullptr);
+
+	Skeleton3D *skeleton = Object::cast_to<Skeleton3D>(_find_prim_node(root, "/root/Actor/Skel"));
+	MeshInstance3D *mesh_instance = Object::cast_to<MeshInstance3D>(_find_prim_node(root, "/root/Actor/Body"));
+	REQUIRE(skeleton != nullptr);
+	REQUIRE(mesh_instance != nullptr);
+	REQUIRE(mesh_instance->get_mesh().is_valid());
+
+	AnimationPlayer *player = nullptr;
+	for (int i = 0; i < root->get_child_count(); i++) {
+		player = Object::cast_to<AnimationPlayer>(root->get_child(i));
+		if (player != nullptr) {
+			break;
+		}
+	}
+	REQUIRE(player != nullptr);
+	REQUIRE(player->has_animation("Rotate"));
+	REQUIRE(player->has_animation("Combo"));
+
+	Ref<Animation> rotate = player->get_animation("Rotate");
+	Ref<Animation> combo = player->get_animation("Combo");
+	REQUIRE(rotate.is_valid());
+	REQUIRE(combo.is_valid());
+
+	bool found_combo_rotation_track = false;
+	bool found_combo_blend_shape_track = false;
+	for (int track_index = 0; track_index < combo->get_track_count(); track_index++) {
+		if (combo->track_get_type(track_index) == Animation::TYPE_ROTATION_3D &&
+				String(combo->track_get_path(track_index)) == String("root/Actor/Skel:joint1")) {
+			found_combo_rotation_track = true;
+		}
+		if (combo->track_get_type(track_index) == Animation::TYPE_BLEND_SHAPE &&
+				String(combo->track_get_path(track_index)) == String("root/Actor/Body:Smile")) {
+			found_combo_blend_shape_track = true;
+		}
+	}
+	CHECK(found_combo_rotation_track);
+	CHECK(found_combo_blend_shape_track);
+
+	memdelete(root);
+}
+
 TEST_CASE("[SceneTree][USD] Import USD blend shapes and bake blendShapeWeights animation tracks") {
 	const String usd_path = TestUtils::get_data_path("usd/blend_shape_basic.usda");
 

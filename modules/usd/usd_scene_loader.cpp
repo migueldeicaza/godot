@@ -814,6 +814,7 @@ struct UsdSurfaceAccumulator {
 	PackedColorArray colors;
 	PackedInt32Array bones;
 	PackedFloat32Array weights;
+	int skin_weight_count = 4;
 	PackedInt32Array authored_face_indices;
 	PackedInt32Array authored_point_indices;
 	Ref<Material> material;
@@ -845,6 +846,13 @@ struct UsdSkinningData {
 	bool has_authored_joint_indices = false;
 	bool has_authored_joint_weights = false;
 };
+
+static int _get_supported_skin_weight_count(const UsdSkinningData &p_skinning_data) {
+	if (!p_skinning_data.valid) {
+		return 0;
+	}
+	return p_skinning_data.joint_indices_element_size > 4 ? 8 : 4;
+}
 
 struct UsdInbetweenShapeData {
 	String name;
@@ -1817,8 +1825,11 @@ class UsdSceneBuilder {
 		return skinning_data;
 	}
 
-	void _get_packed_skinning_influences(const UsdSkinningData &p_skinning_data, int p_face_index, int p_face_vertex_index, int p_point_index, int r_bones[4], float r_weights[4]) const {
-		for (int influence_index = 0; influence_index < 4; influence_index++) {
+	void _get_packed_skinning_influences(const UsdSkinningData &p_skinning_data, int p_face_index, int p_face_vertex_index, int p_point_index, int p_max_influences, int *r_bones, float *r_weights) const {
+		ERR_FAIL_NULL(r_bones);
+		ERR_FAIL_NULL(r_weights);
+		ERR_FAIL_COND(p_max_influences <= 0);
+		for (int influence_index = 0; influence_index < p_max_influences; influence_index++) {
 			r_bones[influence_index] = 0;
 			r_weights[influence_index] = 0.0f;
 		}
@@ -1861,9 +1872,9 @@ class UsdSceneBuilder {
 
 		for (int influence_index = 0; influence_index < influences.size(); influence_index++) {
 			const InfluenceEntry &entry = influences[influence_index];
-			for (int slot = 0; slot < 4; slot++) {
+			for (int slot = 0; slot < p_max_influences; slot++) {
 				if (entry.weight > r_weights[slot]) {
-					for (int shift = 3; shift > slot; shift--) {
+					for (int shift = p_max_influences - 1; shift > slot; shift--) {
 						r_bones[shift] = r_bones[shift - 1];
 						r_weights[shift] = r_weights[shift - 1];
 					}
@@ -1875,11 +1886,11 @@ class UsdSceneBuilder {
 		}
 
 		float total_weight = 0.0f;
-		for (int influence_index = 0; influence_index < 4; influence_index++) {
+		for (int influence_index = 0; influence_index < p_max_influences; influence_index++) {
 			total_weight += r_weights[influence_index];
 		}
 		if (total_weight > 0.0f) {
-			for (int influence_index = 0; influence_index < 4; influence_index++) {
+			for (int influence_index = 0; influence_index < p_max_influences; influence_index++) {
 				r_weights[influence_index] /= total_weight;
 			}
 		}
@@ -2170,6 +2181,7 @@ class UsdSceneBuilder {
 		}
 
 		const UsdSkinningData skinning_data = _read_skinning_data(p_mesh.GetPrim(), r_handled_attributes, r_mapping_notes);
+		const int skin_weight_count = _get_supported_skin_weight_count(skinning_data);
 		const Vector<UsdBlendShapeData> blend_shapes = _read_mesh_blend_shapes(p_mesh, points.size(), r_handled_attributes, r_mapping_notes);
 
 		Vector<UsdSurfaceAccumulator> surfaces;
@@ -2275,10 +2287,11 @@ class UsdSceneBuilder {
 				}
 
 				if (skinning_data.valid) {
-					int packed_bones[4];
-					float packed_weights[4];
-					_get_packed_skinning_influences(skinning_data, face, face_vertex_index, point_index, packed_bones, packed_weights);
-					for (int influence_index = 0; influence_index < 4; influence_index++) {
+					surface.skin_weight_count = skin_weight_count;
+					int packed_bones[8];
+					float packed_weights[8];
+					_get_packed_skinning_influences(skinning_data, face, face_vertex_index, point_index, skin_weight_count, packed_bones, packed_weights);
+					for (int influence_index = 0; influence_index < skin_weight_count; influence_index++) {
 						surface.bones.push_back(packed_bones[influence_index]);
 						surface.weights.push_back(packed_weights[influence_index]);
 					}
@@ -2381,7 +2394,11 @@ class UsdSceneBuilder {
 				}
 			}
 
-			mesh->add_surface_from_arrays(Mesh::PRIMITIVE_TRIANGLES, arrays, surface_blend_shapes);
+			uint64_t mesh_flags = 0;
+			if (surface.skin_weight_count > 4) {
+				mesh_flags |= Mesh::ARRAY_FLAG_USE_8_BONE_WEIGHTS;
+			}
+			mesh->add_surface_from_arrays(Mesh::PRIMITIVE_TRIANGLES, arrays, surface_blend_shapes, Dictionary(), mesh_flags);
 
 			Ref<Material> surface_material = surface.material;
 			if (surface_material.is_null() && has_display_color && display_color_interpolation == UsdGeomTokens->constant && !display_colors.empty()) {
@@ -2499,6 +2516,7 @@ class UsdSceneBuilder {
 		}
 
 		const UsdSkinningData skinning_data = _read_skinning_data(p_points.GetPrim(), r_handled_attributes, r_mapping_notes);
+		const int skin_weight_count = _get_supported_skin_weight_count(skinning_data);
 
 		PackedVector3Array vertices;
 		PackedColorArray colors;
@@ -2509,8 +2527,8 @@ class UsdSceneBuilder {
 			colors.resize(points.size());
 		}
 		if (skinning_data.valid) {
-			bones.resize(points.size() * 4);
-			weights_array.resize(points.size() * 4);
+			bones.resize(points.size() * skin_weight_count);
+			weights_array.resize(points.size() * skin_weight_count);
 		}
 
 		for (int point_index = 0; point_index < (int)points.size(); point_index++) {
@@ -2527,12 +2545,12 @@ class UsdSceneBuilder {
 			}
 
 			if (skinning_data.valid) {
-				int packed_bones[4];
-				float packed_weights[4];
-				_get_packed_skinning_influences(skinning_data, point_index, point_index, point_index, packed_bones, packed_weights);
-				for (int influence_index = 0; influence_index < 4; influence_index++) {
-					bones.set(point_index * 4 + influence_index, packed_bones[influence_index]);
-					weights_array.set(point_index * 4 + influence_index, packed_weights[influence_index]);
+				int packed_bones[8];
+				float packed_weights[8];
+				_get_packed_skinning_influences(skinning_data, point_index, point_index, point_index, skin_weight_count, packed_bones, packed_weights);
+				for (int influence_index = 0; influence_index < skin_weight_count; influence_index++) {
+					bones.set(point_index * skin_weight_count + influence_index, packed_bones[influence_index]);
+					weights_array.set(point_index * skin_weight_count + influence_index, packed_weights[influence_index]);
 				}
 			}
 		}
@@ -2551,7 +2569,11 @@ class UsdSceneBuilder {
 
 		Ref<ArrayMesh> mesh;
 		mesh.instantiate();
-		mesh->add_surface_from_arrays(Mesh::PRIMITIVE_POINTS, arrays);
+		uint64_t mesh_flags = 0;
+		if (skin_weight_count > 4) {
+			mesh_flags |= Mesh::ARRAY_FLAG_USE_8_BONE_WEIGHTS;
+		}
+		mesh->add_surface_from_arrays(Mesh::PRIMITIVE_POINTS, arrays, TypedArray<Array>(), Dictionary(), mesh_flags);
 
 		Ref<StandardMaterial3D> material;
 		material.instantiate();
@@ -5399,6 +5421,7 @@ class UsdSceneSaver {
 
 		VtArray<int> joint_indices_values;
 		VtArray<float> joint_weights_values;
+		int max_skin_weight_count = 4;
 		bool have_skinning = true;
 		for (int surface_index = 0; surface_index < mesh->get_surface_count(); surface_index++) {
 			const Array arrays = mesh->surface_get_arrays(surface_index);
@@ -5409,9 +5432,11 @@ class UsdSceneSaver {
 			if (vertices.is_empty()) {
 				continue;
 			}
+			const int skin_weight_count = (mesh->surface_get_format(surface_index) & Mesh::ARRAY_FLAG_USE_8_BONE_WEIGHTS) ? 8 : 4;
+			max_skin_weight_count = MAX(max_skin_weight_count, skin_weight_count);
 			const PackedInt32Array bones = arrays[Mesh::ARRAY_BONES];
 			const PackedFloat32Array weights = arrays[Mesh::ARRAY_WEIGHTS];
-			if (bones.size() != vertices.size() * 4 || weights.size() != vertices.size() * 4) {
+			if (bones.size() != vertices.size() * skin_weight_count || weights.size() != vertices.size() * skin_weight_count) {
 				have_skinning = false;
 				break;
 			}
@@ -5421,8 +5446,8 @@ class UsdSceneSaver {
 			}
 		}
 		if (have_skinning && !joint_indices_values.empty() && joint_indices_values.size() == joint_weights_values.size()) {
-			UsdGeomPrimvar joint_indices = binding_api.CreateJointIndicesPrimvar(false, 4);
-			UsdGeomPrimvar joint_weights = binding_api.CreateJointWeightsPrimvar(false, 4);
+			UsdGeomPrimvar joint_indices = binding_api.CreateJointIndicesPrimvar(false, max_skin_weight_count);
+			UsdGeomPrimvar joint_weights = binding_api.CreateJointWeightsPrimvar(false, max_skin_weight_count);
 			joint_indices.Set(joint_indices_values);
 			joint_weights.Set(joint_weights_values);
 		}
@@ -5694,6 +5719,7 @@ class UsdSceneSaver {
 
 			for (int player_index = 0; player_index < animation_players.size(); player_index++) {
 				AnimationPlayer *player = animation_players[player_index];
+				SdfPathVector animation_targets;
 				LocalVector<StringName> animation_names;
 				player->get_animation_list(&animation_names);
 				for (uint32_t animation_name_index = 0; animation_name_index < animation_names.size(); animation_name_index++) {
@@ -5994,8 +6020,10 @@ class UsdSceneSaver {
 						}
 					}
 
-					SdfPathVector animation_targets;
 					animation_targets.push_back(usd_animation.GetPath());
+				}
+
+				if (!animation_targets.empty()) {
 					UsdRelationship animation_source = skeleton_saved_path.IsEmpty() ? UsdRelationship() : p_stage->GetPrimAtPath(skeleton_saved_path).CreateRelationship(TfToken("skel:animationSource"), false);
 					if (animation_source) {
 						animation_source.SetTargets(animation_targets);
