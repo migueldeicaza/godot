@@ -116,6 +116,23 @@ static Ref<ArrayMesh> _make_test_triangle_mesh() {
 	return mesh;
 }
 
+static Node *_find_prim_node(Node *p_root, const String &p_prim_path) {
+	ERR_FAIL_NULL_V(p_root, nullptr);
+
+	Dictionary metadata = p_root->get_meta(StringName("usd"), Dictionary());
+	if ((String)metadata.get("usd:prim_path", String()) == p_prim_path) {
+		return p_root;
+	}
+
+	for (int i = 0; i < p_root->get_child_count(); i++) {
+		if (Node *match = _find_prim_node(p_root->get_child(i), p_prim_path)) {
+			return match;
+		}
+	}
+
+	return nullptr;
+}
+
 TEST_CASE("[SceneTree][USD] Load a minimal USD scene as PackedScene") {
 	PreviewLightingModeScope preview_lighting_mode_scope;
 	preview_lighting_mode_scope.set(1);
@@ -523,6 +540,51 @@ TEST_CASE("[SceneTree][USD] Bind a skinned USD mesh to the imported Skeleton3D")
 
 	PackedInt32Array bones = arrays[Mesh::ARRAY_BONES];
 	PackedFloat32Array weights = arrays[Mesh::ARRAY_WEIGHTS];
+	CHECK(bones.size() == 12);
+	CHECK(weights.size() == 12);
+	CHECK(bones[0] == 0);
+	CHECK(weights[0] == doctest::Approx(1.0f));
+	CHECK(bones[4] == 1);
+	CHECK(weights[4] == doctest::Approx(1.0f));
+
+	memdelete(root);
+}
+
+TEST_CASE("[SceneTree][USD] Bind a skinned USD points prim to the imported Skeleton3D") {
+	const String usd_path = TestUtils::get_data_path("usd/skeleton_skin_basic.usda");
+
+	Error err = OK;
+	Ref<PackedScene> packed_scene = ResourceLoader::load(usd_path, "PackedScene", ResourceFormatLoader::CACHE_MODE_IGNORE, &err);
+	REQUIRE_MESSAGE(err == OK, "USD skinned points load failed.");
+	REQUIRE(packed_scene.is_valid());
+
+	Node *root = packed_scene->instantiate();
+	REQUIRE(root != nullptr);
+
+	Skeleton3D *skeleton = Object::cast_to<Skeleton3D>(_find_prim_node(root, "/Model/Skel"));
+	MeshInstance3D *points_instance = Object::cast_to<MeshInstance3D>(_find_prim_node(root, "/Model/Tips"));
+	REQUIRE(skeleton != nullptr);
+	REQUIRE(points_instance != nullptr);
+	REQUIRE(points_instance->get_mesh().is_valid());
+	CHECK(points_instance->get_mesh()->surface_get_primitive_type(0) == Mesh::PRIMITIVE_POINTS);
+
+	Dictionary points_metadata = points_instance->get_meta(StringName("usd"), Dictionary());
+	CHECK((String)points_metadata.get("usd:points_mapping", String()) == String("mesh_points"));
+	CHECK((int)points_metadata.get("usd:point_count", 0) == 3);
+	CHECK((String)points_metadata.get("usd:skel_skeleton_path", String()) == String("/Model/Skel"));
+
+	Ref<Skin> skin = points_instance->get_skin();
+	REQUIRE(skin.is_valid());
+	CHECK(points_instance->get_node_or_null(points_instance->get_skeleton_path()) == skeleton);
+
+	Array arrays = points_instance->get_mesh()->surface_get_arrays(0);
+	REQUIRE(arrays.size() == Mesh::ARRAY_MAX);
+	PackedVector3Array vertices = arrays[Mesh::ARRAY_VERTEX];
+	PackedColorArray colors = arrays[Mesh::ARRAY_COLOR];
+	PackedInt32Array bones = arrays[Mesh::ARRAY_BONES];
+	PackedFloat32Array weights = arrays[Mesh::ARRAY_WEIGHTS];
+	CHECK(vertices.size() == 3);
+	CHECK(colors.size() == 3);
 	CHECK(bones.size() == 12);
 	CHECK(weights.size() == 12);
 	CHECK(bones[0] == 0);

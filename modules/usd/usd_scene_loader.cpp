@@ -103,6 +103,7 @@
 #include <pxr/usd/usdGeom/mesh.h>
 #include <pxr/usd/usdGeom/metrics.h>
 #include <pxr/usd/usdGeom/plane.h>
+#include <pxr/usd/usdGeom/points.h>
 #include <pxr/usd/usdGeom/primvarsAPI.h>
 #include <pxr/usd/usdGeom/sphere.h>
 #include <pxr/usd/usdGeom/subset.h>
@@ -830,6 +831,18 @@ struct UsdMeshBuildResult {
 	Array material_subsets;
 	Array geom_subsets;
 	bool has_skinning = false;
+};
+
+struct UsdSkinningData {
+	VtArray<int> joint_indices_values;
+	VtArray<float> joint_weights_values;
+	TfToken joint_indices_interpolation = UsdGeomTokens->vertex;
+	TfToken joint_weights_interpolation = UsdGeomTokens->vertex;
+	int joint_indices_element_size = 0;
+	int joint_weights_element_size = 0;
+	bool valid = false;
+	bool has_authored_joint_indices = false;
+	bool has_authored_joint_weights = false;
 };
 
 struct UsdMeshSurfaceFaceRange {
@@ -1746,6 +1759,126 @@ class UsdSceneBuilder {
 		return UsdGeomPrimvar();
 	}
 
+	UsdSkinningData _read_skinning_data(const UsdPrim &p_prim, HashSet<String> *r_handled_attributes, Dictionary *r_mapping_notes) const {
+		UsdSkinningData skinning_data;
+
+		UsdGeomPrimvarsAPI primvars_api(p_prim);
+		UsdGeomPrimvar joint_indices_primvar = primvars_api.FindPrimvarWithInheritance(TfToken("skel:jointIndices"));
+		UsdGeomPrimvar joint_weights_primvar = primvars_api.FindPrimvarWithInheritance(TfToken("skel:jointWeights"));
+
+		skinning_data.has_authored_joint_indices = joint_indices_primvar && joint_indices_primvar.GetAttr().HasAuthoredValueOpinion();
+		skinning_data.has_authored_joint_weights = joint_weights_primvar && joint_weights_primvar.GetAttr().HasAuthoredValueOpinion();
+
+		const bool has_joint_indices = joint_indices_primvar && joint_indices_primvar.ComputeFlattened(&skinning_data.joint_indices_values, time);
+		const bool has_joint_weights = joint_weights_primvar && joint_weights_primvar.ComputeFlattened(&skinning_data.joint_weights_values, time);
+
+		if (has_joint_indices) {
+			skinning_data.joint_indices_interpolation = joint_indices_primvar.GetInterpolation();
+			skinning_data.joint_indices_element_size = MAX(joint_indices_primvar.GetElementSize(), 1);
+			_mark_primvar_handled(joint_indices_primvar, r_handled_attributes);
+		}
+		if (has_joint_weights) {
+			skinning_data.joint_weights_interpolation = joint_weights_primvar.GetInterpolation();
+			skinning_data.joint_weights_element_size = MAX(joint_weights_primvar.GetElementSize(), 1);
+			_mark_primvar_handled(joint_weights_primvar, r_handled_attributes);
+		}
+
+		skinning_data.valid = has_joint_indices && has_joint_weights &&
+				skinning_data.joint_indices_element_size == skinning_data.joint_weights_element_size &&
+				skinning_data.joint_indices_element_size > 0;
+
+		if ((skinning_data.has_authored_joint_indices || skinning_data.has_authored_joint_weights) && !skinning_data.valid) {
+			(*r_mapping_notes)["usd:skinning_status"] = "Skel joint influences were authored, but jointIndices/jointWeights could not be paired for import.";
+		}
+
+		return skinning_data;
+	}
+
+	void _get_packed_skinning_influences(const UsdSkinningData &p_skinning_data, int p_face_index, int p_face_vertex_index, int p_point_index, int r_bones[4], float r_weights[4]) const {
+		for (int influence_index = 0; influence_index < 4; influence_index++) {
+			r_bones[influence_index] = 0;
+			r_weights[influence_index] = 0.0f;
+		}
+
+		if (!p_skinning_data.valid) {
+			return;
+		}
+
+		const int joint_indices_value_count = p_skinning_data.joint_indices_values.size() / p_skinning_data.joint_indices_element_size;
+		const int joint_weights_value_count = p_skinning_data.joint_weights_values.size() / p_skinning_data.joint_weights_element_size;
+		const int joint_indices_value_index = _get_interpolated_value_index(p_skinning_data.joint_indices_interpolation, p_face_index, p_face_vertex_index, p_point_index, joint_indices_value_count);
+		const int joint_weights_value_index = _get_interpolated_value_index(p_skinning_data.joint_weights_interpolation, p_face_index, p_face_vertex_index, p_point_index, joint_weights_value_count);
+		if (joint_indices_value_index < 0 || joint_weights_value_index < 0) {
+			return;
+		}
+
+		struct InfluenceEntry {
+			int joint = 0;
+			float weight = 0.0f;
+		};
+
+		LocalVector<InfluenceEntry> influences;
+		for (int influence_index = 0; influence_index < p_skinning_data.joint_indices_element_size; influence_index++) {
+			const int joint_value_index = joint_indices_value_index * p_skinning_data.joint_indices_element_size + influence_index;
+			const int weight_value_index = joint_weights_value_index * p_skinning_data.joint_weights_element_size + influence_index;
+			if (joint_value_index >= (int)p_skinning_data.joint_indices_values.size() || weight_value_index >= (int)p_skinning_data.joint_weights_values.size()) {
+				break;
+			}
+
+			const float weight = p_skinning_data.joint_weights_values[weight_value_index];
+			if (weight <= 0.0f) {
+				continue;
+			}
+
+			InfluenceEntry entry;
+			entry.joint = p_skinning_data.joint_indices_values[joint_value_index];
+			entry.weight = weight;
+			influences.push_back(entry);
+		}
+
+		for (int influence_index = 0; influence_index < influences.size(); influence_index++) {
+			const InfluenceEntry &entry = influences[influence_index];
+			for (int slot = 0; slot < 4; slot++) {
+				if (entry.weight > r_weights[slot]) {
+					for (int shift = 3; shift > slot; shift--) {
+						r_bones[shift] = r_bones[shift - 1];
+						r_weights[shift] = r_weights[shift - 1];
+					}
+					r_bones[slot] = entry.joint;
+					r_weights[slot] = entry.weight;
+					break;
+				}
+			}
+		}
+
+		float total_weight = 0.0f;
+		for (int influence_index = 0; influence_index < 4; influence_index++) {
+			total_weight += r_weights[influence_index];
+		}
+		if (total_weight > 0.0f) {
+			for (int influence_index = 0; influence_index < 4; influence_index++) {
+				r_weights[influence_index] /= total_weight;
+			}
+		}
+	}
+
+	void _store_skin_binding_metadata(const UsdPrim &p_prim, HashSet<String> *r_handled_attributes, Dictionary *r_mapping_notes) const {
+		UsdSkelBindingAPI skel_binding_api(p_prim);
+		UsdSkelSkeleton bound_skeleton = skel_binding_api.GetInheritedSkeleton();
+		if (bound_skeleton) {
+			(*r_mapping_notes)["usd:skel_skeleton_path"] = _to_godot_string(bound_skeleton.GetPath().GetString());
+		} else if (skel_binding_api.GetSkeletonRel()) {
+			r_handled_attributes->insert("skel:skeleton");
+		}
+
+		GfMatrix4d geom_bind_matrix(1.0);
+		UsdGeomPrimvar geom_bind_primvar = UsdGeomPrimvarsAPI(p_prim).FindPrimvarWithInheritance(TfToken("skel:geomBindTransform"));
+		if (geom_bind_primvar && geom_bind_primvar.Get(&geom_bind_matrix, time)) {
+			(*r_mapping_notes)["usd:skel_geom_bind_transform"] = _get_stage_correction_transform() * _gf_matrix_to_transform(geom_bind_matrix);
+			_mark_primvar_handled(geom_bind_primvar, r_handled_attributes);
+		}
+	}
+
 	bool _stage_has_authored_lights() const {
 		for (const UsdPrim &prim : stage->Traverse()) {
 			if (prim.HasAPI<UsdLuxLightAPI>()) {
@@ -1852,27 +1985,7 @@ class UsdSceneBuilder {
 			_mark_primvar_handled(display_color_primvar, r_handled_attributes);
 		}
 
-		UsdGeomPrimvarsAPI primvars_api(p_mesh.GetPrim());
-		UsdGeomPrimvar joint_indices_primvar = primvars_api.FindPrimvarWithInheritance(TfToken("skel:jointIndices"));
-		UsdGeomPrimvar joint_weights_primvar = primvars_api.FindPrimvarWithInheritance(TfToken("skel:jointWeights"));
-		VtArray<int> joint_indices_values;
-		VtArray<float> joint_weights_values;
-		const bool has_joint_indices = joint_indices_primvar && joint_indices_primvar.ComputeFlattened(&joint_indices_values, time);
-		const bool has_joint_weights = joint_weights_primvar && joint_weights_primvar.ComputeFlattened(&joint_weights_values, time);
-		const TfToken joint_indices_interpolation = has_joint_indices ? joint_indices_primvar.GetInterpolation() : UsdGeomTokens->vertex;
-		const TfToken joint_weights_interpolation = has_joint_weights ? joint_weights_primvar.GetInterpolation() : UsdGeomTokens->vertex;
-		const int joint_indices_element_size = has_joint_indices ? MAX(joint_indices_primvar.GetElementSize(), 1) : 0;
-		const int joint_weights_element_size = has_joint_weights ? MAX(joint_weights_primvar.GetElementSize(), 1) : 0;
-		const bool has_skinning = has_joint_indices && has_joint_weights && joint_indices_element_size == joint_weights_element_size;
-		if (has_joint_indices) {
-			_mark_primvar_handled(joint_indices_primvar, r_handled_attributes);
-		}
-		if (has_joint_weights) {
-			_mark_primvar_handled(joint_weights_primvar, r_handled_attributes);
-		}
-		if ((has_joint_indices || has_joint_weights) && !has_skinning) {
-			(*r_mapping_notes)["usd:skinning_status"] = "Skel joint influences were authored, but jointIndices/jointWeights could not be paired for import.";
-		}
+		const UsdSkinningData skinning_data = _read_skinning_data(p_mesh.GetPrim(), r_handled_attributes, r_mapping_notes);
 
 		Vector<UsdSurfaceAccumulator> surfaces;
 		surfaces.push_back(UsdSurfaceAccumulator());
@@ -1976,65 +2089,10 @@ class UsdSceneBuilder {
 					}
 				}
 
-				if (has_skinning) {
-					const int joint_indices_value_count = joint_indices_values.size() / joint_indices_element_size;
-					const int joint_weights_value_count = joint_weights_values.size() / joint_weights_element_size;
-					const int joint_indices_value_index = _get_interpolated_value_index(joint_indices_interpolation, face, face_vertex_index, point_index, joint_indices_value_count);
-					const int joint_weights_value_index = _get_interpolated_value_index(joint_weights_interpolation, face, face_vertex_index, point_index, joint_weights_value_count);
-
-					struct InfluenceEntry {
-						int joint = 0;
-						float weight = 0.0f;
-					};
-
-					LocalVector<InfluenceEntry> influences;
-					if (joint_indices_value_index >= 0 && joint_weights_value_index >= 0) {
-						for (int influence_index = 0; influence_index < joint_indices_element_size; influence_index++) {
-							const int joint_value_index = joint_indices_value_index * joint_indices_element_size + influence_index;
-							const int weight_value_index = joint_weights_value_index * joint_weights_element_size + influence_index;
-							if (joint_value_index >= (int)joint_indices_values.size() || weight_value_index >= (int)joint_weights_values.size()) {
-								break;
-							}
-
-							const float weight = joint_weights_values[weight_value_index];
-							if (weight <= 0.0f) {
-								continue;
-							}
-
-							InfluenceEntry entry;
-							entry.joint = joint_indices_values[joint_value_index];
-							entry.weight = weight;
-							influences.push_back(entry);
-						}
-					}
-
-					int packed_bones[4] = { 0, 0, 0, 0 };
-					float packed_weights[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
-					for (int influence_index = 0; influence_index < influences.size(); influence_index++) {
-						const InfluenceEntry &entry = influences[influence_index];
-						for (int slot = 0; slot < 4; slot++) {
-							if (entry.weight > packed_weights[slot]) {
-								for (int shift = 3; shift > slot; shift--) {
-									packed_bones[shift] = packed_bones[shift - 1];
-									packed_weights[shift] = packed_weights[shift - 1];
-								}
-								packed_bones[slot] = entry.joint;
-								packed_weights[slot] = entry.weight;
-								break;
-							}
-						}
-					}
-
-					float total_weight = 0.0f;
-					for (int influence_index = 0; influence_index < 4; influence_index++) {
-						total_weight += packed_weights[influence_index];
-					}
-					if (total_weight > 0.0f) {
-						for (int influence_index = 0; influence_index < 4; influence_index++) {
-							packed_weights[influence_index] /= total_weight;
-						}
-					}
-
+				if (skinning_data.valid) {
+					int packed_bones[4];
+					float packed_weights[4];
+					_get_packed_skinning_influences(skinning_data, face, face_vertex_index, point_index, packed_bones, packed_weights);
 					for (int influence_index = 0; influence_index < 4; influence_index++) {
 						surface.bones.push_back(packed_bones[influence_index]);
 						surface.weights.push_back(packed_weights[influence_index]);
@@ -2138,6 +2196,118 @@ class UsdSceneBuilder {
 		}
 
 		result.mesh = mesh->get_surface_count() > 0 ? mesh : Ref<ArrayMesh>();
+		return result;
+	}
+
+	UsdMeshBuildResult _build_points_mesh(const UsdGeomPoints &p_points, HashSet<String> *r_handled_attributes, Dictionary *r_mapping_notes) const {
+		UsdMeshBuildResult result;
+
+		VtArray<GfVec3f> points;
+		if (!p_points.GetPointsAttr().Get(&points, time)) {
+			return result;
+		}
+
+		UsdGeomGprim gprim(p_points.GetPrim());
+		UsdGeomPrimvar display_color_primvar = gprim.GetDisplayColorPrimvar();
+		VtArray<GfVec3f> display_colors;
+		TfToken display_color_interpolation = UsdGeomTokens->constant;
+		const bool has_display_color = display_color_primvar && display_color_primvar.ComputeFlattened(&display_colors, time);
+		if (has_display_color) {
+			display_color_interpolation = display_color_primvar.GetInterpolation();
+			_mark_primvar_handled(display_color_primvar, r_handled_attributes);
+		}
+
+		VtArray<float> widths;
+		const bool has_widths = p_points.GetWidthsAttr().Get(&widths, time) && !widths.empty();
+		const TfToken widths_interpolation = p_points.GetWidthsInterpolation();
+		if (has_widths) {
+			r_handled_attributes->insert("widths");
+			(*r_mapping_notes)["usd:point_widths"] = _to_float_array(widths);
+			(*r_mapping_notes)["usd:point_widths_interpolation"] = _to_godot_string(widths_interpolation.GetString());
+		}
+
+		const UsdSkinningData skinning_data = _read_skinning_data(p_points.GetPrim(), r_handled_attributes, r_mapping_notes);
+
+		PackedVector3Array vertices;
+		PackedColorArray colors;
+		PackedInt32Array bones;
+		PackedFloat32Array weights_array;
+		vertices.resize(points.size());
+		if (has_display_color) {
+			colors.resize(points.size());
+		}
+		if (skinning_data.valid) {
+			bones.resize(points.size() * 4);
+			weights_array.resize(points.size() * 4);
+		}
+
+		for (int point_index = 0; point_index < (int)points.size(); point_index++) {
+			const GfVec3f &point = points[point_index];
+			vertices.set(point_index, Vector3(point[0], point[1], point[2]));
+
+			if (has_display_color) {
+				GfVec3f color_value(1.0f);
+				if (_read_interpolated_value(display_colors, display_color_interpolation, point_index, point_index, point_index, &color_value)) {
+					colors.set(point_index, Color(color_value[0], color_value[1], color_value[2], 1.0f));
+				} else {
+					colors.set(point_index, Color(1, 1, 1, 1));
+				}
+			}
+
+			if (skinning_data.valid) {
+				int packed_bones[4];
+				float packed_weights[4];
+				_get_packed_skinning_influences(skinning_data, point_index, point_index, point_index, packed_bones, packed_weights);
+				for (int influence_index = 0; influence_index < 4; influence_index++) {
+					bones.set(point_index * 4 + influence_index, packed_bones[influence_index]);
+					weights_array.set(point_index * 4 + influence_index, packed_weights[influence_index]);
+				}
+			}
+		}
+
+		Array arrays;
+		arrays.resize(Mesh::ARRAY_MAX);
+		arrays[Mesh::ARRAY_VERTEX] = vertices;
+		if (has_display_color) {
+			arrays[Mesh::ARRAY_COLOR] = colors;
+		}
+		if (skinning_data.valid) {
+			arrays[Mesh::ARRAY_BONES] = bones;
+			arrays[Mesh::ARRAY_WEIGHTS] = weights_array;
+			result.has_skinning = true;
+		}
+
+		Ref<ArrayMesh> mesh;
+		mesh.instantiate();
+		mesh->add_surface_from_arrays(Mesh::PRIMITIVE_POINTS, arrays);
+
+		Ref<StandardMaterial3D> material;
+		material.instantiate();
+		material->set_shading_mode(BaseMaterial3D::SHADING_MODE_UNSHADED);
+		material->set_flag(BaseMaterial3D::FLAG_USE_POINT_SIZE, true);
+		if (has_display_color) {
+			material->set_flag(BaseMaterial3D::FLAG_ALBEDO_FROM_VERTEX_COLOR, true);
+		}
+
+		float point_size = 4.0f;
+		if (has_widths) {
+			point_size = MAX(widths[0] * 16.0f, 1.0f);
+			if (widths.size() > 1 || widths_interpolation != UsdGeomTokens->constant) {
+				(*r_mapping_notes)["usd:points_status"] = "UsdGeomPoints widths were authored per-point, but Godot point rendering currently approximates them with a single point size.";
+			}
+		}
+		material->set_point_size(point_size);
+		mesh->surface_set_material(0, material);
+
+		r_handled_attributes->insert("points");
+		if (has_display_color) {
+			r_handled_attributes->insert("primvars:displayColor");
+		}
+
+		(*r_mapping_notes)["usd:points_mapping"] = "mesh_points";
+		(*r_mapping_notes)["usd:point_count"] = (int)points.size();
+
+		result.mesh = mesh;
 		return result;
 	}
 
@@ -2792,25 +2962,25 @@ class UsdSceneBuilder {
 					mapping_notes["usd:geom_subsets"] = mesh_result.geom_subsets;
 				}
 				if (mesh_result.has_skinning) {
-					UsdSkelBindingAPI skel_binding_api(p_prim);
-					UsdSkelSkeleton bound_skeleton = skel_binding_api.GetInheritedSkeleton();
-					if (bound_skeleton) {
-						mapping_notes["usd:skel_skeleton_path"] = _to_godot_string(bound_skeleton.GetPath().GetString());
-					} else if (skel_binding_api.GetSkeletonRel()) {
-						handled_attributes.insert("skel:skeleton");
-					}
-
-					GfMatrix4d geom_bind_matrix(1.0);
-					UsdGeomPrimvar geom_bind_primvar = UsdGeomPrimvarsAPI(p_prim).FindPrimvarWithInheritance(TfToken("skel:geomBindTransform"));
-					if (geom_bind_primvar && geom_bind_primvar.Get(&geom_bind_matrix, time)) {
-						mapping_notes["usd:skel_geom_bind_transform"] = _get_stage_correction_transform() * _gf_matrix_to_transform(geom_bind_matrix);
-						_mark_primvar_handled(geom_bind_primvar, &handled_attributes);
-					}
+					_store_skin_binding_metadata(p_prim, &handled_attributes, &mapping_notes);
 				}
 			} else {
 				mapping_notes["usd:mesh_status"] = "Mesh geometry was detected, but no triangulated surface could be generated.";
 			}
 			node = mesh_instance;
+		} else if (p_prim.IsA<UsdGeomPoints>()) {
+			UsdGeomPoints usd_points(p_prim);
+			MeshInstance3D *points_instance = memnew(MeshInstance3D);
+			UsdMeshBuildResult points_result = _build_points_mesh(usd_points, &handled_attributes, &mapping_notes);
+			if (points_result.mesh.is_valid()) {
+				points_instance->set_mesh(points_result.mesh);
+				if (points_result.has_skinning) {
+					_store_skin_binding_metadata(p_prim, &handled_attributes, &mapping_notes);
+				}
+			} else {
+				mapping_notes["usd:points_status"] = "Points geometry was detected, but no point mesh could be generated.";
+			}
+			node = points_instance;
 		} else {
 			node = _build_primitive_mesh_instance(p_prim, &handled_attributes);
 		}

@@ -272,7 +272,10 @@ func _test_placeholder_fallbacks(base_dir: String) -> void:
 	if arm_root != null:
 		_require(_find_prim_node(arm_root, "/Model/Arm") is MeshInstance3D, "Armature fixture lost the skinned mesh.")
 		_require(_find_prim_node(arm_root, "/Model/Skel") is Skeleton3D, "Armature fixture should now expose Skeleton as a Skeleton3D node.")
-		_require(_placeholder_nodes_with_type_name(arm_root, "Points").size() > 0, "Armature fixture should currently expose Points as a documented placeholder.")
+		var arm_points := _find_prim_node(arm_root, "/Model/ArmPoints") as MeshInstance3D
+		_require(arm_points != null, "Armature fixture should now expose Points as a MeshInstance3D.")
+		if arm_points != null and arm_points.mesh != null and arm_points.mesh.get_surface_count() > 0:
+			_require(arm_points.mesh.surface_get_primitive_type(0) == Mesh.PRIMITIVE_POINTS, "Armature fixture points import should preserve point primitives.")
 		_release_fixture(arm_root)
 
 func _init() -> void:

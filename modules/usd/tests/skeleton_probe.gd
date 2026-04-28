@@ -99,7 +99,24 @@ func _test_armature_fixture(base_dir: String) -> void:
 				var weights: PackedFloat32Array = arrays[Mesh.ARRAY_WEIGHTS]
 				_require(bones.size() > 0, "Armature fixture mesh did not preserve joint index data.")
 				_require(weights.size() > 0, "Armature fixture mesh did not preserve joint weight data.")
-	_require(_find_prim_node(arm_root, "/Model/ArmPoints") != null, "Armature fixture lost the authored points prim.")
+	var arm_points := _find_prim_node(arm_root, "/Model/ArmPoints") as MeshInstance3D
+	_require(arm_points != null, "Armature fixture should now import the authored Points prim as a MeshInstance3D.")
+	if arm_points != null:
+		_require(arm_points.mesh != null, "Armature fixture points import lost its mesh resource.")
+		_require(arm_points.get_skin() != null, "Armature fixture points import did not receive a Godot Skin resource.")
+		_require(not arm_points.get_skeleton_path().is_empty(), "Armature fixture points import did not receive a skeleton path binding.")
+		_require(arm_points.get_node_or_null(arm_points.get_skeleton_path()) == skeleton, "Armature fixture points import skeleton path did not resolve to the imported Skeleton3D.")
+		var points_metadata: Dictionary = _metadata(arm_points)
+		_require(points_metadata.get("usd:points_mapping", "") == "mesh_points", "Armature fixture points import should record its points mapping.")
+		_require(int(points_metadata.get("usd:point_count", 0)) == 12, "Armature fixture points import lost its authored point count.")
+		if arm_points.mesh != null and arm_points.mesh.get_surface_count() > 0:
+			_require(arm_points.mesh.surface_get_primitive_type(0) == Mesh.PRIMITIVE_POINTS, "Armature fixture points import should use point primitives.")
+			var arrays: Array = arm_points.mesh.surface_get_arrays(0)
+			if arrays.size() == Mesh.ARRAY_MAX:
+				var bones: PackedInt32Array = arrays[Mesh.ARRAY_BONES]
+				var weights: PackedFloat32Array = arrays[Mesh.ARRAY_WEIGHTS]
+				_require(bones.size() > 0, "Armature fixture points import did not preserve joint index data.")
+				_require(weights.size() > 0, "Armature fixture points import did not preserve joint weight data.")
 	_release_fixture(arm_root)
 
 func _test_blendshape_fixture(base_dir: String) -> void:
