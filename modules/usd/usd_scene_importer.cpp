@@ -40,8 +40,6 @@
 static constexpr const char *USD_IMPORT_OPTION_VARIANT_SELECTIONS = "usd/variant_selections";
 static constexpr const char *USD_IMPORT_OPTION_VARIANT_PREFIX = "usd/variants/";
 static constexpr const char *USD_STAGE_INSTANCE_GENERATED_META = "usd_stage_instance_generated";
-static constexpr const char *USD_IMPORTER_WARNINGS_META = "usd:importer_warnings";
-static constexpr const char *USD_IMPORTER_VARIANT_SELECTIONS_META = "usd:importer_variant_selections";
 
 static String _get_variant_option_name(const String &p_prim_path, const String &p_variant_set_name) {
 	String property_prim_path = p_prim_path.trim_prefix("/");
@@ -308,15 +306,11 @@ Node *UsdSceneFormatImporter::import_scene(const String &p_path, uint32_t p_flag
 	const Dictionary source_variant_catalog = stage_instance->get_stage().is_valid() ? stage_instance->get_stage()->get_variant_sets() : Dictionary();
 	const Array import_warnings = _build_import_warnings(source_variant_catalog, variant_selections);
 	if (!import_warnings.is_empty()) {
-		generated_root->set_meta(USD_IMPORTER_WARNINGS_META, import_warnings);
 		for (int i = 0; i < import_warnings.size(); i++) {
 			if (import_warnings[i].get_type() == Variant::STRING || import_warnings[i].get_type() == Variant::STRING_NAME) {
 				WARN_PRINT(String(import_warnings[i]));
 			}
 		}
-	}
-	if (!variant_selections.is_empty()) {
-		generated_root->set_meta(USD_IMPORTER_VARIANT_SELECTIONS_META, variant_selections);
 	}
 	memdelete(stage_instance);
 

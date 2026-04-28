@@ -887,9 +887,7 @@ TEST_CASE("[SceneTree][USD] UsdSceneFormatImporter bakes a variant USD file into
 	CHECK(root->get_node_or_null(NodePath("_Generated")) == nullptr);
 	CHECK(_find_prim_node(root, "/Model/RedCube") != nullptr);
 	CHECK(_find_prim_node(root, "/Model/BlueSphere") == nullptr);
-	REQUIRE(root->has_meta(StringName("usd:importer_warnings")));
-	Array warnings = root->get_meta(StringName("usd:importer_warnings"));
-	CHECK(!warnings.is_empty());
+	CHECK(root->has_meta(StringName("usd:importer_warnings")) == false);
 
 	memdelete(root);
 }
@@ -915,20 +913,7 @@ TEST_CASE("[SceneTree][USD] UsdSceneFormatImporter applies structured variant ov
 	CHECK(_find_prim_node(root, "/Model/BlueSphere") != nullptr);
 	CHECK(_find_prim_node(root, "/Model/Nested/NestedSphere") != nullptr);
 	CHECK(_find_prim_node(root, "/Model/Nested/NestedCube") == nullptr);
-	REQUIRE(root->has_meta(StringName("usd:importer_variant_selections")));
-	Dictionary variant_selections = root->get_meta(StringName("usd:importer_variant_selections"));
-	Dictionary model_selection;
-	Variant model_selection_variant = variant_selections.get("/Model", Variant());
-	if (model_selection_variant.get_type() == Variant::DICTIONARY) {
-		model_selection = model_selection_variant;
-	}
-	Dictionary nested_selection;
-	Variant nested_selection_variant = variant_selections.get("/Model/Nested", Variant());
-	if (nested_selection_variant.get_type() == Variant::DICTIONARY) {
-		nested_selection = nested_selection_variant;
-	}
-	CHECK(String(model_selection.get("modelingVariant", String())) == "blue");
-	CHECK(String(nested_selection.get("detail", String())) == "sphere");
+	CHECK(root->has_meta(StringName("usd:importer_variant_selections")) == false);
 
 	memdelete(root);
 }
