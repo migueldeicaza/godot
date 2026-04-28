@@ -132,12 +132,32 @@ func _test_blendshape_fixture(base_dir: String) -> void:
 		var animation_sources: Array = _metadata(skeleton).get("usd:animation_sources", [])
 		_require(animation_sources.size() == 1 and animation_sources[0] == "/root/Plane/Skel/Anim", "Blend shape fixture lost the animation source metadata.")
 
-	var blend_shape_node := _find_prim_node(blend_shape_root, "/root/Plane/Plane/Key_1")
-	_require(blend_shape_node != null, "Blend shape fixture lost the authored BlendShape prim.")
-	if blend_shape_node != null:
-		var metadata := _metadata(blend_shape_node)
-		_require(metadata.get("usd:type_name", "") == "BlendShape", "Blend shape fixture lost BlendShape type metadata.")
-		_require(metadata.get("usd:mapping_status", "") != "", "Blend shape fixture should still document that BlendShape is on the fallback path.")
+	var plane_mesh := _find_prim_node(blend_shape_root, "/root/Plane/Plane") as MeshInstance3D
+	_require(plane_mesh != null, "Blend shape fixture lost the base mesh.")
+	if plane_mesh != null and plane_mesh.mesh != null:
+		_require(plane_mesh.get_blend_shape_count() == 1, "Blend shape fixture should now create one Godot blend shape.")
+		_require(plane_mesh.find_blend_shape_by_name(&"Key_1") == 0, "Blend shape fixture lost the authored blend shape name.")
+		var mesh_metadata: Dictionary = _metadata(plane_mesh)
+		_require(mesh_metadata.get("usd:blend_shape_mapping", "") == "array_mesh_relative", "Blend shape fixture should record the mesh blend shape mapping.")
+
+	var animation_player: AnimationPlayer = null
+	for child in blend_shape_root.get_children():
+		if child is AnimationPlayer:
+			animation_player = child
+			break
+	_require(animation_player != null, "Blend shape fixture did not produce an AnimationPlayer.")
+	if animation_player != null:
+		_require(animation_player.has_animation(&"Anim"), "Blend shape fixture did not bake the blendShapeWeights animation.")
+		var animation: Animation = animation_player.get_animation(&"Anim")
+		_require(animation != null, "Blend shape fixture returned a null baked blend shape animation.")
+		if animation != null:
+			var found_blend_shape_track := false
+			for track_index in range(animation.get_track_count()):
+				if animation.track_get_type(track_index) == Animation.TYPE_BLEND_SHAPE and str(animation.track_get_path(track_index)) == "root/Plane/Plane:Key_1":
+					found_blend_shape_track = true
+					_require(animation.track_get_key_count(track_index) == 3, "Blend shape fixture should preserve the three authored weight samples.")
+					break
+			_require(found_blend_shape_track, "Blend shape fixture did not bake a blend shape track for Key_1.")
 
 	_release_fixture(blend_shape_root)
 

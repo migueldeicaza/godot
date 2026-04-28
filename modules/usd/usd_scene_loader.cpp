@@ -123,6 +123,7 @@
 #include <pxr/usd/usdShade/shader.h>
 #include <pxr/usd/usdSkel/animation.h>
 #include <pxr/usd/usdSkel/bindingAPI.h>
+#include <pxr/usd/usdSkel/blendShape.h>
 #include <pxr/usd/usdSkel/skeleton.h>
 
 #include <algorithm>
@@ -843,6 +844,12 @@ struct UsdSkinningData {
 	bool valid = false;
 	bool has_authored_joint_indices = false;
 	bool has_authored_joint_weights = false;
+};
+
+struct UsdBlendShapeData {
+	String name;
+	String target_path;
+	HashMap<int, Vector3> position_offsets_by_point;
 };
 
 struct UsdMeshSurfaceFaceRange {
@@ -1879,6 +1886,82 @@ class UsdSceneBuilder {
 		}
 	}
 
+	Vector<UsdBlendShapeData> _read_mesh_blend_shapes(const UsdGeomMesh &p_mesh, int p_point_count, HashSet<String> *r_handled_attributes, Dictionary *r_mapping_notes) const {
+		Vector<UsdBlendShapeData> blend_shapes;
+
+		UsdSkelBindingAPI skel_binding_api(p_mesh.GetPrim());
+		UsdAttribute blend_shapes_attr = skel_binding_api.GetBlendShapesAttr();
+		UsdRelationship blend_shape_targets_rel = skel_binding_api.GetBlendShapeTargetsRel();
+		if (!blend_shapes_attr || !blend_shape_targets_rel) {
+			return blend_shapes;
+		}
+
+		VtArray<TfToken> blend_shape_names;
+		SdfPathVector blend_shape_targets;
+		const bool has_blend_shape_names = blend_shapes_attr.Get(&blend_shape_names, time) && !blend_shape_names.empty();
+		const bool has_blend_shape_targets = blend_shape_targets_rel.GetTargets(&blend_shape_targets) && !blend_shape_targets.empty();
+		if (!has_blend_shape_names || !has_blend_shape_targets) {
+			return blend_shapes;
+		}
+
+		r_handled_attributes->insert("skel:blendShapes");
+		r_handled_attributes->insert("skel:blendShapeTargets");
+
+		if ((int)blend_shape_names.size() != (int)blend_shape_targets.size()) {
+			(*r_mapping_notes)["usd:blend_shape_status"] = "Blend shape names and targets had mismatched counts; only paired entries were imported.";
+		}
+
+		const int blend_shape_count = MIN((int)blend_shape_names.size(), (int)blend_shape_targets.size());
+		for (int blend_shape_index = 0; blend_shape_index < blend_shape_count; blend_shape_index++) {
+			UsdPrim blend_shape_prim = stage->GetPrimAtPath(blend_shape_targets[blend_shape_index]);
+			if (!blend_shape_prim || !blend_shape_prim.IsA<UsdSkelBlendShape>()) {
+				continue;
+			}
+
+			UsdSkelBlendShape blend_shape(blend_shape_prim);
+			VtArray<GfVec3f> offsets;
+			if (!blend_shape.GetOffsetsAttr().Get(&offsets, time) || offsets.empty()) {
+				continue;
+			}
+
+			VtArray<int> point_indices;
+			const bool has_point_indices = blend_shape.GetPointIndicesAttr().Get(&point_indices, time) && !point_indices.empty();
+			if (has_point_indices) {
+				if ((int)point_indices.size() != (int)offsets.size()) {
+					(*r_mapping_notes)["usd:blend_shape_status"] = "Blend shape pointIndices did not match offsets; that target was skipped.";
+					continue;
+				}
+			} else if ((int)offsets.size() != p_point_count) {
+				(*r_mapping_notes)["usd:blend_shape_status"] = "Blend shape offsets without pointIndices did not match the mesh point count; that target was skipped.";
+				continue;
+			}
+
+			UsdBlendShapeData blend_shape_data;
+			blend_shape_data.name = _to_godot_string(blend_shape_names[blend_shape_index].GetString());
+			blend_shape_data.target_path = _to_godot_string(blend_shape_targets[blend_shape_index].GetString());
+
+			for (int offset_index = 0; offset_index < (int)offsets.size(); offset_index++) {
+				const int point_index = has_point_indices ? point_indices[offset_index] : offset_index;
+				if (point_index < 0 || point_index >= p_point_count) {
+					continue;
+				}
+				const GfVec3f &offset = offsets[offset_index];
+				blend_shape_data.position_offsets_by_point.insert(point_index, Vector3(offset[0], offset[1], offset[2]));
+			}
+
+			if (blend_shape.GetNormalOffsetsAttr().HasAuthoredValueOpinion()) {
+				(*r_mapping_notes)["usd:blend_shape_status"] = "Blend shape normalOffsets were authored, but only position offsets are imported in the current loader.";
+			}
+			if (!blend_shape.GetAuthoredInbetweens().empty()) {
+				(*r_mapping_notes)["usd:blend_shape_status"] = "Blend shape inbetweens were authored, but only the primary target shape is imported in the current loader.";
+			}
+
+			blend_shapes.push_back(blend_shape_data);
+		}
+
+		return blend_shapes;
+	}
+
 	bool _stage_has_authored_lights() const {
 		for (const UsdPrim &prim : stage->Traverse()) {
 			if (prim.HasAPI<UsdLuxLightAPI>()) {
@@ -1986,6 +2069,7 @@ class UsdSceneBuilder {
 		}
 
 		const UsdSkinningData skinning_data = _read_skinning_data(p_mesh.GetPrim(), r_handled_attributes, r_mapping_notes);
+		const Vector<UsdBlendShapeData> blend_shapes = _read_mesh_blend_shapes(p_mesh, points.size(), r_handled_attributes, r_mapping_notes);
 
 		Vector<UsdSurfaceAccumulator> surfaces;
 		surfaces.push_back(UsdSurfaceAccumulator());
@@ -2125,6 +2209,12 @@ class UsdSceneBuilder {
 
 		Ref<ArrayMesh> mesh;
 		mesh.instantiate();
+		if (!blend_shapes.is_empty()) {
+			mesh->set_blend_shape_mode(Mesh::BLEND_SHAPE_MODE_RELATIVE);
+			for (int blend_shape_index = 0; blend_shape_index < blend_shapes.size(); blend_shape_index++) {
+				mesh->add_blend_shape(blend_shapes[blend_shape_index].name);
+			}
+		}
 		for (int i = 0; i < surfaces.size(); i++) {
 			const UsdSurfaceAccumulator &surface = surfaces[i];
 			if (surface.vertices.is_empty() || surface.indices.is_empty()) {
@@ -2150,7 +2240,25 @@ class UsdSceneBuilder {
 				result.has_skinning = true;
 			}
 
-			mesh->add_surface_from_arrays(Mesh::PRIMITIVE_TRIANGLES, arrays);
+			TypedArray<Array> surface_blend_shapes;
+			if (!blend_shapes.is_empty()) {
+				for (int blend_shape_index = 0; blend_shape_index < blend_shapes.size(); blend_shape_index++) {
+					PackedVector3Array blend_shape_vertices;
+					blend_shape_vertices.resize(surface.vertices.size());
+					for (int vertex_index = 0; vertex_index < surface.vertices.size(); vertex_index++) {
+						const int point_index = surface.authored_point_indices[vertex_index];
+						const Vector3 *offset_ptr = blend_shapes[blend_shape_index].position_offsets_by_point.getptr(point_index);
+						blend_shape_vertices.set(vertex_index, offset_ptr != nullptr ? *offset_ptr : Vector3());
+					}
+
+					Array blend_shape_arrays;
+					blend_shape_arrays.resize(Mesh::ARRAY_MAX);
+					blend_shape_arrays[Mesh::ARRAY_VERTEX] = blend_shape_vertices;
+					surface_blend_shapes.push_back(blend_shape_arrays);
+				}
+			}
+
+			mesh->add_surface_from_arrays(Mesh::PRIMITIVE_TRIANGLES, arrays, surface_blend_shapes);
 
 			Ref<Material> surface_material = surface.material;
 			if (surface_material.is_null() && has_display_color && display_color_interpolation == UsdGeomTokens->constant && !display_colors.empty()) {
@@ -2193,6 +2301,18 @@ class UsdSceneBuilder {
 				surface_description["authored_point_indices"] = surface.authored_point_indices;
 			}
 			result.material_subsets.push_back(surface_description);
+		}
+
+		if (!blend_shapes.is_empty()) {
+			Array blend_shape_names;
+			Array blend_shape_targets;
+			for (int blend_shape_index = 0; blend_shape_index < blend_shapes.size(); blend_shape_index++) {
+				blend_shape_names.push_back(blend_shapes[blend_shape_index].name);
+				blend_shape_targets.push_back(blend_shapes[blend_shape_index].target_path);
+			}
+			(*r_mapping_notes)["usd:blend_shape_names"] = blend_shape_names;
+			(*r_mapping_notes)["usd:blend_shape_targets"] = blend_shape_targets;
+			(*r_mapping_notes)["usd:blend_shape_mapping"] = "array_mesh_relative";
 		}
 
 		result.mesh = mesh->get_surface_count() > 0 ? mesh : Ref<ArrayMesh>();
@@ -3100,9 +3220,7 @@ class UsdSceneBuilder {
 		ERR_FAIL_COND_V(!p_animation, false);
 
 		VtArray<TfToken> animation_joints;
-		if (!p_animation.GetJointsAttr().Get(&animation_joints, time) || animation_joints.empty()) {
-			return false;
-		}
+		p_animation.GetJointsAttr().Get(&animation_joints, time);
 
 		HashMap<String, int> bone_index_by_joint_path;
 		for (int bone_index = 0; bone_index < p_skeleton->get_bone_count(); bone_index++) {
@@ -3115,11 +3233,15 @@ class UsdSceneBuilder {
 		UsdAttribute translations_attr = p_animation.GetTranslationsAttr();
 		UsdAttribute rotations_attr = p_animation.GetRotationsAttr();
 		UsdAttribute scales_attr = p_animation.GetScalesAttr();
+		UsdAttribute blend_shape_weights_attr = p_animation.GetBlendShapeWeightsAttr();
+		VtArray<TfToken> animation_blend_shape_names;
+		const bool has_animation_blend_shapes = p_animation.GetBlendShapesAttr().Get(&animation_blend_shape_names, time) && !animation_blend_shape_names.empty();
 
 		const bool has_translations = translations_attr && translations_attr.HasAuthoredValueOpinion();
 		const bool has_rotations = rotations_attr && rotations_attr.HasAuthoredValueOpinion();
 		const bool has_scales = scales_attr && scales_attr.HasAuthoredValueOpinion();
-		if (!has_translations && !has_rotations && !has_scales) {
+		const bool has_blend_shape_weights = blend_shape_weights_attr && blend_shape_weights_attr.HasAuthoredValueOpinion() && has_animation_blend_shapes;
+		if (!has_translations && !has_rotations && !has_scales && !has_blend_shape_weights) {
 			return false;
 		}
 
@@ -3135,6 +3257,7 @@ class UsdSceneBuilder {
 		append_time_samples(translations_attr);
 		append_time_samples(rotations_attr);
 		append_time_samples(scales_attr);
+		append_time_samples(blend_shape_weights_attr);
 		if (sample_times.empty()) {
 			sample_times.push_back(0.0);
 		}
@@ -3266,6 +3389,72 @@ class UsdSceneBuilder {
 						const GfVec3h value = scales[joint_index];
 						animation->scale_track_insert_key(scale_track, key_time, Vector3((real_t)value[0], (real_t)value[1], (real_t)value[2]));
 						added_any_tracks = true;
+					}
+				}
+			}
+		}
+
+		if (has_blend_shape_weights) {
+			const String skeleton_prim_path = _get_usd_metadata(p_skeleton).get("usd:prim_path", String());
+
+			List<Node *> stack;
+			stack.push_back(p_scene_root);
+			while (!stack.is_empty()) {
+				Node *node = stack.front()->get();
+				stack.pop_front();
+
+				for (int child_index = 0; child_index < node->get_child_count(); child_index++) {
+					stack.push_back(node->get_child(child_index));
+				}
+
+				MeshInstance3D *mesh_instance = Object::cast_to<MeshInstance3D>(node);
+				if (mesh_instance == nullptr || mesh_instance->get_mesh().is_null() || mesh_instance->get_blend_shape_count() == 0) {
+					continue;
+				}
+
+				const Dictionary mesh_metadata = _get_usd_metadata(mesh_instance);
+				if ((String)mesh_metadata.get("usd:skel_skeleton_path", String()) != skeleton_prim_path) {
+					continue;
+				}
+
+				HashMap<String, int> mesh_blend_shape_indices;
+				for (int blend_shape_index = 0; blend_shape_index < mesh_instance->get_blend_shape_count(); blend_shape_index++) {
+					mesh_blend_shape_indices.insert(String(mesh_instance->get_mesh()->get_blend_shape_name(blend_shape_index)), blend_shape_index);
+				}
+
+				const String mesh_path = String(p_scene_root->get_path_to(mesh_instance));
+				for (int animation_blend_shape_index = 0; animation_blend_shape_index < (int)animation_blend_shape_names.size(); animation_blend_shape_index++) {
+					const String blend_shape_name = _to_godot_string(animation_blend_shape_names[animation_blend_shape_index].GetString());
+					const int *mesh_blend_shape_index_ptr = mesh_blend_shape_indices.getptr(blend_shape_name);
+					if (mesh_blend_shape_index_ptr == nullptr) {
+						continue;
+					}
+
+					bool add_blend_shape_track = false;
+					for (double sample_time : sample_times) {
+						VtArray<float> blend_shape_weights;
+						if (blend_shape_weights_attr.Get(&blend_shape_weights, sample_time) && animation_blend_shape_index < (int)blend_shape_weights.size()) {
+							if (!Math::is_equal_approx(blend_shape_weights[animation_blend_shape_index], 0.0f)) {
+								add_blend_shape_track = true;
+								break;
+							}
+						}
+					}
+					if (!add_blend_shape_track) {
+						continue;
+					}
+
+					const int blend_shape_track = animation->get_track_count();
+					animation->add_track(Animation::TYPE_BLEND_SHAPE);
+					animation->track_set_path(blend_shape_track, NodePath(mesh_path + ":" + blend_shape_name));
+					animation->track_set_imported(blend_shape_track, true);
+
+					for (double sample_time : sample_times) {
+						VtArray<float> blend_shape_weights;
+						if (blend_shape_weights_attr.Get(&blend_shape_weights, sample_time) && animation_blend_shape_index < (int)blend_shape_weights.size()) {
+							animation->blend_shape_track_insert_key(blend_shape_track, (sample_time - start_time) / time_codes_per_second, blend_shape_weights[animation_blend_shape_index]);
+							added_any_tracks = true;
+						}
 					}
 				}
 			}

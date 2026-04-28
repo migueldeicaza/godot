@@ -263,9 +263,11 @@ func _test_placeholder_fallbacks(base_dir: String) -> void:
 
 	var blend_shape_root := _load_fixture(_fixture_path(base_dir, "usd_blend_shape_test.usda"))
 	if blend_shape_root != null:
-		_require(_find_prim_node(blend_shape_root, "/root/Plane/Plane") is MeshInstance3D, "Blend shape fixture lost the base mesh.")
+		var plane_mesh := _find_prim_node(blend_shape_root, "/root/Plane/Plane") as MeshInstance3D
+		_require(plane_mesh != null, "Blend shape fixture lost the base mesh.")
 		_require(_find_prim_node(blend_shape_root, "/root/Plane/Skel") is Skeleton3D, "Blend shape fixture should now expose Skeleton as a Skeleton3D node.")
-		_require(_placeholder_nodes_with_type_name(blend_shape_root, "BlendShape").size() > 0, "Blend shape fixture should currently expose BlendShape as a documented placeholder.")
+		if plane_mesh != null:
+			_require(plane_mesh.get_blend_shape_count() == 1, "Blend shape fixture should now expose one real Godot blend shape.")
 		_release_fixture(blend_shape_root)
 
 	var arm_root := _load_fixture(_fixture_path(base_dir, "arm.usda"))

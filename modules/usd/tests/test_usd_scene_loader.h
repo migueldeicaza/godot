@@ -595,6 +595,62 @@ TEST_CASE("[SceneTree][USD] Bind a skinned USD points prim to the imported Skele
 	memdelete(root);
 }
 
+TEST_CASE("[SceneTree][USD] Import USD blend shapes and bake blendShapeWeights animation tracks") {
+	const String usd_path = TestUtils::get_data_path("usd/blend_shape_basic.usda");
+
+	Error err = OK;
+	Ref<PackedScene> packed_scene = ResourceLoader::load(usd_path, "PackedScene", ResourceFormatLoader::CACHE_MODE_IGNORE, &err);
+	REQUIRE_MESSAGE(err == OK, "USD blend shape load failed.");
+	REQUIRE(packed_scene.is_valid());
+
+	Node *root = packed_scene->instantiate();
+	REQUIRE(root != nullptr);
+
+	MeshInstance3D *mesh_instance = Object::cast_to<MeshInstance3D>(_find_prim_node(root, "/root/Plane/Plane"));
+	Skeleton3D *skeleton = Object::cast_to<Skeleton3D>(_find_prim_node(root, "/root/Plane/Skel"));
+	REQUIRE(mesh_instance != nullptr);
+	REQUIRE(skeleton != nullptr);
+	REQUIRE(mesh_instance->get_mesh().is_valid());
+	CHECK(mesh_instance->get_blend_shape_count() == 1);
+	CHECK(mesh_instance->find_blend_shape_by_name(StringName("Key_1")) == 0);
+
+	Dictionary mesh_metadata = mesh_instance->get_meta(StringName("usd"), Dictionary());
+	CHECK((String)mesh_metadata.get("usd:blend_shape_mapping", String()) == String("array_mesh_relative"));
+
+	TypedArray<Array> blend_shape_arrays = mesh_instance->get_mesh()->surface_get_blend_shape_arrays(0);
+	REQUIRE(blend_shape_arrays.size() == 1);
+	Array blend_shape_surface = blend_shape_arrays[0];
+	REQUIRE(blend_shape_surface.size() == Mesh::ARRAY_MAX);
+	PackedVector3Array blend_shape_vertices = blend_shape_surface[Mesh::ARRAY_VERTEX];
+	CHECK(blend_shape_vertices.size() == 6);
+	CHECK(blend_shape_vertices[0].z == doctest::Approx(0.5f));
+
+	AnimationPlayer *player = nullptr;
+	for (int i = 0; i < root->get_child_count(); i++) {
+		player = Object::cast_to<AnimationPlayer>(root->get_child(i));
+		if (player != nullptr) {
+			break;
+		}
+	}
+	REQUIRE(player != nullptr);
+	REQUIRE(player->has_animation("Anim"));
+	Ref<Animation> animation = player->get_animation("Anim");
+	REQUIRE(animation.is_valid());
+
+	bool found_blend_shape_track = false;
+	for (int track_index = 0; track_index < animation->get_track_count(); track_index++) {
+		if (animation->track_get_type(track_index) == Animation::TYPE_BLEND_SHAPE &&
+				String(animation->track_get_path(track_index)) == String("root/Plane/Plane:Key_1")) {
+			found_blend_shape_track = true;
+			CHECK(animation->track_get_key_count(track_index) == 3);
+			break;
+		}
+	}
+	CHECK(found_blend_shape_track);
+
+	memdelete(root);
+}
+
 TEST_CASE("[SceneTree][USD] Add preview sun and environment when a stage has no authored lights") {
 	PreviewLightingModeScope preview_lighting_mode_scope;
 	preview_lighting_mode_scope.set(1);
