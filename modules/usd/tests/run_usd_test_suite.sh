@@ -60,6 +60,7 @@ run_probe "$script_dir/blend_shape_piecewise_probe.gd"
 run_probe "$script_dir/blend_shape_roundtrip_probe.gd" "$tmp_dir/blend_shape_roundtrip.usda"
 run_probe "$script_dir/points_blend_shape_roundtrip_probe.gd" "$tmp_dir/points_blend_shape_roundtrip.usda"
 run_probe "$script_dir/skeleton_roundtrip_probe.gd" "$tmp_dir/skeleton_roundtrip.usda"
+run_probe "$script_dir/source_aware_skel_animation_probe.gd" "$tmp_dir/source_aware_skel_animation.usda"
 run_probe "$script_dir/skel_animation_sparsity_probe.gd" "$tmp_dir/skel_animation_sparsity.usda"
 run_probe "$script_dir/rigging_stress_probe.gd" "$tmp_dir"
 

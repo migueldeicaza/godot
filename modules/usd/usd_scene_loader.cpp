@@ -4108,6 +4108,12 @@ public:
 	}
 };
 
+static SdfLayerHandle _get_strongest_property_stack_layer(const UsdProperty &p_property);
+static SdfLayerHandle _get_strongest_prim_stack_layer(const UsdPrim &p_prim);
+template <typename T>
+static bool _set_usd_attribute_preserving_layer(const UsdStageRefPtr &p_stage, const UsdAttribute &p_attribute, const T &p_value, const SdfLayerHandle &p_fallback_layer, UsdTimeCode p_time = UsdTimeCode::Default());
+static bool _set_usd_relationship_targets_preserving_layer(const UsdStageRefPtr &p_stage, const UsdRelationship &p_relationship, const SdfPathVector &p_targets, const SdfLayerHandle &p_fallback_layer);
+
 class UsdSceneSaver {
 	struct SaveContext {
 		double meters_per_unit = 1.0;
@@ -5782,10 +5788,10 @@ static bool _write_point_based_skinning_and_blend_shapes(const UsdStageRefPtr &p
 		return true;
 	}
 
-	static void _collect_animation_players(Node *p_node, Vector<AnimationPlayer *> *r_players) {
-		ERR_FAIL_NULL(p_node);
-		ERR_FAIL_NULL(r_players);
-		if (AnimationPlayer *player = Object::cast_to<AnimationPlayer>(p_node)) {
+static void _collect_animation_players(Node *p_node, Vector<AnimationPlayer *> *r_players) {
+	ERR_FAIL_NULL(p_node);
+	ERR_FAIL_NULL(r_players);
+	if (AnimationPlayer *player = Object::cast_to<AnimationPlayer>(p_node)) {
 			r_players->push_back(player);
 		}
 		for (int i = 0; i < p_node->get_child_count(); i++) {
@@ -5899,8 +5905,10 @@ static bool _write_point_based_skinning_and_blend_shapes(const UsdStageRefPtr &p
 		return sample_times;
 	}
 
-	static void _write_saved_skeleton_animations(const UsdStageRefPtr &p_stage, Node *p_scene_root, const HashMap<ObjectID, SdfPath> &p_saved_paths) {
+static void _write_saved_skeleton_animations(const UsdStageRefPtr &p_stage, Node *p_scene_root, const HashMap<ObjectID, SdfPath> &p_saved_paths, bool p_preserve_source_animation_paths = false) {
 		ERR_FAIL_NULL(p_scene_root);
+		ERR_FAIL_COND(p_stage == nullptr);
+		const SdfLayerHandle root_layer = p_stage->GetRootLayer();
 		Vector<AnimationPlayer *> animation_players;
 		_collect_animation_players(p_scene_root, &animation_players);
 		if (animation_players.is_empty()) {
@@ -6117,14 +6125,42 @@ static bool _write_point_based_skinning_and_blend_shapes(const UsdStageRefPtr &p
 					Vector<double> rotation_sample_times = _convert_authored_time_codes_to_seconds(animation_metadata.get("usd:rotation_time_codes", Array()), time_codes_per_second, start_time_code);
 					Vector<double> scale_sample_times = _convert_authored_time_codes_to_seconds(animation_metadata.get("usd:scale_time_codes", Array()), time_codes_per_second, start_time_code);
 					Vector<double> blend_shape_sample_times = _convert_authored_time_codes_to_seconds(animation_metadata.get("usd:blend_shape_weight_time_codes", Array()), time_codes_per_second, start_time_code);
-					UsdSkelAnimation usd_animation = UsdSkelAnimation::Define(p_stage, skeleton_saved_path.AppendChild(TfToken(_make_valid_identifier(String(animation_name_sname)).utf8().get_data())));
+
+					UsdSkelAnimation usd_animation;
+					SdfLayerHandle animation_layer = root_layer;
+					if (p_preserve_source_animation_paths) {
+						const String source_animation_prim_path = animation_metadata.get("usd:animation_prim_path", String());
+						if (source_animation_prim_path.is_empty()) {
+							continue;
+						}
+						const SdfPath source_animation_path(source_animation_prim_path.utf8().get_data());
+						UsdPrim existing_animation_prim = p_stage->GetPrimAtPath(source_animation_path);
+						if (!existing_animation_prim || !existing_animation_prim.IsA<UsdSkelAnimation>()) {
+							continue;
+						}
+						usd_animation = UsdSkelAnimation(existing_animation_prim);
+						const SdfLayerHandle existing_animation_layer = _get_strongest_prim_stack_layer(existing_animation_prim);
+						if (existing_animation_layer) {
+							animation_layer = existing_animation_layer;
+						}
+					} else {
+						usd_animation = UsdSkelAnimation::Define(p_stage, skeleton_saved_path.AppendChild(TfToken(_make_valid_identifier(String(animation_name_sname)).utf8().get_data())));
+						const SdfLayerHandle created_animation_layer = _get_strongest_prim_stack_layer(usd_animation.GetPrim());
+						if (created_animation_layer) {
+							animation_layer = created_animation_layer;
+						}
+					}
+					if (!usd_animation) {
+						continue;
+					}
+
 					if (joint_targets.size() > 0) {
 						VtArray<TfToken> joints;
 						joints.resize(joint_targets.size());
 						for (int joint_index = 0; joint_index < joint_targets.size(); joint_index++) {
 							joints[joint_index] = TfToken(joint_targets[joint_index].joint_path.utf8().get_data());
 						}
-						usd_animation.CreateJointsAttr().Set(joints);
+						_set_usd_attribute_preserving_layer(p_stage, usd_animation.CreateJointsAttr(), joints, animation_layer);
 					}
 
 					if (joint_targets.size() > 0) {
@@ -6165,7 +6201,7 @@ static bool _write_point_based_skinning_and_blend_shapes(const UsdStageRefPtr &p
 								}
 								translations[joint_index] = GfVec3f(value.x, value.y, value.z);
 							}
-							usd_animation.CreateTranslationsAttr().Set(translations);
+							_set_usd_attribute_preserving_layer(p_stage, usd_animation.CreateTranslationsAttr(), translations, animation_layer);
 						} else if (has_authored_translations && !translation_sample_times.is_empty()) {
 							const UsdAttribute translations_attr = usd_animation.CreateTranslationsAttr();
 							for (int sample_index = 0; sample_index < translation_sample_times.size(); sample_index++) {
@@ -6179,7 +6215,7 @@ static bool _write_point_based_skinning_and_blend_shapes(const UsdStageRefPtr &p
 									}
 									translations[joint_index] = GfVec3f(value.x, value.y, value.z);
 								}
-								translations_attr.Set(translations, UsdTimeCode(start_time_code + sample_time_seconds * time_codes_per_second));
+								_set_usd_attribute_preserving_layer(p_stage, translations_attr, translations, animation_layer, UsdTimeCode(start_time_code + sample_time_seconds * time_codes_per_second));
 							}
 						}
 
@@ -6193,7 +6229,7 @@ static bool _write_point_based_skinning_and_blend_shapes(const UsdStageRefPtr &p
 								}
 								rotations[joint_index] = GfQuatf(value.w, value.x, value.y, value.z);
 							}
-							usd_animation.CreateRotationsAttr().Set(rotations);
+							_set_usd_attribute_preserving_layer(p_stage, usd_animation.CreateRotationsAttr(), rotations, animation_layer);
 						} else if (has_authored_rotations && !rotation_sample_times.is_empty()) {
 							const UsdAttribute rotations_attr = usd_animation.CreateRotationsAttr();
 							for (int sample_index = 0; sample_index < rotation_sample_times.size(); sample_index++) {
@@ -6207,7 +6243,7 @@ static bool _write_point_based_skinning_and_blend_shapes(const UsdStageRefPtr &p
 									}
 									rotations[joint_index] = GfQuatf(value.w, value.x, value.y, value.z);
 								}
-								rotations_attr.Set(rotations, UsdTimeCode(start_time_code + sample_time_seconds * time_codes_per_second));
+								_set_usd_attribute_preserving_layer(p_stage, rotations_attr, rotations, animation_layer, UsdTimeCode(start_time_code + sample_time_seconds * time_codes_per_second));
 							}
 						}
 
@@ -6221,7 +6257,7 @@ static bool _write_point_based_skinning_and_blend_shapes(const UsdStageRefPtr &p
 								}
 								scales[joint_index] = GfVec3h((GfHalf)value.x, (GfHalf)value.y, (GfHalf)value.z);
 							}
-							usd_animation.CreateScalesAttr().Set(scales);
+							_set_usd_attribute_preserving_layer(p_stage, usd_animation.CreateScalesAttr(), scales, animation_layer);
 						} else if (has_authored_scales && !scale_sample_times.is_empty()) {
 							const UsdAttribute scales_attr = usd_animation.CreateScalesAttr();
 							for (int sample_index = 0; sample_index < scale_sample_times.size(); sample_index++) {
@@ -6235,7 +6271,7 @@ static bool _write_point_based_skinning_and_blend_shapes(const UsdStageRefPtr &p
 									}
 									scales[joint_index] = GfVec3h((GfHalf)value.x, (GfHalf)value.y, (GfHalf)value.z);
 								}
-								scales_attr.Set(scales, UsdTimeCode(start_time_code + sample_time_seconds * time_codes_per_second));
+								_set_usd_attribute_preserving_layer(p_stage, scales_attr, scales, animation_layer, UsdTimeCode(start_time_code + sample_time_seconds * time_codes_per_second));
 							}
 						}
 					}
@@ -6255,7 +6291,7 @@ static bool _write_point_based_skinning_and_blend_shapes(const UsdStageRefPtr &p
 						for (int export_index = 0; export_index < blend_shape_targets.size(); export_index++) {
 							blend_shape_tokens[export_index] = TfToken(blend_shape_targets[export_index].primary_name.utf8().get_data());
 						}
-						usd_animation.CreateBlendShapesAttr().Set(blend_shape_tokens);
+						_set_usd_attribute_preserving_layer(p_stage, usd_animation.CreateBlendShapesAttr(), blend_shape_tokens, animation_layer);
 
 						if (has_authored_blend_shape_weights && blend_shape_weights_constant) {
 							VtArray<float> saved_weights;
@@ -6267,7 +6303,7 @@ static bool _write_point_based_skinning_and_blend_shapes(const UsdStageRefPtr &p
 								}
 								saved_weights[export_index] = source_weight;
 							}
-							usd_animation.CreateBlendShapeWeightsAttr().Set(saved_weights);
+							_set_usd_attribute_preserving_layer(p_stage, usd_animation.CreateBlendShapeWeightsAttr(), saved_weights, animation_layer);
 						} else if (has_authored_blend_shape_weights && !blend_shape_sample_times.is_empty()) {
 							const UsdAttribute blend_shape_weights_attr = usd_animation.CreateBlendShapeWeightsAttr();
 							for (int sample_index = 0; sample_index < blend_shape_sample_times.size(); sample_index++) {
@@ -6285,7 +6321,7 @@ static bool _write_point_based_skinning_and_blend_shapes(const UsdStageRefPtr &p
 									}
 									saved_weights[export_index] = source_weight;
 								}
-								blend_shape_weights_attr.Set(saved_weights, UsdTimeCode(start_time_code + sample_time_seconds * time_codes_per_second));
+								_set_usd_attribute_preserving_layer(p_stage, blend_shape_weights_attr, saved_weights, animation_layer, UsdTimeCode(start_time_code + sample_time_seconds * time_codes_per_second));
 							}
 						}
 					}
@@ -6296,7 +6332,7 @@ static bool _write_point_based_skinning_and_blend_shapes(const UsdStageRefPtr &p
 				if (!animation_targets.empty()) {
 					UsdRelationship animation_source = skeleton_saved_path.IsEmpty() ? UsdRelationship() : p_stage->GetPrimAtPath(skeleton_saved_path).CreateRelationship(TfToken("skel:animationSource"), false);
 					if (animation_source) {
-						animation_source.SetTargets(animation_targets);
+						_set_usd_relationship_targets_preserving_layer(p_stage, animation_source, animation_targets, root_layer);
 					}
 				}
 			}
@@ -6559,6 +6595,14 @@ static bool _write_point_based_skinning_and_blend_shapes(const UsdStageRefPtr &p
 	}
 
 public:
+	static void collect_animation_players_for_source_save(Node *p_node, Vector<AnimationPlayer *> *r_players) {
+		_collect_animation_players(p_node, r_players);
+	}
+
+	static void write_saved_skeleton_animations_for_source_save(const UsdStageRefPtr &p_stage, Node *p_scene_root, const HashMap<ObjectID, SdfPath> &p_saved_paths) {
+		_write_saved_skeleton_animations(p_stage, p_scene_root, p_saved_paths, true);
+	}
+
 	Error save(const Ref<PackedScene> &p_scene, const String &p_path) const {
 		ERR_FAIL_COND_V_MSG(p_scene.is_null(), ERR_INVALID_PARAMETER, "USD saver requires a valid PackedScene resource.");
 
@@ -6657,6 +6701,11 @@ struct SourceStageInstanceSaveInfo {
 	Dictionary stage_variant_sets;
 };
 
+struct SourceLoadedRigSaveInfo {
+	String source_path;
+	String source_absolute_path;
+};
+
 struct CompositionBoundaryNodeState {
 	Node *node = nullptr;
 };
@@ -6677,6 +6726,159 @@ void _report_usd_save_mode(const String &p_message, bool p_warning = false) {
 	} else {
 		print_line(report);
 	}
+}
+
+bool _generated_node_state_matches(Node *p_current, Node *p_expected, String *r_reason);
+
+bool _node_trees_match_for_source_rig_save(Node *p_current, Node *p_expected, String *r_reason) {
+	ERR_FAIL_NULL_V(p_current, false);
+	ERR_FAIL_NULL_V(p_expected, false);
+
+	if (!_generated_node_state_matches(p_current, p_expected, r_reason)) {
+		return false;
+	}
+
+	AnimationPlayer *current_player = Object::cast_to<AnimationPlayer>(p_current);
+	AnimationPlayer *expected_player = Object::cast_to<AnimationPlayer>(p_expected);
+	if (current_player != nullptr || expected_player != nullptr) {
+		return current_player != nullptr && expected_player != nullptr;
+	}
+
+	if (p_current->get_child_count() != p_expected->get_child_count()) {
+		if (r_reason != nullptr) {
+			*r_reason = vformat("child count changed from %d to %d", p_expected->get_child_count(), p_current->get_child_count());
+		}
+		return false;
+	}
+
+	for (int i = 0; i < p_current->get_child_count(); i++) {
+		String child_reason;
+		if (!_node_trees_match_for_source_rig_save(p_current->get_child(i), p_expected->get_child(i), &child_reason)) {
+			if (r_reason != nullptr) {
+				*r_reason = vformat("%s -> %s", p_current->get_child(i)->get_name(), child_reason);
+			}
+			return false;
+		}
+	}
+
+	return true;
+}
+
+bool _scene_has_supported_source_skeleton_animations(Node *p_root) {
+	ERR_FAIL_NULL_V(p_root, false);
+
+	Vector<AnimationPlayer *> animation_players;
+	UsdSceneSaver::collect_animation_players_for_source_save(p_root, &animation_players);
+	bool found_source_animation = false;
+	for (int player_index = 0; player_index < animation_players.size(); player_index++) {
+		AnimationPlayer *player = animation_players[player_index];
+		LocalVector<StringName> animation_names;
+		player->get_animation_list(&animation_names);
+		for (uint32_t animation_name_index = 0; animation_name_index < animation_names.size(); animation_name_index++) {
+			Ref<Animation> animation = player->get_animation(animation_names[animation_name_index]);
+			if (animation.is_null() || animation->get_track_count() == 0) {
+				continue;
+			}
+			const Dictionary metadata = _get_usd_metadata(animation.ptr());
+			const String animation_prim_path = metadata.get("usd:animation_prim_path", String());
+			if (animation_prim_path.is_empty()) {
+				return false;
+			}
+			found_source_animation = true;
+		}
+	}
+
+	return found_source_animation;
+}
+
+void _collect_source_prim_saved_paths(Node *p_node, HashMap<ObjectID, SdfPath> *r_saved_paths) {
+	ERR_FAIL_NULL(p_node);
+	ERR_FAIL_NULL(r_saved_paths);
+
+	const Dictionary metadata = _get_usd_metadata(p_node);
+	const String prim_path = metadata.get("usd:prim_path", String());
+	if (!prim_path.is_empty()) {
+		r_saved_paths->insert(p_node->get_instance_id(), SdfPath(prim_path.utf8().get_data()));
+	}
+
+	for (int i = 0; i < p_node->get_child_count(); i++) {
+		_collect_source_prim_saved_paths(p_node->get_child(i), r_saved_paths);
+	}
+}
+
+static SdfLayerHandle _get_strongest_property_stack_layer(const UsdProperty &p_property) {
+	if (!p_property) {
+		return SdfLayerHandle();
+	}
+
+	const SdfPropertySpecHandleVector property_stack = p_property.GetPropertyStack(UsdTimeCode::Default());
+	for (int i = 0; i < (int)property_stack.size(); i++) {
+		if (!property_stack[i]) {
+			continue;
+		}
+		SdfLayerHandle layer = property_stack[i]->GetLayer();
+		if (layer) {
+			return layer;
+		}
+	}
+
+	return SdfLayerHandle();
+}
+
+static SdfLayerHandle _get_strongest_prim_stack_layer(const UsdPrim &p_prim) {
+	if (!p_prim) {
+		return SdfLayerHandle();
+	}
+
+	const SdfPrimSpecHandleVector prim_stack = p_prim.GetPrimStack();
+	for (int i = 0; i < (int)prim_stack.size(); i++) {
+		if (!prim_stack[i]) {
+			continue;
+		}
+		SdfLayerHandle layer = prim_stack[i]->GetLayer();
+		if (layer) {
+			return layer;
+		}
+	}
+
+	return SdfLayerHandle();
+}
+
+template <typename T>
+static bool _set_usd_attribute_preserving_layer(const UsdStageRefPtr &p_stage, const UsdAttribute &p_attribute, const T &p_value, const SdfLayerHandle &p_fallback_layer, UsdTimeCode p_time) {
+	if (!p_attribute) {
+		return false;
+	}
+
+	const UsdEditTarget previous_edit_target = p_stage->GetEditTarget();
+	const SdfLayerHandle target_layer = _get_strongest_property_stack_layer(p_attribute);
+	const SdfLayerHandle edit_layer = target_layer ? target_layer : p_fallback_layer;
+	if (edit_layer) {
+		p_stage->SetEditTarget(UsdEditTarget(edit_layer));
+	}
+	const bool ok = p_attribute.Set(p_value, p_time);
+	if (edit_layer) {
+		p_stage->SetEditTarget(previous_edit_target);
+	}
+	return ok;
+}
+
+static bool _set_usd_relationship_targets_preserving_layer(const UsdStageRefPtr &p_stage, const UsdRelationship &p_relationship, const SdfPathVector &p_targets, const SdfLayerHandle &p_fallback_layer) {
+	if (!p_relationship) {
+		return false;
+	}
+
+	const UsdEditTarget previous_edit_target = p_stage->GetEditTarget();
+	const SdfLayerHandle target_layer = _get_strongest_property_stack_layer(p_relationship);
+	const SdfLayerHandle edit_layer = target_layer ? target_layer : p_fallback_layer;
+	if (edit_layer) {
+		p_stage->SetEditTarget(UsdEditTarget(edit_layer));
+	}
+	const bool ok = p_relationship.SetTargets(p_targets);
+	if (edit_layer) {
+		p_stage->SetEditTarget(previous_edit_target);
+	}
+	return ok;
 }
 
 bool _transforms_equal_approx(const Transform3D &p_left, const Transform3D &p_right) {
@@ -7069,6 +7271,61 @@ Error _create_usdz_package_from_extracted_files(const String &p_extracted_direct
 	return saved ? OK : ERR_CANT_CREATE;
 }
 
+Error _author_source_loaded_skeleton_animation_edits_in_root_layer(const String &p_root_layer_absolute_path, Node *p_scene_root) {
+	ERR_FAIL_NULL_V(p_scene_root, ERR_INVALID_PARAMETER);
+
+	SdfLayerRefPtr root_layer = SdfLayer::FindOrOpen(p_root_layer_absolute_path.utf8().get_data());
+	ERR_FAIL_COND_V_MSG(!root_layer, ERR_CANT_OPEN, vformat("Failed to open USD root layer for source-aware rig save: %s", p_root_layer_absolute_path));
+
+	UsdStageRefPtr stage = UsdStage::Open(root_layer, UsdStage::LoadAll);
+	ERR_FAIL_COND_V_MSG(!stage, ERR_CANT_OPEN, vformat("Failed to compose USD root layer for source-aware rig save: %s", p_root_layer_absolute_path));
+
+	HashMap<ObjectID, SdfPath> source_saved_paths;
+	_collect_source_prim_saved_paths(p_scene_root, &source_saved_paths);
+	UsdSceneSaver::write_saved_skeleton_animations_for_source_save(stage, p_scene_root, source_saved_paths);
+
+	const bool saved = root_layer->Save();
+	return saved ? OK : ERR_CANT_CREATE;
+}
+
+Error _save_source_usd_layer_with_skeleton_animation_edits(const String &p_source_absolute_path, const String &p_destination_absolute_path, const String &p_destination_file_name, Node *p_scene_root) {
+	Error temp_dir_error = OK;
+	Ref<DirAccess> temp_dir = DirAccess::create_temp("godot_usd_rig_save_", false, &temp_dir_error);
+	ERR_FAIL_COND_V_MSG(temp_dir_error != OK || temp_dir.is_null(), temp_dir_error != OK ? temp_dir_error : ERR_CANT_CREATE, "Failed to create temporary directory for source-aware USD rig save.");
+
+	const String temp_directory = temp_dir->get_current_dir();
+	const String temp_layer_path = temp_directory.path_join(p_destination_file_name.is_empty() ? ("stage." + p_source_absolute_path.get_extension()) : p_destination_file_name);
+	Error copy_error = _copy_file_absolute_preserving_contents(p_source_absolute_path, temp_layer_path);
+	ERR_FAIL_COND_V_MSG(copy_error != OK, copy_error, vformat("Failed to copy source USD layer for source-aware rig save: %s", p_source_absolute_path));
+
+	Error author_error = _author_source_loaded_skeleton_animation_edits_in_root_layer(temp_layer_path, p_scene_root);
+	ERR_FAIL_COND_V_MSG(author_error != OK, author_error, vformat("Failed to author source-aware USD rig edits into layer: %s", temp_layer_path));
+
+	return _copy_file_absolute_preserving_contents(temp_layer_path, p_destination_absolute_path);
+}
+
+Error _save_source_usdz_with_skeleton_animation_edits(const String &p_source_absolute_path, const String &p_destination_absolute_path, const String &p_destination_file_name, Node *p_scene_root) {
+	Error temp_dir_error = OK;
+	Ref<DirAccess> temp_dir = DirAccess::create_temp("godot_usdz_rig_save_", false, &temp_dir_error);
+	ERR_FAIL_COND_V_MSG(temp_dir_error != OK || temp_dir.is_null(), temp_dir_error != OK ? temp_dir_error : ERR_CANT_CREATE, "Failed to create temporary directory for source-aware USDZ rig save.");
+
+	const String temp_directory = temp_dir->get_current_dir();
+	String root_layer_path;
+	Vector<String> package_file_paths;
+	Error extract_error = _extract_usdz_package(p_source_absolute_path, temp_directory, &root_layer_path, &package_file_paths);
+	ERR_FAIL_COND_V_MSG(extract_error != OK, extract_error, vformat("Failed to extract source USDZ package for source-aware rig save: %s", p_source_absolute_path));
+
+	const String root_layer_absolute_path = temp_directory.path_join(root_layer_path);
+	Error author_error = _author_source_loaded_skeleton_animation_edits_in_root_layer(root_layer_absolute_path, p_scene_root);
+	ERR_FAIL_COND_V_MSG(author_error != OK, author_error, vformat("Failed to author source-aware USDZ rig edits into root layer: %s", root_layer_path));
+
+	const String temp_package_path = temp_directory.path_join(p_destination_file_name.is_empty() ? "stage.usdz" : p_destination_file_name);
+	Error package_error = _create_usdz_package_from_extracted_files(temp_directory, package_file_paths, root_layer_path, temp_package_path);
+	ERR_FAIL_COND_V_MSG(package_error != OK, package_error, vformat("Failed to create USDZ package with source-aware rig edits: %s", p_destination_absolute_path));
+
+	return _copy_file_absolute_preserving_contents(temp_package_path, p_destination_absolute_path);
+}
+
 Error _save_source_usdz_with_variant_defaults(const String &p_source_absolute_path, const String &p_destination_absolute_path, const String &p_destination_file_name, const Dictionary &p_variant_selections) {
 	Error temp_dir_error = OK;
 	Ref<DirAccess> temp_dir = DirAccess::create_temp("godot_usdz_save_", false, &temp_dir_error);
@@ -7175,6 +7432,94 @@ bool _try_save_source_stage_instance(const Ref<PackedScene> &p_scene, const Stri
 	}
 	ERR_FAIL_COND_V_MSG(copy_error != OK, true, vformat("Failed to preserve source USD file while saving: %s -> %s", source_info.source_path, p_path));
 	_report_usd_save_mode(vformat("preserved source USD file unchanged: %s -> %s", source_info.source_path, p_path));
+	return true;
+}
+
+bool _try_get_source_loaded_rig_save_info(const Ref<PackedScene> &p_scene, const String &p_required_source_extension, SourceLoadedRigSaveInfo *r_info) {
+	ERR_FAIL_NULL_V(r_info, false);
+	Node *root = p_scene->instantiate();
+	ERR_FAIL_NULL_V_MSG(root, false, "USD saver could not instantiate the PackedScene.");
+
+	const Dictionary metadata = _get_usd_metadata(root);
+	if (!(bool)metadata.get("usd:read_only_loader", false)) {
+		memdelete(root);
+		return false;
+	}
+
+	const String source_path = metadata.get("usd:source_path", (String)metadata.get("usd:source_identifier", String()));
+	if (source_path.is_empty()) {
+		memdelete(root);
+		return false;
+	}
+
+	const String source_absolute_path = _get_absolute_path(source_path);
+	const String source_extension = source_absolute_path.get_extension().to_lower();
+	if (source_extension != p_required_source_extension) {
+		memdelete(root);
+		return false;
+	}
+
+	if (!_scene_has_supported_source_skeleton_animations(root)) {
+		memdelete(root);
+		return false;
+	}
+
+	Error load_error = OK;
+	Ref<PackedScene> source_scene = ResourceLoader::load(source_path, "PackedScene", ResourceFormatLoader::CACHE_MODE_IGNORE, &load_error);
+	if (source_scene.is_null() || load_error != OK) {
+		memdelete(root);
+		return false;
+	}
+
+	Node *source_root = source_scene->instantiate();
+	if (source_root == nullptr) {
+		memdelete(root);
+		return false;
+	}
+
+	String mismatch_reason;
+	const bool matches_source_structure = _node_trees_match_for_source_rig_save(root, source_root, &mismatch_reason);
+	memdelete(source_root);
+	if (!matches_source_structure) {
+		WARN_PRINT(vformat("USD source-aware rig save fell back to composed export because the imported scene structure no longer matches the source USD scene (%s).", mismatch_reason));
+		memdelete(root);
+		return false;
+	}
+
+	r_info->source_path = source_path;
+	r_info->source_absolute_path = source_absolute_path;
+	memdelete(root);
+	return true;
+}
+
+bool _try_save_source_loaded_rig_scene(const Ref<PackedScene> &p_scene, const String &p_path, Error *r_error) {
+	const String destination_extension = p_path.get_extension().to_lower();
+	if (!_is_usd_scene_extension(destination_extension)) {
+		return false;
+	}
+
+	SourceLoadedRigSaveInfo source_info;
+	if (!_try_get_source_loaded_rig_save_info(p_scene, destination_extension, &source_info)) {
+		return false;
+	}
+
+	Node *root = p_scene->instantiate();
+	ERR_FAIL_NULL_V_MSG(root, false, "USD saver could not instantiate the PackedScene for source-aware rig save.");
+
+	const String destination_absolute_path = _get_absolute_path(p_path);
+	Error save_error = ERR_UNAVAILABLE;
+	if (destination_extension == "usdz") {
+		save_error = _save_source_usdz_with_skeleton_animation_edits(source_info.source_absolute_path, destination_absolute_path, p_path.get_file(), root);
+	} else {
+		save_error = _save_source_usd_layer_with_skeleton_animation_edits(source_info.source_absolute_path, destination_absolute_path, p_path.get_file(), root);
+	}
+	memdelete(root);
+
+	if (r_error != nullptr) {
+		*r_error = save_error;
+	}
+	ERR_FAIL_COND_V_MSG(save_error != OK, true, vformat("Failed source-aware USD rig save: %s -> %s", source_info.source_path, p_path));
+	_report_usd_save_mode(vformat("preserved source %s structure and authored source-aware UsdSkelAnimation edits in place: %s -> %s", destination_extension.to_upper(), source_info.source_path, p_path));
 	return true;
 }
 
@@ -7936,6 +8281,7 @@ Ref<Resource> UsdSceneFormatLoader::load(const String &p_path, const String &p_o
 	} else {
 		UsdSceneBuilder builder(stage);
 		scene_root = builder.build(p_path.get_file().get_basename());
+		_set_usd_metadata(scene_root, "usd:source_path", p_path);
 	}
 	ERR_FAIL_NULL_V_MSG(scene_root, Ref<Resource>(), vformat("Failed to build Godot scene from USD stage: %s", p_path));
 
@@ -8004,6 +8350,11 @@ Error UsdSceneFormatSaver::save(const Ref<Resource> &p_resource, const String &p
 	Error source_stage_save_error = OK;
 	if (_try_save_source_stage_instance(packed_scene, p_path, &source_stage_save_error)) {
 		return source_stage_save_error;
+	}
+
+	Error source_rig_save_error = OK;
+	if (_try_save_source_loaded_rig_scene(packed_scene, p_path, &source_rig_save_error)) {
+		return source_rig_save_error;
 	}
 
 	UsdSceneSaver saver;
