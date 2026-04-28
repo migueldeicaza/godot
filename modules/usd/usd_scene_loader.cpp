@@ -47,9 +47,12 @@
 #include "scene/3d/path_3d.h"
 #include "scene/3d/skeleton_3d.h"
 #include "scene/3d/world_environment.h"
+#include "scene/animation/animation_player.h"
 #include "scene/main/node.h"
 #include "scene/main/scene_tree.h"
 #include "scene/resources/3d/primitive_meshes.h"
+#include "scene/resources/animation.h"
+#include "scene/resources/animation_library.h"
 #include "scene/resources/curve.h"
 #include "scene/resources/environment.h"
 #include "scene/resources/image_texture.h"
@@ -117,6 +120,7 @@
 #include <pxr/usd/usdShade/material.h>
 #include <pxr/usd/usdShade/materialBindingAPI.h>
 #include <pxr/usd/usdShade/shader.h>
+#include <pxr/usd/usdSkel/animation.h>
 #include <pxr/usd/usdSkel/skeleton.h>
 
 #include <algorithm>
@@ -2263,6 +2267,11 @@ class UsdSceneBuilder {
 		return p_joint_path.substr(slash + 1);
 	}
 
+	static Quaternion _gf_quat_to_godot(const GfQuatf &p_quat) {
+		const GfVec3f imaginary = p_quat.GetImaginary();
+		return Quaternion(imaginary[0], imaginary[1], imaginary[2], p_quat.GetReal());
+	}
+
 	static Ref<Curve3D> _build_linear_curve3d(const VtArray<GfVec3f> &p_points, int p_point_offset, int p_point_count, bool p_closed) {
 		ERR_FAIL_COND_V(p_point_count < 2, Ref<Curve3D>());
 
@@ -2722,6 +2731,280 @@ class UsdSceneBuilder {
 		}
 	}
 
+	Node *_find_node_for_prim_path(Node *p_root, const String &p_prim_path) const {
+		ERR_FAIL_NULL_V(p_root, nullptr);
+		const Dictionary metadata = _get_usd_metadata(p_root);
+		if ((String)metadata.get("usd:prim_path", String()) == p_prim_path) {
+			return p_root;
+		}
+
+		for (int i = 0; i < p_root->get_child_count(); i++) {
+			if (Node *match = _find_node_for_prim_path(p_root->get_child(i), p_prim_path)) {
+				return match;
+			}
+		}
+
+		return nullptr;
+	}
+
+	String _make_unique_animation_name(const Ref<AnimationLibrary> &p_library, const String &p_base_name) const {
+		String animation_name = p_base_name.is_empty() ? String("Animation") : p_base_name;
+		if (!p_library.is_valid()) {
+			return animation_name;
+		}
+
+		if (!p_library->has_animation(animation_name)) {
+			return animation_name;
+		}
+
+		for (int suffix = 1;; suffix++) {
+			const String candidate = vformat("%s_%d", animation_name, suffix);
+			if (!p_library->has_animation(candidate)) {
+				return candidate;
+			}
+		}
+	}
+
+	AnimationPlayer *_get_or_create_animation_player(Node3D *p_root) const {
+		ERR_FAIL_NULL_V(p_root, nullptr);
+
+		for (int i = 0; i < p_root->get_child_count(); i++) {
+			if (AnimationPlayer *existing = Object::cast_to<AnimationPlayer>(p_root->get_child(i))) {
+				return existing;
+			}
+		}
+
+		String player_name = "USDAnimationPlayer";
+		for (int suffix = 1; p_root->get_node_or_null(NodePath(player_name)) != nullptr; suffix++) {
+			player_name = vformat("USDAnimationPlayer%d", suffix);
+		}
+
+		AnimationPlayer *player = memnew(AnimationPlayer);
+		player->set_name(player_name);
+		player->set_root_node(NodePath(".."));
+		p_root->add_child(player);
+
+		Ref<AnimationLibrary> library;
+		library.instantiate();
+		player->add_animation_library("", library);
+		return player;
+	}
+
+	bool _append_baked_skeleton_animation(Node3D *p_scene_root, Skeleton3D *p_skeleton, const UsdSkelAnimation &p_animation) const {
+		ERR_FAIL_NULL_V(p_scene_root, false);
+		ERR_FAIL_NULL_V(p_skeleton, false);
+		ERR_FAIL_COND_V(!p_animation, false);
+
+		VtArray<TfToken> animation_joints;
+		if (!p_animation.GetJointsAttr().Get(&animation_joints, time) || animation_joints.empty()) {
+			return false;
+		}
+
+		HashMap<String, int> bone_index_by_joint_path;
+		for (int bone_index = 0; bone_index < p_skeleton->get_bone_count(); bone_index++) {
+			if (!p_skeleton->has_bone_meta(bone_index, StringName("usd_joint_path"))) {
+				continue;
+			}
+			bone_index_by_joint_path.insert((String)p_skeleton->get_bone_meta(bone_index, StringName("usd_joint_path")), bone_index);
+		}
+
+		UsdAttribute translations_attr = p_animation.GetTranslationsAttr();
+		UsdAttribute rotations_attr = p_animation.GetRotationsAttr();
+		UsdAttribute scales_attr = p_animation.GetScalesAttr();
+
+		const bool has_translations = translations_attr && translations_attr.HasAuthoredValueOpinion();
+		const bool has_rotations = rotations_attr && rotations_attr.HasAuthoredValueOpinion();
+		const bool has_scales = scales_attr && scales_attr.HasAuthoredValueOpinion();
+		if (!has_translations && !has_rotations && !has_scales) {
+			return false;
+		}
+
+		std::vector<double> sample_times;
+		auto append_time_samples = [&sample_times](const UsdAttribute &p_attr) {
+			if (!p_attr || !p_attr.HasAuthoredValueOpinion()) {
+				return;
+			}
+			std::vector<double> attr_times;
+			p_attr.GetTimeSamples(&attr_times);
+			sample_times.insert(sample_times.end(), attr_times.begin(), attr_times.end());
+		};
+		append_time_samples(translations_attr);
+		append_time_samples(rotations_attr);
+		append_time_samples(scales_attr);
+		if (sample_times.empty()) {
+			sample_times.push_back(0.0);
+		}
+		std::sort(sample_times.begin(), sample_times.end());
+		sample_times.erase(std::unique(sample_times.begin(), sample_times.end()), sample_times.end());
+
+		const double time_codes_per_second = MAX(stage->GetTimeCodesPerSecond(), 1.0);
+		const double start_time = sample_times.front();
+		const double end_time = sample_times.back();
+
+		AnimationPlayer *player = _get_or_create_animation_player(p_scene_root);
+		ERR_FAIL_NULL_V(player, false);
+		Ref<AnimationLibrary> library = player->get_animation_library("");
+		if (library.is_null()) {
+			library.instantiate();
+			player->add_animation_library("", library);
+		}
+
+		Ref<Animation> animation;
+		animation.instantiate();
+		animation->set_step(1.0 / time_codes_per_second);
+
+		const String animation_name = _make_unique_animation_name(library, _node_name_for_prim(p_animation.GetPrim()));
+		animation->set_name(animation_name);
+		animation->set_length(MAX((end_time - start_time) / time_codes_per_second, 0.0));
+
+		const String skeleton_path = String(p_scene_root->get_path_to(p_skeleton));
+		bool added_any_tracks = false;
+
+		for (int joint_index = 0; joint_index < (int)animation_joints.size(); joint_index++) {
+			const String joint_path = _to_godot_string(animation_joints[joint_index].GetString());
+			const int *bone_index_ptr = bone_index_by_joint_path.getptr(joint_path);
+			if (bone_index_ptr == nullptr) {
+				continue;
+			}
+
+			const int bone_index = *bone_index_ptr;
+			const String track_path = skeleton_path + ":" + p_skeleton->get_bone_name(bone_index);
+			const Transform3D rest = p_skeleton->get_bone_rest(bone_index);
+			const Vector3 rest_position = rest.origin;
+			const Quaternion rest_rotation = rest.basis.get_rotation_quaternion();
+			const Vector3 rest_scale = rest.basis.get_scale();
+
+			bool add_position_track = false;
+			if (has_translations) {
+				for (double sample_time : sample_times) {
+					VtArray<GfVec3f> translations;
+					if (translations_attr.Get(&translations, sample_time) && joint_index < (int)translations.size()) {
+						const GfVec3f value = translations[joint_index];
+						if (!Vector3(value[0], value[1], value[2]).is_equal_approx(rest_position)) {
+							add_position_track = true;
+							break;
+						}
+					}
+				}
+			}
+
+			bool add_rotation_track = false;
+			if (has_rotations) {
+				for (double sample_time : sample_times) {
+					VtArray<GfQuatf> rotations;
+					if (rotations_attr.Get(&rotations, sample_time) && joint_index < (int)rotations.size()) {
+						if (!_gf_quat_to_godot(rotations[joint_index]).is_equal_approx(rest_rotation)) {
+							add_rotation_track = true;
+							break;
+						}
+					}
+				}
+			}
+
+			bool add_scale_track = false;
+			if (has_scales) {
+				for (double sample_time : sample_times) {
+					VtArray<GfVec3h> scales;
+					if (scales_attr.Get(&scales, sample_time) && joint_index < (int)scales.size()) {
+						const GfVec3h value = scales[joint_index];
+						if (!Vector3((real_t)value[0], (real_t)value[1], (real_t)value[2]).is_equal_approx(rest_scale)) {
+							add_scale_track = true;
+							break;
+						}
+					}
+				}
+			}
+
+			const int position_track = add_position_track ? animation->get_track_count() : -1;
+			if (add_position_track) {
+				animation->add_track(Animation::TYPE_POSITION_3D);
+				animation->track_set_path(position_track, NodePath(track_path));
+				animation->track_set_imported(position_track, true);
+			}
+
+			const int rotation_track = add_rotation_track ? animation->get_track_count() : -1;
+			if (add_rotation_track) {
+				animation->add_track(Animation::TYPE_ROTATION_3D);
+				animation->track_set_path(rotation_track, NodePath(track_path));
+				animation->track_set_imported(rotation_track, true);
+			}
+
+			const int scale_track = add_scale_track ? animation->get_track_count() : -1;
+			if (add_scale_track) {
+				animation->add_track(Animation::TYPE_SCALE_3D);
+				animation->track_set_path(scale_track, NodePath(track_path));
+				animation->track_set_imported(scale_track, true);
+			}
+
+			for (double sample_time : sample_times) {
+				const double key_time = (sample_time - start_time) / time_codes_per_second;
+
+				if (position_track >= 0) {
+					VtArray<GfVec3f> translations;
+					if (translations_attr.Get(&translations, sample_time) && joint_index < (int)translations.size()) {
+						const GfVec3f value = translations[joint_index];
+						animation->position_track_insert_key(position_track, key_time, Vector3(value[0], value[1], value[2]));
+						added_any_tracks = true;
+					}
+				}
+
+				if (rotation_track >= 0) {
+					VtArray<GfQuatf> rotations;
+					if (rotations_attr.Get(&rotations, sample_time) && joint_index < (int)rotations.size()) {
+						animation->rotation_track_insert_key(rotation_track, key_time, _gf_quat_to_godot(rotations[joint_index]));
+						added_any_tracks = true;
+					}
+				}
+
+				if (scale_track >= 0) {
+					VtArray<GfVec3h> scales;
+					if (scales_attr.Get(&scales, sample_time) && joint_index < (int)scales.size()) {
+						const GfVec3h value = scales[joint_index];
+						animation->scale_track_insert_key(scale_track, key_time, Vector3((real_t)value[0], (real_t)value[1], (real_t)value[2]));
+						added_any_tracks = true;
+					}
+				}
+			}
+		}
+
+		if (!added_any_tracks) {
+			return false;
+		}
+
+		library->add_animation(animation_name, animation);
+		return true;
+	}
+
+	void _append_skeleton_animations(Node3D *p_root) const {
+		ERR_FAIL_NULL(p_root);
+
+		for (const UsdPrim &prim : stage->Traverse()) {
+			if (!prim.IsA<UsdSkelSkeleton>()) {
+				continue;
+			}
+
+			Skeleton3D *skeleton = Object::cast_to<Skeleton3D>(_find_node_for_prim_path(p_root, _to_godot_string(prim.GetPath().GetString())));
+			if (skeleton == nullptr) {
+				continue;
+			}
+
+			UsdRelationship animation_source_rel = prim.GetRelationship(TfToken("skel:animationSource"));
+			if (!animation_source_rel) {
+				continue;
+			}
+
+			SdfPathVector targets;
+			animation_source_rel.GetTargets(&targets);
+			for (const SdfPath &target : targets) {
+				UsdPrim animation_prim = stage->GetPrimAtPath(target);
+				if (!animation_prim || !animation_prim.IsA<UsdSkelAnimation>()) {
+					continue;
+				}
+				_append_baked_skeleton_animation(p_root, skeleton, UsdSkelAnimation(animation_prim));
+			}
+		}
+	}
+
 public:
 	explicit UsdSceneBuilder(const UsdStageRefPtr &p_stage) :
 			stage(p_stage),
@@ -2766,6 +3049,8 @@ public:
 					: "No authored UsdLux lights were found on the USD stage.";
 			_append_preview_lighting(root, preview_reason);
 		}
+
+		_append_skeleton_animations(root);
 
 		return root;
 	}

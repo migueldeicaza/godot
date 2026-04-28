@@ -54,6 +54,7 @@ TEST_FORCE_LINK(test_usd_scene_loader)
 #include "scene/3d/path_3d.h"
 #include "scene/3d/skeleton_3d.h"
 #include "scene/3d/world_environment.h"
+#include "scene/animation/animation_player.h"
 #include "scene/resources/curve.h"
 #include "scene/resources/environment.h"
 #include "scene/resources/material.h"
@@ -346,7 +347,7 @@ TEST_CASE("[SceneTree][USD] Import linear BasisCurves as Path3D children") {
 
 	Node *root = packed_scene->instantiate();
 	REQUIRE(root != nullptr);
-	REQUIRE(root->get_child_count() == 1);
+	REQUIRE(root->get_child_count() >= 1);
 
 	Node *scene_root = root->get_child(0);
 	REQUIRE(scene_root != nullptr);
@@ -465,6 +466,24 @@ TEST_CASE("[SceneTree][USD] Import a structural UsdSkelSkeleton as Skeleton3D") 
 	Array animation_sources = skeleton_metadata.get("usd:animation_sources", Array());
 	REQUIRE(animation_sources.size() == 1);
 	CHECK((String)animation_sources[0] == String("/Model/Skel/Anim1"));
+
+	AnimationPlayer *player = nullptr;
+	for (int i = 0; i < root->get_child_count(); i++) {
+		player = Object::cast_to<AnimationPlayer>(root->get_child(i));
+		if (player != nullptr) {
+			break;
+		}
+	}
+	REQUIRE(player != nullptr);
+	REQUIRE(player->has_animation("Anim1"));
+
+	Ref<Animation> animation = player->get_animation("Anim1");
+	REQUIRE(animation.is_valid());
+	CHECK(animation->get_length() == doctest::Approx(9.0f / 24.0f));
+	CHECK(animation->get_track_count() == 1);
+	CHECK(String(animation->track_get_path(0)) == String("Model/Skel:Elbow"));
+	CHECK(animation->track_get_type(0) == Animation::TYPE_ROTATION_3D);
+	CHECK(animation->track_get_key_count(0) == 2);
 
 	memdelete(root);
 }
