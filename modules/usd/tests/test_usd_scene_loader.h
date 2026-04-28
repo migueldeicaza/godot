@@ -893,6 +893,65 @@ TEST_CASE("[SceneTree][USD] Import point-based USD blend shapes and bake blendSh
 	memdelete(root);
 }
 
+TEST_CASE("[SceneTree][USD] Preserve authored SkelAnimation sample domains even when some channels bake to no visible tracks") {
+	const String usd_path = TestUtils::get_data_path("usd/skel_animation_sparsity.usda");
+
+	Error err = OK;
+	Ref<PackedScene> packed_scene = ResourceLoader::load(usd_path, "PackedScene", ResourceFormatLoader::CACHE_MODE_IGNORE, &err);
+	REQUIRE_MESSAGE(err == OK, "USD sparse SkelAnimation load failed.");
+	REQUIRE(packed_scene.is_valid());
+
+	Node *root = packed_scene->instantiate();
+	REQUIRE(root != nullptr);
+
+	AnimationPlayer *player = nullptr;
+	for (int i = 0; i < root->get_child_count(); i++) {
+		player = Object::cast_to<AnimationPlayer>(root->get_child(i));
+		if (player != nullptr) {
+			break;
+		}
+	}
+	REQUIRE(player != nullptr);
+	REQUIRE(player->has_animation("Anim"));
+
+	Ref<Animation> animation = player->get_animation("Anim");
+	REQUIRE(animation.is_valid());
+	CHECK(animation->get_track_count() == 1);
+	if (animation->get_track_count() == 1) {
+		CHECK(animation->track_get_type(0) == Animation::TYPE_ROTATION_3D);
+		CHECK(String(animation->track_get_path(0)) == String("root/Model/Skel:joint1"));
+		CHECK(animation->track_get_key_count(0) >= 2);
+	}
+
+	Dictionary animation_metadata = animation->get_meta(StringName("usd"), Dictionary());
+	CHECK((bool)animation_metadata.get("usd:has_authored_translations", false));
+	CHECK((bool)animation_metadata.get("usd:has_authored_rotations", false));
+	CHECK((bool)animation_metadata.get("usd:has_authored_scales", false));
+	CHECK((bool)animation_metadata.get("usd:has_authored_blend_shape_weights", false));
+	CHECK((bool)animation_metadata.get("usd:translations_constant", true) == false);
+	CHECK((bool)animation_metadata.get("usd:scales_constant", true) == false);
+	CHECK((bool)animation_metadata.get("usd:blend_shape_weights_constant", true) == false);
+
+	Array translation_time_codes = animation_metadata.get("usd:translation_time_codes", Array());
+	Array rotation_time_codes = animation_metadata.get("usd:rotation_time_codes", Array());
+	Array scale_time_codes = animation_metadata.get("usd:scale_time_codes", Array());
+	Array blend_shape_weight_time_codes = animation_metadata.get("usd:blend_shape_weight_time_codes", Array());
+	REQUIRE(translation_time_codes.size() == 2);
+	REQUIRE(rotation_time_codes.size() == 2);
+	REQUIRE(scale_time_codes.size() == 2);
+	REQUIRE(blend_shape_weight_time_codes.size() == 2);
+	CHECK((double)translation_time_codes[0] == doctest::Approx(1.0));
+	CHECK((double)translation_time_codes[1] == doctest::Approx(9.0));
+	CHECK((double)rotation_time_codes[0] == doctest::Approx(5.0));
+	CHECK((double)rotation_time_codes[1] == doctest::Approx(10.0));
+	CHECK((double)scale_time_codes[0] == doctest::Approx(3.0));
+	CHECK((double)scale_time_codes[1] == doctest::Approx(7.0));
+	CHECK((double)blend_shape_weight_time_codes[0] == doctest::Approx(2.0));
+	CHECK((double)blend_shape_weight_time_codes[1] == doctest::Approx(8.0));
+
+	memdelete(root);
+}
+
 TEST_CASE("[SceneTree][USD] Add preview sun and environment when a stage has no authored lights") {
 	PreviewLightingModeScope preview_lighting_mode_scope;
 	preview_lighting_mode_scope.set(1);

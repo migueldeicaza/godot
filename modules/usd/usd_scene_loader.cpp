@@ -3725,6 +3725,15 @@ class UsdSceneBuilder {
 			}
 			animation_metadata["usd:scale_defaults"] = scale_defaults;
 		}
+
+		VtArray<float> default_blend_shape_weights;
+		if (has_blend_shape_weights && blend_shape_weights_attr.Get(&default_blend_shape_weights, UsdTimeCode::Default()) && default_blend_shape_weights.size() == animation_blend_shape_names.size()) {
+			Array blend_shape_defaults;
+			for (int blend_shape_index = 0; blend_shape_index < (int)default_blend_shape_weights.size(); blend_shape_index++) {
+				blend_shape_defaults.push_back(default_blend_shape_weights[blend_shape_index]);
+			}
+			animation_metadata["usd:blend_shape_weight_defaults"] = blend_shape_defaults;
+		}
 		_set_usd_metadata_entries(animation.ptr(), animation_metadata);
 
 		const String skeleton_path = String(p_scene_root->get_path_to(p_skeleton));
@@ -3946,7 +3955,7 @@ class UsdSceneBuilder {
 			}
 		}
 
-		if (!added_any_tracks) {
+		if (!added_any_tracks && !has_translations && !has_rotations && !has_scales && !has_blend_shape_weights) {
 			return false;
 		}
 
@@ -5874,6 +5883,22 @@ static bool _write_point_based_skinning_and_blend_shapes(const UsdStageRefPtr &p
 		}
 	}
 
+	static Vector<double> _convert_authored_time_codes_to_seconds(const Array &p_time_codes, double p_time_codes_per_second, double p_start_time_code) {
+		Vector<double> sample_times;
+		if (p_time_codes_per_second <= 0.0) {
+			return sample_times;
+		}
+		for (int i = 0; i < p_time_codes.size(); i++) {
+			const Variant &entry = p_time_codes[i];
+			if (entry.get_type() != Variant::FLOAT && entry.get_type() != Variant::INT) {
+				continue;
+			}
+			sample_times.push_back(((double)entry - p_start_time_code) / p_time_codes_per_second);
+		}
+		_sort_dedupe_sample_times(&sample_times);
+		return sample_times;
+	}
+
 	static void _write_saved_skeleton_animations(const UsdStageRefPtr &p_stage, Node *p_scene_root, const HashMap<ObjectID, SdfPath> &p_saved_paths) {
 		ERR_FAIL_NULL(p_scene_root);
 		Vector<AnimationPlayer *> animation_players;
@@ -5919,6 +5944,7 @@ static bool _write_point_based_skinning_and_blend_shapes(const UsdStageRefPtr &p
 						continue;
 					}
 					const Dictionary animation_metadata = _get_usd_metadata(animation.ptr());
+					const Array authored_blend_shape_names = animation_metadata.get("usd:blend_shape_names", Array());
 
 					const String skeleton_path = String(p_scene_root->get_path_to(skeleton));
 					HashMap<String, int> bone_index_by_joint_path;
@@ -6040,7 +6066,14 @@ static bool _write_point_based_skinning_and_blend_shapes(const UsdStageRefPtr &p
 									break;
 								}
 							}
-							if (has_any_track) {
+							bool authored_on_animation = false;
+							for (int authored_index = 0; authored_index < authored_blend_shape_names.size(); authored_index++) {
+								if ((String)authored_blend_shape_names[authored_index] == primary_name) {
+									authored_on_animation = true;
+									break;
+								}
+							}
+							if (has_any_track || authored_on_animation) {
 								blend_shape_targets.push_back(blend_shape_target);
 							}
 						}
@@ -6071,12 +6104,19 @@ static bool _write_point_based_skinning_and_blend_shapes(const UsdStageRefPtr &p
 					const bool has_authored_translations = (bool)animation_metadata.get("usd:has_authored_translations", false);
 					const bool has_authored_rotations = (bool)animation_metadata.get("usd:has_authored_rotations", false);
 					const bool has_authored_scales = (bool)animation_metadata.get("usd:has_authored_scales", false);
+					const bool has_authored_blend_shape_weights = (bool)animation_metadata.get("usd:has_authored_blend_shape_weights", false);
 					const bool translations_constant = (bool)animation_metadata.get("usd:translations_constant", false);
 					const bool rotations_constant = (bool)animation_metadata.get("usd:rotations_constant", false);
 					const bool scales_constant = (bool)animation_metadata.get("usd:scales_constant", false);
+					const bool blend_shape_weights_constant = (bool)animation_metadata.get("usd:blend_shape_weights_constant", false);
 					const Array translation_defaults = animation_metadata.get("usd:translation_defaults", Array());
 					const Array rotation_defaults = animation_metadata.get("usd:rotation_defaults", Array());
 					const Array scale_defaults = animation_metadata.get("usd:scale_defaults", Array());
+					const Array blend_shape_weight_defaults = animation_metadata.get("usd:blend_shape_weight_defaults", Array());
+					Vector<double> translation_sample_times = _convert_authored_time_codes_to_seconds(animation_metadata.get("usd:translation_time_codes", Array()), time_codes_per_second, start_time_code);
+					Vector<double> rotation_sample_times = _convert_authored_time_codes_to_seconds(animation_metadata.get("usd:rotation_time_codes", Array()), time_codes_per_second, start_time_code);
+					Vector<double> scale_sample_times = _convert_authored_time_codes_to_seconds(animation_metadata.get("usd:scale_time_codes", Array()), time_codes_per_second, start_time_code);
+					Vector<double> blend_shape_sample_times = _convert_authored_time_codes_to_seconds(animation_metadata.get("usd:blend_shape_weight_time_codes", Array()), time_codes_per_second, start_time_code);
 					UsdSkelAnimation usd_animation = UsdSkelAnimation::Define(p_stage, skeleton_saved_path.AppendChild(TfToken(_make_valid_identifier(String(animation_name_sname)).utf8().get_data())));
 					if (joint_targets.size() > 0) {
 						VtArray<TfToken> joints;
@@ -6096,6 +6136,24 @@ static bool _write_point_based_skinning_and_blend_shapes(const UsdStageRefPtr &p
 							has_rotation_tracks = has_rotation_tracks || joint_targets[joint_index].rotation_track >= 0;
 							has_scale_tracks = has_scale_tracks || joint_targets[joint_index].scale_track >= 0;
 						}
+						if (translation_sample_times.is_empty() && has_position_tracks) {
+							for (int joint_index = 0; joint_index < joint_targets.size(); joint_index++) {
+								_append_unique_track_key_times(animation, joint_targets[joint_index].position_track, &translation_sample_times);
+							}
+							_sort_dedupe_sample_times(&translation_sample_times);
+						}
+						if (rotation_sample_times.is_empty() && has_rotation_tracks) {
+							for (int joint_index = 0; joint_index < joint_targets.size(); joint_index++) {
+								_append_unique_track_key_times(animation, joint_targets[joint_index].rotation_track, &rotation_sample_times);
+							}
+							_sort_dedupe_sample_times(&rotation_sample_times);
+						}
+						if (scale_sample_times.is_empty() && has_scale_tracks) {
+							for (int joint_index = 0; joint_index < joint_targets.size(); joint_index++) {
+								_append_unique_track_key_times(animation, joint_targets[joint_index].scale_track, &scale_sample_times);
+							}
+							_sort_dedupe_sample_times(&scale_sample_times);
+						}
 
 						if (has_authored_translations && translations_constant) {
 							VtArray<GfVec3f> translations;
@@ -6108,10 +6166,10 @@ static bool _write_point_based_skinning_and_blend_shapes(const UsdStageRefPtr &p
 								translations[joint_index] = GfVec3f(value.x, value.y, value.z);
 							}
 							usd_animation.CreateTranslationsAttr().Set(translations);
-						} else if (has_position_tracks) {
+						} else if (has_authored_translations && !translation_sample_times.is_empty()) {
 							const UsdAttribute translations_attr = usd_animation.CreateTranslationsAttr();
-							for (int sample_index = 0; sample_index < sample_times.size(); sample_index++) {
-								const double sample_time_seconds = sample_times[sample_index];
+							for (int sample_index = 0; sample_index < translation_sample_times.size(); sample_index++) {
+								const double sample_time_seconds = translation_sample_times[sample_index];
 								VtArray<GfVec3f> translations;
 								translations.resize(joint_targets.size());
 								for (int joint_index = 0; joint_index < joint_targets.size(); joint_index++) {
@@ -6136,10 +6194,10 @@ static bool _write_point_based_skinning_and_blend_shapes(const UsdStageRefPtr &p
 								rotations[joint_index] = GfQuatf(value.w, value.x, value.y, value.z);
 							}
 							usd_animation.CreateRotationsAttr().Set(rotations);
-						} else if (has_rotation_tracks) {
+						} else if (has_authored_rotations && !rotation_sample_times.is_empty()) {
 							const UsdAttribute rotations_attr = usd_animation.CreateRotationsAttr();
-							for (int sample_index = 0; sample_index < sample_times.size(); sample_index++) {
-								const double sample_time_seconds = sample_times[sample_index];
+							for (int sample_index = 0; sample_index < rotation_sample_times.size(); sample_index++) {
+								const double sample_time_seconds = rotation_sample_times[sample_index];
 								VtArray<GfQuatf> rotations;
 								rotations.resize(joint_targets.size());
 								for (int joint_index = 0; joint_index < joint_targets.size(); joint_index++) {
@@ -6164,10 +6222,10 @@ static bool _write_point_based_skinning_and_blend_shapes(const UsdStageRefPtr &p
 								scales[joint_index] = GfVec3h((GfHalf)value.x, (GfHalf)value.y, (GfHalf)value.z);
 							}
 							usd_animation.CreateScalesAttr().Set(scales);
-						} else if (has_scale_tracks) {
+						} else if (has_authored_scales && !scale_sample_times.is_empty()) {
 							const UsdAttribute scales_attr = usd_animation.CreateScalesAttr();
-							for (int sample_index = 0; sample_index < sample_times.size(); sample_index++) {
-								const double sample_time_seconds = sample_times[sample_index];
+							for (int sample_index = 0; sample_index < scale_sample_times.size(); sample_index++) {
+								const double sample_time_seconds = scale_sample_times[sample_index];
 								VtArray<GfVec3h> scales;
 								scales.resize(joint_targets.size());
 								for (int joint_index = 0; joint_index < joint_targets.size(); joint_index++) {
@@ -6183,6 +6241,15 @@ static bool _write_point_based_skinning_and_blend_shapes(const UsdStageRefPtr &p
 					}
 
 					if (!blend_shape_targets.is_empty()) {
+						if (blend_shape_sample_times.is_empty()) {
+							for (int export_index = 0; export_index < blend_shape_targets.size(); export_index++) {
+								for (int spec_index = 0; spec_index < blend_shape_targets[export_index].track_indices.size(); spec_index++) {
+									_append_unique_track_key_times(animation, blend_shape_targets[export_index].track_indices[spec_index], &blend_shape_sample_times);
+								}
+							}
+							_sort_dedupe_sample_times(&blend_shape_sample_times);
+						}
+
 						VtArray<TfToken> blend_shape_tokens;
 						blend_shape_tokens.resize(blend_shape_targets.size());
 						for (int export_index = 0; export_index < blend_shape_targets.size(); export_index++) {
@@ -6190,23 +6257,36 @@ static bool _write_point_based_skinning_and_blend_shapes(const UsdStageRefPtr &p
 						}
 						usd_animation.CreateBlendShapesAttr().Set(blend_shape_tokens);
 
-						const UsdAttribute blend_shape_weights_attr = usd_animation.CreateBlendShapeWeightsAttr();
-						for (int sample_index = 0; sample_index < sample_times.size(); sample_index++) {
-							const double sample_time_seconds = sample_times[sample_index];
+						if (has_authored_blend_shape_weights && blend_shape_weights_constant) {
 							VtArray<float> saved_weights;
 							saved_weights.resize(blend_shape_targets.size());
 							for (int export_index = 0; export_index < blend_shape_targets.size(); export_index++) {
 								float source_weight = 0.0f;
-								for (int spec_index = 0; spec_index < blend_shape_targets[export_index].channel_specs.size(); spec_index++) {
-									const int track_index = blend_shape_targets[export_index].track_indices[spec_index];
-									if (track_index < 0) {
-										continue;
-									}
-									source_weight += animation->blend_shape_track_interpolate(track_index, sample_time_seconds) * blend_shape_targets[export_index].channel_specs[spec_index].weight;
+								if (export_index < blend_shape_weight_defaults.size()) {
+									source_weight = (float)(double)blend_shape_weight_defaults[export_index];
 								}
 								saved_weights[export_index] = source_weight;
 							}
-							blend_shape_weights_attr.Set(saved_weights, UsdTimeCode(start_time_code + sample_time_seconds * time_codes_per_second));
+							usd_animation.CreateBlendShapeWeightsAttr().Set(saved_weights);
+						} else if (has_authored_blend_shape_weights && !blend_shape_sample_times.is_empty()) {
+							const UsdAttribute blend_shape_weights_attr = usd_animation.CreateBlendShapeWeightsAttr();
+							for (int sample_index = 0; sample_index < blend_shape_sample_times.size(); sample_index++) {
+								const double sample_time_seconds = blend_shape_sample_times[sample_index];
+								VtArray<float> saved_weights;
+								saved_weights.resize(blend_shape_targets.size());
+								for (int export_index = 0; export_index < blend_shape_targets.size(); export_index++) {
+									float source_weight = 0.0f;
+									for (int spec_index = 0; spec_index < blend_shape_targets[export_index].channel_specs.size(); spec_index++) {
+										const int track_index = blend_shape_targets[export_index].track_indices[spec_index];
+										if (track_index < 0) {
+											continue;
+										}
+										source_weight += animation->blend_shape_track_interpolate(track_index, sample_time_seconds) * blend_shape_targets[export_index].channel_specs[spec_index].weight;
+									}
+									saved_weights[export_index] = source_weight;
+								}
+								blend_shape_weights_attr.Set(saved_weights, UsdTimeCode(start_time_code + sample_time_seconds * time_codes_per_second));
+							}
 						}
 					}
 
