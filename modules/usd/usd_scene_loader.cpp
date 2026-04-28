@@ -1913,10 +1913,10 @@ class UsdSceneBuilder {
 		}
 	}
 
-	Vector<UsdBlendShapeData> _read_mesh_blend_shapes(const UsdGeomMesh &p_mesh, int p_point_count, HashSet<String> *r_handled_attributes, Dictionary *r_mapping_notes) const {
+	Vector<UsdBlendShapeData> _read_point_based_blend_shapes(const UsdPrim &p_prim, int p_point_count, bool p_supports_normals, HashSet<String> *r_handled_attributes, Dictionary *r_mapping_notes) const {
 		Vector<UsdBlendShapeData> blend_shapes;
 
-		UsdSkelBindingAPI skel_binding_api(p_mesh.GetPrim());
+		UsdSkelBindingAPI skel_binding_api(p_prim);
 		UsdAttribute blend_shapes_attr = skel_binding_api.GetBlendShapesAttr();
 		UsdRelationship blend_shape_targets_rel = skel_binding_api.GetBlendShapeTargetsRel();
 		if (!blend_shapes_attr || !blend_shape_targets_rel) {
@@ -1979,7 +1979,9 @@ class UsdSceneBuilder {
 			VtArray<GfVec3f> normal_offsets;
 			const bool has_normal_offsets = blend_shape.GetNormalOffsetsAttr().Get(&normal_offsets, time) && !normal_offsets.empty();
 			if (has_normal_offsets) {
-				if ((int)normal_offsets.size() != (int)offsets.size()) {
+				if (!p_supports_normals) {
+					(*r_mapping_notes)["usd:blend_shape_status"] = "Point-based blend shape normalOffsets were authored, but Godot point primitives do not preserve normal deltas.";
+				} else if ((int)normal_offsets.size() != (int)offsets.size()) {
 					(*r_mapping_notes)["usd:blend_shape_status"] = "Blend shape normalOffsets did not match offsets; those normal deltas were skipped.";
 				} else {
 					for (int offset_index = 0; offset_index < (int)normal_offsets.size(); offset_index++) {
@@ -2040,32 +2042,32 @@ class UsdSceneBuilder {
 
 				VtArray<GfVec3f> inbetween_normal_offsets;
 				if (inbetween.GetNormalOffsets(&inbetween_normal_offsets)) {
-					inbetween_metadata["normal_offset_count"] = (int)inbetween_normal_offsets.size();
-					if (has_point_indices) {
-						if ((int)inbetween_normal_offsets.size() == (int)point_indices.size()) {
-							for (int offset_index = 0; offset_index < (int)inbetween_normal_offsets.size(); offset_index++) {
-								const int point_index = point_indices[offset_index];
-								if (point_index < 0 || point_index >= p_point_count) {
-									continue;
+					if (!p_supports_normals) {
+						(*r_mapping_notes)["usd:blend_shape_status"] = "Point-based blend shape inbetween normalOffsets were authored, but Godot point primitives do not preserve normal deltas.";
+					} else {
+						inbetween_metadata["normal_offset_count"] = (int)inbetween_normal_offsets.size();
+						if (has_point_indices) {
+							if ((int)inbetween_normal_offsets.size() == (int)point_indices.size()) {
+								for (int offset_index = 0; offset_index < (int)inbetween_normal_offsets.size(); offset_index++) {
+									const int point_index = point_indices[offset_index];
+									if (point_index < 0 || point_index >= p_point_count) {
+										continue;
+									}
+									const GfVec3f &normal_offset = inbetween_normal_offsets[offset_index];
+									inbetween_data.normal_offsets_by_point.insert(point_index, Vector3(normal_offset[0], normal_offset[1], normal_offset[2]));
 								}
-								const GfVec3f &normal_offset = inbetween_normal_offsets[offset_index];
-								inbetween_data.normal_offsets_by_point.insert(point_index, Vector3(normal_offset[0], normal_offset[1], normal_offset[2]));
 							}
-						}
-					} else if ((int)inbetween_normal_offsets.size() == p_point_count) {
-						for (int offset_index = 0; offset_index < (int)inbetween_normal_offsets.size(); offset_index++) {
-							const GfVec3f &normal_offset = inbetween_normal_offsets[offset_index];
-							inbetween_data.normal_offsets_by_point.insert(offset_index, Vector3(normal_offset[0], normal_offset[1], normal_offset[2]));
+						} else if ((int)inbetween_normal_offsets.size() == p_point_count) {
+							for (int offset_index = 0; offset_index < (int)inbetween_normal_offsets.size(); offset_index++) {
+								const GfVec3f &normal_offset = inbetween_normal_offsets[offset_index];
+								inbetween_data.normal_offsets_by_point.insert(offset_index, Vector3(normal_offset[0], normal_offset[1], normal_offset[2]));
+							}
 						}
 					}
 				}
 
 				blend_shape_data.inbetweens.push_back(inbetween_data);
 				blend_shape_data.inbetweens_metadata.push_back(inbetween_metadata);
-			}
-
-			if (!authored_inbetweens.empty()) {
-				(*r_mapping_notes)["usd:blend_shape_status"] = "Blend shape inbetweens were preserved as metadata; only the primary target shape is imported as a live Godot blend shape.";
 			}
 
 			blend_shapes.push_back(blend_shape_data);
@@ -2182,7 +2184,7 @@ class UsdSceneBuilder {
 
 		const UsdSkinningData skinning_data = _read_skinning_data(p_mesh.GetPrim(), r_handled_attributes, r_mapping_notes);
 		const int skin_weight_count = _get_supported_skin_weight_count(skinning_data);
-		const Vector<UsdBlendShapeData> blend_shapes = _read_mesh_blend_shapes(p_mesh, points.size(), r_handled_attributes, r_mapping_notes);
+		const Vector<UsdBlendShapeData> blend_shapes = _read_point_based_blend_shapes(p_mesh.GetPrim(), points.size(), true, r_handled_attributes, r_mapping_notes);
 
 		Vector<UsdSurfaceAccumulator> surfaces;
 		surfaces.push_back(UsdSurfaceAccumulator());
@@ -2517,6 +2519,7 @@ class UsdSceneBuilder {
 
 		const UsdSkinningData skinning_data = _read_skinning_data(p_points.GetPrim(), r_handled_attributes, r_mapping_notes);
 		const int skin_weight_count = _get_supported_skin_weight_count(skinning_data);
+		const Vector<UsdBlendShapeData> blend_shapes = _read_point_based_blend_shapes(p_points.GetPrim(), points.size(), false, r_handled_attributes, r_mapping_notes);
 
 		PackedVector3Array vertices;
 		PackedColorArray colors;
@@ -2569,11 +2572,43 @@ class UsdSceneBuilder {
 
 		Ref<ArrayMesh> mesh;
 		mesh.instantiate();
+		if (!blend_shapes.is_empty()) {
+			mesh->set_blend_shape_mode(Mesh::BLEND_SHAPE_MODE_RELATIVE);
+			for (int blend_shape_index = 0; blend_shape_index < blend_shapes.size(); blend_shape_index++) {
+				mesh->add_blend_shape(blend_shapes[blend_shape_index].name);
+				for (int inbetween_index = 0; inbetween_index < blend_shapes[blend_shape_index].inbetweens.size(); inbetween_index++) {
+					mesh->add_blend_shape(_make_inbetween_blend_shape_channel_name(blend_shapes[blend_shape_index].name, blend_shapes[blend_shape_index].inbetweens[inbetween_index].name));
+				}
+			}
+		}
 		uint64_t mesh_flags = 0;
 		if (skin_weight_count > 4) {
 			mesh_flags |= Mesh::ARRAY_FLAG_USE_8_BONE_WEIGHTS;
 		}
-		mesh->add_surface_from_arrays(Mesh::PRIMITIVE_POINTS, arrays, TypedArray<Array>(), Dictionary(), mesh_flags);
+		TypedArray<Array> point_blend_shapes;
+		if (!blend_shapes.is_empty()) {
+			auto append_blend_shape_surface = [&](const HashMap<int, Vector3> &p_position_offsets_by_point) {
+				PackedVector3Array blend_shape_vertices;
+				blend_shape_vertices.resize(vertices.size());
+				for (int point_index = 0; point_index < vertices.size(); point_index++) {
+					const Vector3 *offset_ptr = p_position_offsets_by_point.getptr(point_index);
+					blend_shape_vertices.set(point_index, offset_ptr != nullptr ? *offset_ptr : Vector3());
+				}
+
+				Array blend_shape_arrays;
+				blend_shape_arrays.resize(Mesh::ARRAY_MAX);
+				blend_shape_arrays[Mesh::ARRAY_VERTEX] = blend_shape_vertices;
+				point_blend_shapes.push_back(blend_shape_arrays);
+			};
+
+			for (int blend_shape_index = 0; blend_shape_index < blend_shapes.size(); blend_shape_index++) {
+				append_blend_shape_surface(blend_shapes[blend_shape_index].position_offsets_by_point);
+				for (int inbetween_index = 0; inbetween_index < blend_shapes[blend_shape_index].inbetweens.size(); inbetween_index++) {
+					append_blend_shape_surface(blend_shapes[blend_shape_index].inbetweens[inbetween_index].position_offsets_by_point);
+				}
+			}
+		}
+		mesh->add_surface_from_arrays(Mesh::PRIMITIVE_POINTS, arrays, point_blend_shapes, Dictionary(), mesh_flags);
 
 		Ref<StandardMaterial3D> material;
 		material.instantiate();
@@ -2600,6 +2635,43 @@ class UsdSceneBuilder {
 
 		(*r_mapping_notes)["usd:points_mapping"] = "mesh_points";
 		(*r_mapping_notes)["usd:point_count"] = (int)points.size();
+		if (!blend_shapes.is_empty()) {
+			Array blend_shape_names;
+			Array blend_shape_targets;
+			Dictionary blend_shape_inbetweens;
+			Dictionary blend_shape_channels;
+			for (int blend_shape_index = 0; blend_shape_index < blend_shapes.size(); blend_shape_index++) {
+				blend_shape_names.push_back(blend_shapes[blend_shape_index].name);
+				blend_shape_targets.push_back(blend_shapes[blend_shape_index].target_path);
+				if (!blend_shapes[blend_shape_index].inbetweens_metadata.is_empty()) {
+					blend_shape_inbetweens[blend_shapes[blend_shape_index].name] = blend_shapes[blend_shape_index].inbetweens_metadata;
+				}
+
+				Array channel_entries;
+				Dictionary primary_channel;
+				primary_channel["channel_name"] = blend_shapes[blend_shape_index].name;
+				primary_channel["weight"] = 1.0;
+				primary_channel["primary"] = true;
+				channel_entries.push_back(primary_channel);
+				for (int inbetween_index = 0; inbetween_index < blend_shapes[blend_shape_index].inbetweens.size(); inbetween_index++) {
+					const UsdInbetweenShapeData &inbetween = blend_shapes[blend_shape_index].inbetweens[inbetween_index];
+					Dictionary inbetween_channel;
+					inbetween_channel["channel_name"] = _make_inbetween_blend_shape_channel_name(blend_shapes[blend_shape_index].name, inbetween.name);
+					inbetween_channel["weight"] = inbetween.weight;
+					inbetween_channel["primary"] = false;
+					inbetween_channel["name"] = inbetween.name;
+					channel_entries.push_back(inbetween_channel);
+				}
+				blend_shape_channels[blend_shapes[blend_shape_index].name] = channel_entries;
+			}
+			(*r_mapping_notes)["usd:blend_shape_names"] = blend_shape_names;
+			(*r_mapping_notes)["usd:blend_shape_targets"] = blend_shape_targets;
+			(*r_mapping_notes)["usd:blend_shape_channels"] = blend_shape_channels;
+			if (!blend_shape_inbetweens.is_empty()) {
+				(*r_mapping_notes)["usd:blend_shape_inbetweens"] = blend_shape_inbetweens;
+			}
+			(*r_mapping_notes)["usd:blend_shape_mapping"] = "array_points_relative_piecewise";
+		}
 
 		result.mesh = mesh;
 		return result;
@@ -5139,7 +5211,7 @@ class UsdSceneSaver {
 		}
 	};
 
-	static bool _write_mesh_geometry(const Ref<Mesh> &p_mesh, UsdGeomMesh p_usd_mesh, const Dictionary *p_usd_metadata = nullptr, Vector<UsdMeshSurfaceFaceRange> *r_surface_face_ranges = nullptr) {
+static bool _write_mesh_geometry(const Ref<Mesh> &p_mesh, UsdGeomMesh p_usd_mesh, const Dictionary *p_usd_metadata = nullptr, Vector<UsdMeshSurfaceFaceRange> *r_surface_face_ranges = nullptr) {
 		ERR_FAIL_COND_V(p_mesh.is_null(), false);
 
 		VtArray<GfVec3f> points;
@@ -5305,6 +5377,118 @@ class UsdSceneSaver {
 		return true;
 	}
 
+	static bool _mesh_instance_uses_point_primitives(const MeshInstance3D *p_mesh_instance) {
+		ERR_FAIL_NULL_V(p_mesh_instance, false);
+		const Ref<Mesh> mesh = p_mesh_instance->get_mesh();
+		if (mesh.is_null() || mesh->get_surface_count() == 0) {
+			return false;
+		}
+
+		bool found_non_empty_surface = false;
+		for (int surface_index = 0; surface_index < mesh->get_surface_count(); surface_index++) {
+			const Array arrays = mesh->surface_get_arrays(surface_index);
+			if (arrays.size() != Mesh::ARRAY_MAX) {
+				continue;
+			}
+			const PackedVector3Array vertices = arrays[Mesh::ARRAY_VERTEX];
+			if (vertices.is_empty()) {
+				continue;
+			}
+			found_non_empty_surface = true;
+			if (mesh->surface_get_primitive_type(surface_index) != Mesh::PRIMITIVE_POINTS) {
+				return false;
+			}
+		}
+
+		return found_non_empty_surface;
+	}
+
+	static bool _write_points_geometry(MeshInstance3D *p_points_instance, UsdGeomPoints p_usd_points, const Dictionary *p_usd_metadata = nullptr) {
+		ERR_FAIL_NULL_V(p_points_instance, false);
+		if (!p_usd_points) {
+			return false;
+		}
+
+		const Ref<Mesh> mesh = p_points_instance->get_mesh();
+		ERR_FAIL_COND_V(mesh.is_null(), false);
+
+		VtArray<GfVec3f> points;
+		VtArray<GfVec3f> display_colors;
+		bool have_colors = true;
+		bool display_color_is_constant = true;
+		Color constant_display_color;
+
+		for (int surface_index = 0; surface_index < mesh->get_surface_count(); surface_index++) {
+			if (mesh->surface_get_primitive_type(surface_index) != Mesh::PRIMITIVE_POINTS) {
+				return false;
+			}
+
+			const Array arrays = mesh->surface_get_arrays(surface_index);
+			if (arrays.size() != Mesh::ARRAY_MAX) {
+				continue;
+			}
+			const PackedVector3Array vertices = arrays[Mesh::ARRAY_VERTEX];
+			const PackedColorArray colors = arrays[Mesh::ARRAY_COLOR];
+			if (vertices.is_empty()) {
+				continue;
+			}
+			if (!colors.is_empty() && colors.size() != vertices.size()) {
+				have_colors = false;
+			} else if (colors.is_empty()) {
+				have_colors = false;
+			}
+
+			for (int vertex_index = 0; vertex_index < vertices.size(); vertex_index++) {
+				const Vector3 vertex = vertices[vertex_index];
+				points.push_back(GfVec3f(vertex.x, vertex.y, vertex.z));
+
+				if (have_colors) {
+					const Color color = colors[vertex_index];
+					display_colors.push_back(GfVec3f(color.r, color.g, color.b));
+					if (points.size() == 1) {
+						constant_display_color = color;
+					} else if (display_color_is_constant && !color.is_equal_approx(constant_display_color)) {
+						display_color_is_constant = false;
+					}
+				}
+			}
+		}
+
+		if (points.empty()) {
+			return false;
+		}
+
+		p_usd_points.CreatePointsAttr().Set(points);
+
+		if (have_colors && display_colors.size() == points.size()) {
+			UsdGeomPrimvarsAPI primvars_api(p_usd_points);
+			const TfToken color_interpolation = display_color_is_constant ? UsdGeomTokens->constant : UsdGeomTokens->vertex;
+			VtArray<GfVec3f> colors_to_write;
+			if (display_color_is_constant) {
+				colors_to_write.push_back(display_colors[0]);
+			} else {
+				colors_to_write = display_colors;
+			}
+			primvars_api.CreatePrimvar(TfToken("displayColor"), SdfValueTypeNames->Color3fArray, color_interpolation).Set(colors_to_write);
+		}
+
+		if (p_usd_metadata != nullptr) {
+			const Array width_values = p_usd_metadata->get("usd:point_widths", Array());
+			const String width_interpolation = p_usd_metadata->get("usd:point_widths_interpolation", String("constant"));
+			if (!width_values.is_empty()) {
+				VtArray<float> widths;
+				widths.reserve(width_values.size());
+				for (int width_index = 0; width_index < width_values.size(); width_index++) {
+					widths.push_back((float)(double)width_values[width_index]);
+				}
+				p_usd_points.CreateWidthsAttr().Set(widths);
+				p_usd_points.SetWidthsInterpolation(TfToken(width_interpolation.utf8().get_data()));
+			}
+		}
+
+		return true;
+	}
+
 	static Node *_find_node_for_source_prim_path(Node *p_root, const String &p_prim_path) {
 		ERR_FAIL_NULL_V(p_root, nullptr);
 		const Dictionary metadata = _get_usd_metadata(p_root);
@@ -5383,24 +5567,24 @@ class UsdSceneSaver {
 		p_usd_skeleton.CreateBindTransformsAttr().Set(bind_transforms);
 	}
 
-	static bool _write_mesh_skinning_and_blend_shapes(const UsdStageRefPtr &p_stage, Node *p_scene_root, MeshInstance3D *p_mesh_instance, const UsdGeomMesh &p_usd_mesh, const SdfPath &p_mesh_path, const HashMap<ObjectID, SdfPath> &p_saved_paths) {
-		ERR_FAIL_NULL_V(p_scene_root, false);
-		ERR_FAIL_NULL_V(p_mesh_instance, false);
-		if (!p_usd_mesh) {
+static bool _write_point_based_skinning_and_blend_shapes(const UsdStageRefPtr &p_stage, Node *p_scene_root, MeshInstance3D *p_mesh_instance, const UsdPrim &p_geom_prim, const SdfPath &p_mesh_path, bool p_supports_normals, const HashMap<ObjectID, SdfPath> &p_saved_paths) {
+	ERR_FAIL_NULL_V(p_scene_root, false);
+	ERR_FAIL_NULL_V(p_mesh_instance, false);
+	if (!p_geom_prim) {
+		return false;
+	}
+
+	const Ref<Mesh> mesh = p_mesh_instance->get_mesh();
+	if (mesh.is_null()) {
 			return false;
 		}
 
-		const Ref<Mesh> mesh = p_mesh_instance->get_mesh();
-		if (mesh.is_null()) {
-			return false;
-		}
-
-		const Dictionary metadata = _get_usd_metadata(p_mesh_instance);
-		const String skeleton_source_prim_path = metadata.get("usd:skel_skeleton_path", String());
-		UsdSkelBindingAPI binding_api = UsdSkelBindingAPI::Apply(p_usd_mesh.GetPrim());
-		if (!binding_api) {
-			return false;
-		}
+	const Dictionary metadata = _get_usd_metadata(p_mesh_instance);
+	const String skeleton_source_prim_path = metadata.get("usd:skel_skeleton_path", String());
+	UsdSkelBindingAPI binding_api = UsdSkelBindingAPI::Apply(p_geom_prim);
+	if (!binding_api) {
+		return false;
+	}
 
 		if (!skeleton_source_prim_path.is_empty()) {
 			Node *skeleton_node = _find_node_for_source_prim_path(p_scene_root, skeleton_source_prim_path);
@@ -5415,9 +5599,9 @@ class UsdSceneSaver {
 		}
 
 		const Variant geom_bind_variant = metadata.get("usd:skel_geom_bind_transform", Variant());
-		if (geom_bind_variant.get_type() == Variant::TRANSFORM3D) {
-			binding_api.CreateGeomBindTransformAttr().Set(_transform_to_gf_matrix((Transform3D)geom_bind_variant));
-		}
+	if (geom_bind_variant.get_type() == Variant::TRANSFORM3D) {
+		binding_api.CreateGeomBindTransformAttr().Set(_transform_to_gf_matrix((Transform3D)geom_bind_variant));
+	}
 
 		VtArray<int> joint_indices_values;
 		VtArray<float> joint_weights_values;
@@ -5487,12 +5671,14 @@ class UsdSceneSaver {
 				}
 				const PackedVector3Array blend_shape_vertices = blend_shape_surface[Mesh::ARRAY_VERTEX];
 				const Variant normals_variant = blend_shape_surface[Mesh::ARRAY_NORMAL];
-				const PackedVector3Array blend_shape_normals = normals_variant.get_type() == Variant::PACKED_VECTOR3_ARRAY ? (PackedVector3Array)normals_variant : PackedVector3Array();
+				const PackedVector3Array blend_shape_normals = p_supports_normals && normals_variant.get_type() == Variant::PACKED_VECTOR3_ARRAY ? (PackedVector3Array)normals_variant : PackedVector3Array();
 				for (int vertex_index = 0; vertex_index < vertices.size(); vertex_index++) {
 					const Vector3 vertex_delta = vertex_index < blend_shape_vertices.size() ? blend_shape_vertices[vertex_index] : Vector3();
 					blend_shape_offsets.write[blend_shape_index].push_back(GfVec3f(vertex_delta.x, vertex_delta.y, vertex_delta.z));
-					const Vector3 normal_delta = vertex_index < blend_shape_normals.size() ? blend_shape_normals[vertex_index] : Vector3();
-					blend_shape_normal_offsets.write[blend_shape_index].push_back(GfVec3f(normal_delta.x, normal_delta.y, normal_delta.z));
+					if (p_supports_normals) {
+						const Vector3 normal_delta = vertex_index < blend_shape_normals.size() ? blend_shape_normals[vertex_index] : Vector3();
+						blend_shape_normal_offsets.write[blend_shape_index].push_back(GfVec3f(normal_delta.x, normal_delta.y, normal_delta.z));
+					}
 				}
 			}
 		}
@@ -5525,10 +5711,12 @@ class UsdSceneSaver {
 			usd_blend_shape.CreatePointIndicesAttr().Set(point_indices);
 
 			bool has_primary_normals = false;
-			for (size_t delta_index = 0; delta_index < blend_shape_normal_offsets[primary_channel_index].size(); delta_index++) {
-				if (blend_shape_normal_offsets[primary_channel_index][delta_index] != GfVec3f(0.0f)) {
-					has_primary_normals = true;
-					break;
+			if (p_supports_normals) {
+				for (size_t delta_index = 0; delta_index < blend_shape_normal_offsets[primary_channel_index].size(); delta_index++) {
+					if (blend_shape_normal_offsets[primary_channel_index][delta_index] != GfVec3f(0.0f)) {
+						has_primary_normals = true;
+						break;
+					}
 				}
 			}
 			if (has_primary_normals) {
@@ -5560,10 +5748,12 @@ class UsdSceneSaver {
 				inbetween.SetOffsets(blend_shape_offsets[channel_index]);
 
 				bool has_inbetween_normals = false;
-				for (size_t delta_index = 0; delta_index < blend_shape_normal_offsets[channel_index].size(); delta_index++) {
-					if (blend_shape_normal_offsets[channel_index][delta_index] != GfVec3f(0.0f)) {
-						has_inbetween_normals = true;
-						break;
+				if (p_supports_normals) {
+					for (size_t delta_index = 0; delta_index < blend_shape_normal_offsets[channel_index].size(); delta_index++) {
+						if (blend_shape_normal_offsets[channel_index][delta_index] != GfVec3f(0.0f)) {
+							has_inbetween_normals = true;
+							break;
+						}
 					}
 				}
 				if (has_inbetween_normals) {
@@ -6039,7 +6229,12 @@ class UsdSceneSaver {
 		if (MeshInstance3D *mesh_instance = Object::cast_to<MeshInstance3D>(p_node)) {
 			const SdfPath saved_path = _get_saved_path_for_node(p_saved_paths, mesh_instance);
 			if (!saved_path.IsEmpty()) {
-				_write_mesh_skinning_and_blend_shapes(p_stage, p_scene_root, mesh_instance, UsdGeomMesh(p_stage->GetPrimAtPath(saved_path)), saved_path, p_saved_paths);
+				UsdPrim saved_prim = p_stage->GetPrimAtPath(saved_path);
+				if (saved_prim.IsA<UsdGeomMesh>()) {
+					_write_point_based_skinning_and_blend_shapes(p_stage, p_scene_root, mesh_instance, saved_prim, saved_path, true, p_saved_paths);
+				} else if (saved_prim.IsA<UsdGeomPoints>()) {
+					_write_point_based_skinning_and_blend_shapes(p_stage, p_scene_root, mesh_instance, saved_prim, saved_path, false, p_saved_paths);
+				}
 			}
 		}
 		for (int i = 0; i < p_node->get_child_count(); i++) {
@@ -6144,9 +6339,25 @@ class UsdSceneSaver {
 		}
 
 		if (MeshInstance3D *mesh_instance = Object::cast_to<MeshInstance3D>(p_node)) {
+			const Dictionary usd_metadata = _get_usd_metadata(mesh_instance);
+			if (_mesh_instance_uses_point_primitives(mesh_instance) &&
+					(String)usd_metadata.get("usd:points_mapping", String()) == String("mesh_points")) {
+				UsdGeomPoints usd_points = UsdGeomPoints::Define(p_stage, p_path);
+				if (!_write_points_geometry(mesh_instance, usd_points, &usd_metadata)) {
+					UsdGeomXform usd_xform = UsdGeomXform::Define(p_stage, p_path);
+					if (r_supports_transform != nullptr) {
+						*r_supports_transform = true;
+					}
+					return usd_xform.GetPrim();
+				}
+				if (r_supports_transform != nullptr) {
+					*r_supports_transform = true;
+				}
+				return usd_points.GetPrim();
+			}
+
 			UsdGeomMesh usd_mesh = UsdGeomMesh::Define(p_stage, p_path);
 			Vector<UsdMeshSurfaceFaceRange> surface_face_ranges;
-			const Dictionary usd_metadata = _get_usd_metadata(mesh_instance);
 			if (!_write_mesh_geometry(mesh_instance->get_mesh(), usd_mesh, &usd_metadata, &surface_face_ranges)) {
 				UsdGeomXform usd_xform = UsdGeomXform::Define(p_stage, p_path);
 				if (r_supports_transform != nullptr) {
