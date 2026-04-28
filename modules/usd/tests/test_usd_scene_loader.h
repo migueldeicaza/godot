@@ -137,6 +137,17 @@ static Node *_find_prim_node(Node *p_root, const String &p_prim_path) {
 	return nullptr;
 }
 
+#ifdef TOOLS_ENABLED
+static const ResourceImporter::ImportOption *_find_import_option(const List<ResourceImporter::ImportOption> &p_options, const String &p_name) {
+	for (const List<ResourceImporter::ImportOption>::Element *E = p_options.front(); E != nullptr; E = E->next()) {
+		if (E->get().option.name == p_name) {
+			return &E->get();
+		}
+	}
+	return nullptr;
+}
+#endif
+
 TEST_CASE("[SceneTree][USD] Load a minimal USD scene as PackedScene") {
 	PreviewLightingModeScope preview_lighting_mode_scope;
 	preview_lighting_mode_scope.set(1);
@@ -829,6 +840,37 @@ TEST_CASE("[SceneTree][USD] Import USD blend shapes and bake blendShapeWeights a
 }
 
 #ifdef TOOLS_ENABLED
+TEST_CASE("[SceneTree][USD] UsdSceneFormatImporter exposes structured variant import options") {
+	const String usd_path = TestUtils::get_data_path("usd/variant_stage.usda");
+
+	Ref<UsdSceneFormatImporter> importer;
+	importer.instantiate();
+	REQUIRE(importer.is_valid());
+
+	List<ResourceImporter::ImportOption> options;
+	importer->get_import_options(usd_path, &options);
+
+	const ResourceImporter::ImportOption *legacy_json = _find_import_option(options, "usd/variant_selections");
+	REQUIRE(legacy_json != nullptr);
+	CHECK((legacy_json->option.usage & PROPERTY_USAGE_NO_EDITOR) != 0);
+	CHECK(bool(importer->get_option_visibility(usd_path, "PackedScene", "usd/variant_selections", HashMap<StringName, Variant>())) == false);
+
+	const ResourceImporter::ImportOption *modeling_variant = _find_import_option(options, "usd/variants/Model/modelingVariant");
+	REQUIRE(modeling_variant != nullptr);
+	CHECK(modeling_variant->option.type == Variant::STRING);
+	CHECK(modeling_variant->option.hint == PROPERTY_HINT_ENUM);
+	CHECK(String(modeling_variant->option.hint_string).contains("red"));
+	CHECK(String(modeling_variant->option.hint_string).contains("blue"));
+	CHECK(String(modeling_variant->default_value) == "red");
+
+	const ResourceImporter::ImportOption *nested_detail = _find_import_option(options, "usd/variants/Model/Nested/detail");
+	REQUIRE(nested_detail != nullptr);
+	CHECK(nested_detail->option.type == Variant::STRING);
+	CHECK(nested_detail->option.hint == PROPERTY_HINT_ENUM);
+	CHECK(String(nested_detail->option.hint_string).contains("cube"));
+	CHECK(String(nested_detail->option.hint_string).contains("sphere"));
+}
+
 TEST_CASE("[SceneTree][USD] UsdSceneFormatImporter bakes a variant USD file into a static scene root") {
 	const String usd_path = TestUtils::get_data_path("usd/variant_stage.usda");
 
@@ -845,11 +887,14 @@ TEST_CASE("[SceneTree][USD] UsdSceneFormatImporter bakes a variant USD file into
 	CHECK(root->get_node_or_null(NodePath("_Generated")) == nullptr);
 	CHECK(_find_prim_node(root, "/Model/RedCube") != nullptr);
 	CHECK(_find_prim_node(root, "/Model/BlueSphere") == nullptr);
+	REQUIRE(root->has_meta(StringName("usd:importer_warnings")));
+	Array warnings = root->get_meta(StringName("usd:importer_warnings"));
+	CHECK(!warnings.is_empty());
 
 	memdelete(root);
 }
 
-TEST_CASE("[SceneTree][USD] UsdSceneFormatImporter applies importer-side variant overrides") {
+TEST_CASE("[SceneTree][USD] UsdSceneFormatImporter applies structured variant overrides and prefers them over legacy JSON") {
 	const String usd_path = TestUtils::get_data_path("usd/variant_stage.usda");
 
 	Ref<UsdSceneFormatImporter> importer;
@@ -857,7 +902,9 @@ TEST_CASE("[SceneTree][USD] UsdSceneFormatImporter applies importer-side variant
 	REQUIRE(importer.is_valid());
 
 	HashMap<StringName, Variant> options;
-	options.insert(StringName("usd/variant_selections"), String("{\"/Model\":{\"modelingVariant\":\"blue\"},\"/Model/Nested\":{\"detail\":\"sphere\"}}"));
+	options.insert(StringName("usd/variant_selections"), String("{\"/Model\":{\"modelingVariant\":\"red\"},\"/Model/Nested\":{\"detail\":\"cube\"}}"));
+	options.insert(StringName("usd/variants/Model/modelingVariant"), String("blue"));
+	options.insert(StringName("usd/variants/Model/Nested/detail"), String("sphere"));
 
 	Error err = OK;
 	Node *root = importer->import_scene(usd_path, EditorSceneFormatImporter::IMPORT_SCENE, options, nullptr, &err);
@@ -868,6 +915,20 @@ TEST_CASE("[SceneTree][USD] UsdSceneFormatImporter applies importer-side variant
 	CHECK(_find_prim_node(root, "/Model/BlueSphere") != nullptr);
 	CHECK(_find_prim_node(root, "/Model/Nested/NestedSphere") != nullptr);
 	CHECK(_find_prim_node(root, "/Model/Nested/NestedCube") == nullptr);
+	REQUIRE(root->has_meta(StringName("usd:importer_variant_selections")));
+	Dictionary variant_selections = root->get_meta(StringName("usd:importer_variant_selections"));
+	Dictionary model_selection;
+	Variant model_selection_variant = variant_selections.get("/Model", Variant());
+	if (model_selection_variant.get_type() == Variant::DICTIONARY) {
+		model_selection = model_selection_variant;
+	}
+	Dictionary nested_selection;
+	Variant nested_selection_variant = variant_selections.get("/Model/Nested", Variant());
+	if (nested_selection_variant.get_type() == Variant::DICTIONARY) {
+		nested_selection = nested_selection_variant;
+	}
+	CHECK(String(model_selection.get("modelingVariant", String())) == "blue");
+	CHECK(String(nested_selection.get("detail", String())) == "sphere");
 
 	memdelete(root);
 }
