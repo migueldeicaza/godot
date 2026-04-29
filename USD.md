@@ -1,3 +1,5 @@
+https://github.com/user-attachments/assets/003cb4d3-381e-43c3-b4f5-2578cf255a6c
+
 The USD module now has two product surfaces:
 
 * a runtime that can load/save USD files as scenes (so your USD can be
