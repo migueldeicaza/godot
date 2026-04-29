@@ -1,5 +1,24 @@
 The USD module now has two product surfaces:
 
+* a runtime that can load/save USD files as scenes (so your USD can be
+  a root node, or you can instantiate assorted USD scenes into a Godot
+  scene)
+
+* an importer: where you choose how and what to import, similar to
+  other Godot format importers - and you can later control import
+  configuration via the importer panel.
+
+I have mostly used and tested the first one, the second is new.
+
+You will need to get yourself a build of OpenUSD from Github first:
+
+https://github.com/PixarAnimationStudios/OpenUSD
+
+And built it for your system, I am using the dynamic loadable version.
+
+This was developed extensively using Codex AI.  See tasks.md for the
+list of completed and pending work.
+
 ## 1. Runtime USD load/save
 
 Godot can load `.usd`, `.usda`, `.usdc`, and `.usdz` directly as

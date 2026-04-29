@@ -1381,10 +1381,13 @@ TEST_CASE("[SceneTree][USD] Save extended UsdPreviewSurface properties to USDA")
 	source_material->set_feature(BaseMaterial3D::FEATURE_AMBIENT_OCCLUSION, true);
 	source_material->set_ao_texture_channel(BaseMaterial3D::TEXTURE_CHANNEL_BLUE);
 
-	Error texture_load_error = OK;
-	Ref<Texture2D> icon_texture = ResourceLoader::load(TestUtils::get_data_path("images/icon.png"), "Texture2D", ResourceFormatLoader::CACHE_MODE_IGNORE, &texture_load_error);
-	REQUIRE_MESSAGE(texture_load_error == OK, "Failed to load icon texture for PreviewSurface save test.");
+	const String icon_path = TestUtils::get_data_path("images/icon.png");
+	Ref<Image> icon_image;
+	icon_image.instantiate();
+	REQUIRE_MESSAGE(icon_image->load(icon_path) == OK, "Failed to load icon image for PreviewSurface save test.");
+	Ref<ImageTexture> icon_texture = ImageTexture::create_from_image(icon_image);
 	REQUIRE(icon_texture.is_valid());
+	icon_texture->set_path(icon_path, true);
 	source_material->set_texture(BaseMaterial3D::TEXTURE_ALBEDO, icon_texture);
 	source_material->set_texture(BaseMaterial3D::TEXTURE_CLEARCOAT, icon_texture);
 	source_material->set_texture(BaseMaterial3D::TEXTURE_AMBIENT_OCCLUSION, icon_texture);
