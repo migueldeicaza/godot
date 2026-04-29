@@ -3,6 +3,8 @@
 This adds support to Godot to work with USD files, see [USD.md](USD.md) for 
 details on the implementation.
 
+https://github.com/user-attachments/assets/003cb4d3-381e-43c3-b4f5-2578cf255a6c
+
 # Godot Engine
 
 <p align="center">
