@@ -8,9 +8,12 @@ Import("env_modules")
 
 env_usd = env_modules.Clone()
 
-usd_sdk_path = os.path.expanduser(os.environ.get("USD_SDK_PATH", "/tmp/openusd-build/install"))
+usd_sdk_path = os.path.expanduser(os.environ.get("USD_SDK_PATH", "/Users/miguel/cvs/usd/install"))
 usd_include_path = os.path.join(usd_sdk_path, "include")
 usd_library_path = os.path.join(usd_sdk_path, "lib")
+tbb_sdk_path = os.path.expanduser(os.environ.get("TBB_SDK_PATH", "/opt/homebrew/opt/tbb"))
+tbb_include_path = os.path.join(tbb_sdk_path, "include")
+tbb_library_path = os.path.join(tbb_sdk_path, "lib")
 
 if not os.path.isdir(usd_include_path) or not os.path.isdir(usd_library_path):
     raise RuntimeError(
@@ -19,6 +22,12 @@ if not os.path.isdir(usd_include_path) or not os.path.isdir(usd_library_path):
 
 env_usd.Prepend(CPPPATH=[usd_include_path])
 env_usd.Prepend(LIBPATH=[usd_library_path])
+if os.path.isdir(tbb_include_path):
+    env_usd.Prepend(CPPPATH=[tbb_include_path])
+    env.Prepend(CPPPATH=[tbb_include_path])
+if os.path.isdir(tbb_library_path):
+    env_usd.Prepend(LIBPATH=[tbb_library_path])
+    env.Prepend(LIBPATH=[tbb_library_path])
 
 usd_libs = [
     "usd_usdUtils",
@@ -27,6 +36,7 @@ usd_libs = [
     "usd_usdSkel",
     "usd_usdGeom",
     "usd_usd",
+    "usd_sdr",
     "usd_kind",
     "usd_pcp",
     "usd_sdf",

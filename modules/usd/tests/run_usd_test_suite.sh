@@ -17,6 +17,13 @@ fi
 tmp_dir="$(mktemp -d "${TMPDIR:-/tmp}/godot-usd-tests.XXXXXX")"
 trap 'rm -rf "$tmp_dir"' EXIT
 
+usd_sdk_path="${USD_SDK_PATH:-/Users/miguel/cvs/usd/install}"
+tbb_sdk_path="${TBB_SDK_PATH:-/opt/homebrew/opt/tbb}"
+export USD_SDK_PATH="$usd_sdk_path"
+export TBB_SDK_PATH="$tbb_sdk_path"
+export PXR_PLUGINPATH_NAME="${PXR_PLUGINPATH_NAME:-$usd_sdk_path/plugin:$usd_sdk_path/lib/usd}"
+export DYLD_LIBRARY_PATH="${DYLD_LIBRARY_PATH:-$usd_sdk_path/lib:$tbb_sdk_path/lib}"
+
 run_probe() {
 	local script="$1"
 	shift

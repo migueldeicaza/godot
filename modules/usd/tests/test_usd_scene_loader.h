@@ -260,6 +260,51 @@ TEST_CASE("[SceneTree][USD] Load a packaged USDZ texture asset") {
 	memdelete(root);
 }
 
+TEST_CASE("[SceneTree][USD] Load extended UsdPreviewSurface inputs") {
+	const String usd_path = TestUtils::get_data_path("usd/preview_surface_extended.usda");
+
+	Error err = OK;
+	Ref<PackedScene> packed_scene = ResourceLoader::load(usd_path, "PackedScene", ResourceFormatLoader::CACHE_MODE_IGNORE, &err);
+	REQUIRE_MESSAGE(err == OK, "USD extended PreviewSurface load failed.");
+	REQUIRE(packed_scene.is_valid());
+
+	Node *root = packed_scene->instantiate();
+	REQUIRE(root != nullptr);
+	REQUIRE(root->get_child_count() >= 1);
+
+	MeshInstance3D *mesh_instance = Object::cast_to<MeshInstance3D>(root->get_child(0)->get_child(0));
+	REQUIRE(mesh_instance != nullptr);
+	REQUIRE(mesh_instance->get_mesh().is_valid());
+
+	Ref<Material> surface_material = mesh_instance->get_mesh()->surface_get_material(0);
+	REQUIRE(surface_material.is_valid());
+
+	BaseMaterial3D *base_material = Object::cast_to<BaseMaterial3D>(surface_material.ptr());
+	REQUIRE(base_material != nullptr);
+	CHECK(base_material->get_specular() == doctest::Approx(0.5f).epsilon(0.01f));
+	CHECK(base_material->get_roughness() == doctest::Approx(0.45f));
+	CHECK(base_material->get_transparency() == BaseMaterial3D::TRANSPARENCY_ALPHA);
+	CHECK(base_material->get_feature(BaseMaterial3D::FEATURE_CLEARCOAT));
+	CHECK(base_material->get_clearcoat() == doctest::Approx(0.6f));
+	CHECK(base_material->get_clearcoat_roughness() == doctest::Approx(0.2f));
+	CHECK(base_material->get_texture(BaseMaterial3D::TEXTURE_CLEARCOAT).is_valid());
+	CHECK(base_material->get_feature(BaseMaterial3D::FEATURE_AMBIENT_OCCLUSION));
+	CHECK(base_material->get_texture(BaseMaterial3D::TEXTURE_AMBIENT_OCCLUSION).is_valid());
+	CHECK(base_material->get_ao_texture_channel() == BaseMaterial3D::TEXTURE_CHANNEL_BLUE);
+
+	Dictionary material_metadata = base_material->get_meta(StringName("usd"), Dictionary());
+	CHECK((bool)material_metadata.get("usd:preview_surface_use_specular_workflow", false));
+	CHECK((double)material_metadata.get("usd:preview_surface_ior", 0.0) == doctest::Approx(1.5));
+	CHECK(material_metadata.has("usd:preview_surface_specular_color"));
+	Dictionary texture_sources = material_metadata.get("usd:preview_surface_texture_sources", Dictionary());
+	CHECK(texture_sources.has("opacity"));
+	CHECK(texture_sources.has("clearcoat"));
+	CHECK(texture_sources.has("clearcoatRoughness"));
+	CHECK(texture_sources.has("occlusion"));
+
+	memdelete(root);
+}
+
 TEST_CASE("[SceneTree][USD] Preserve clockwise winding for right-handed USD meshes") {
 	const String usd_path = TestUtils::get_data_path("usd/winding_right_handed.usda");
 
@@ -1313,6 +1358,71 @@ TEST_CASE("[SceneTree][USD] Save StandardMaterial3D preview properties to USDA a
 	CHECK(loaded_material->get_alpha_scissor_threshold() == doctest::Approx(0.4f));
 
 	memdelete(loaded_root);
+	memdelete(scene_root);
+}
+
+TEST_CASE("[SceneTree][USD] Save extended UsdPreviewSurface properties to USDA") {
+	PreviewLightingModeScope preview_lighting_mode_scope;
+	preview_lighting_mode_scope.set(0);
+
+	Node3D *scene_root = memnew(Node3D);
+	scene_root->set_name("Root");
+
+	Ref<ArrayMesh> mesh = _make_test_triangle_mesh();
+	Ref<StandardMaterial3D> source_material;
+	source_material.instantiate();
+	source_material->set_name("BodyMaterial");
+	source_material->set_albedo(Color(0.8f, 0.8f, 0.8f, 0.5f));
+	source_material->set_roughness(0.45f);
+	source_material->set_transparency(BaseMaterial3D::TRANSPARENCY_ALPHA);
+	source_material->set_feature(BaseMaterial3D::FEATURE_CLEARCOAT, true);
+	source_material->set_clearcoat(0.6f);
+	source_material->set_clearcoat_roughness(0.2f);
+	source_material->set_feature(BaseMaterial3D::FEATURE_AMBIENT_OCCLUSION, true);
+	source_material->set_ao_texture_channel(BaseMaterial3D::TEXTURE_CHANNEL_BLUE);
+
+	Error texture_load_error = OK;
+	Ref<Texture2D> icon_texture = ResourceLoader::load(TestUtils::get_data_path("images/icon.png"), "Texture2D", ResourceFormatLoader::CACHE_MODE_IGNORE, &texture_load_error);
+	REQUIRE_MESSAGE(texture_load_error == OK, "Failed to load icon texture for PreviewSurface save test.");
+	REQUIRE(icon_texture.is_valid());
+	source_material->set_texture(BaseMaterial3D::TEXTURE_ALBEDO, icon_texture);
+	source_material->set_texture(BaseMaterial3D::TEXTURE_CLEARCOAT, icon_texture);
+	source_material->set_texture(BaseMaterial3D::TEXTURE_AMBIENT_OCCLUSION, icon_texture);
+
+	Dictionary preview_metadata;
+	preview_metadata["usd:preview_surface_use_specular_workflow"] = true;
+	preview_metadata["usd:preview_surface_ior"] = 1.5;
+	preview_metadata["usd:preview_surface_specular_color"] = Color(0.04f, 0.04f, 0.04f, 1.0f);
+	source_material->set_meta(StringName("usd"), preview_metadata);
+
+	mesh->surface_set_material(0, source_material);
+
+	MeshInstance3D *mesh_instance = memnew(MeshInstance3D);
+	mesh_instance->set_name("Triangle");
+	mesh_instance->set_mesh(mesh);
+	scene_root->add_child(mesh_instance);
+	mesh_instance->set_owner(scene_root);
+
+	Ref<PackedScene> source_scene;
+	source_scene.instantiate();
+	REQUIRE(source_scene->pack(scene_root) == OK);
+
+	const String save_path = TestUtils::get_temp_path("usd_preview_surface_extended_save.usda");
+	REQUIRE(ResourceSaver::save(source_scene, save_path) == OK);
+	REQUIRE(FileAccess::exists(save_path));
+
+	const String saved_text = FileAccess::get_file_as_string(save_path);
+	CHECK(saved_text.contains("inputs:useSpecularWorkflow"));
+	CHECK(saved_text.contains("inputs:specularColor"));
+	CHECK(saved_text.contains("inputs:ior = 1.5"));
+	CHECK(saved_text.contains("inputs:clearcoat = 0.6"));
+	CHECK(saved_text.contains("inputs:clearcoatRoughness = 0.2"));
+	CHECK(saved_text.contains("inputs:occlusion.connect"));
+	CHECK(saved_text.contains("inputs:opacity.connect"));
+	CHECK(saved_text.contains("ClearcoatTexture.outputs:r"));
+	CHECK(saved_text.contains("ClearcoatTexture.outputs:g"));
+	CHECK(saved_text.contains("AlbedoTexture.outputs:a"));
+
 	memdelete(scene_root);
 }
 
