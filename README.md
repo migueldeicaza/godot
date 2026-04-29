@@ -1,3 +1,8 @@
+# USD Extension to Godot
+
+This adds support to Godot to work with USD files, see [USD.md](USD.md) for 
+details on the implementation.
+
 # Godot Engine
 
 <p align="center">
