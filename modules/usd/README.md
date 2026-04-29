@@ -104,11 +104,11 @@ This keeps the requested `usd:` namespacing while still fitting Godot's metadata
 
 ## Research and environment blockers
 
-- The local OpenUSD copy at `/tmp/openusd-build/install` is the current default module target.
-- Another local OpenUSD copy at `~/openusd-build/install` appears to carry stale `LC_RPATH` entries that still point at `/tmp/openusd-build/install/lib`.
-- A trivial probe linked against that SDK loaded a mixed set of USD dylibs from both locations and crashed with duplicated debug symbol registration.
-- The module build supports overriding the SDK location with `USD_SDK_PATH`, but the dylib install names and rpaths should be cleaned up before this is treated as a stable runtime dependency.
+- The module now defaults `USD_SDK_PATH` to `/Users/miguel/cvs/usd/install`.
+- A previous local OpenUSD setup mixed static and shared-library assumptions across multiple install roots and produced resolver/plugin crashes in the live `UsdStageResource` path.
+- The current working setup is a single shared-library OpenUSD install plus TBB, with runtime plugin discovery driven by `PXR_PLUGINPATH_NAME` and dynamic loading via `DYLD_LIBRARY_PATH`.
+- The module build still supports overriding the SDK location with `USD_SDK_PATH`; if runtime stage opening regresses, verify that the build and runtime both point at the same OpenUSD install root before debugging the USD code itself.
 
 ## Build note
 
-The module expects an OpenUSD install prefix in `USD_SDK_PATH` or falls back to `/tmp/openusd-build/install`.
+The module expects an OpenUSD install prefix in `USD_SDK_PATH` or falls back to `/Users/miguel/cvs/usd/install`.
