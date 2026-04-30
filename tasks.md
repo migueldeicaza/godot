@@ -63,7 +63,7 @@ This file tracks what the prototype currently loads, what the USD saver writes b
 
 | Area | Load | Save | Notes |
 | --- | --- | --- | --- |
-| `UsdPreviewSurface` | Partial | Partial | Saver writes a first-pass `UsdPreviewSurface` network from `StandardMaterial3D` scalars and file-backed textures. |
+| `UsdPreviewSurface` | Partial | Partial | Saver writes a first-pass `UsdPreviewSurface` network from `StandardMaterial3D` scalars and textures, including generated/in-memory textures emitted beside composed USD saves when they do not already have a stable file path. |
 | Unmapped authored attributes | Yes | Partial | Loader now preserves a typed subset of common USD value types and saver reapplies those authored attributes. Unsupported value types still remain metadata-only. |
 | Unmapped authored relationships | Yes | Partial | Saver now reapplies stored relationship targets, including custom relationships. |
 | Custom USD composition data | Partial | Partial | Loader records authored `references`, `payloads`, `inherits`, and `specializes` as structured metadata and saver reapplies them in a read-only preservation mode by authoring the arcs back onto the same prim and skipping subtree flattening. Variant-capable USD files now have a live `UsdStageInstance` path. Source `.usd`, `.usda`, `.usdc`, and `.usdz` stage instances preserve source content when saving back to the same USD family; changed variant selections are authored as new root-layer defaults while preserving inactive variant data. Non-source USD saves still export only the current composed result. |

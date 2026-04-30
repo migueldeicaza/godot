@@ -1429,6 +1429,71 @@ TEST_CASE("[SceneTree][USD] Save extended UsdPreviewSurface properties to USDA")
 	memdelete(scene_root);
 }
 
+TEST_CASE("[SceneTree][USD] Save generated UsdPreviewSurface textures beside USDA") {
+	PreviewLightingModeScope preview_lighting_mode_scope;
+	preview_lighting_mode_scope.set(0);
+
+	Node3D *scene_root = memnew(Node3D);
+	scene_root->set_name("Root");
+
+	Ref<ArrayMesh> mesh = _make_test_triangle_mesh();
+	Ref<StandardMaterial3D> source_material;
+	source_material.instantiate();
+	source_material->set_name("GeneratedBodyMaterial");
+	source_material->set_albedo(Color(0.7f, 0.7f, 0.7f, 0.5f));
+	source_material->set_transparency(BaseMaterial3D::TRANSPARENCY_ALPHA);
+	source_material->set_feature(BaseMaterial3D::FEATURE_CLEARCOAT, true);
+	source_material->set_clearcoat(0.6f);
+	source_material->set_clearcoat_roughness(0.2f);
+	source_material->set_feature(BaseMaterial3D::FEATURE_AMBIENT_OCCLUSION, true);
+	source_material->set_ao_texture_channel(BaseMaterial3D::TEXTURE_CHANNEL_BLUE);
+
+	Ref<Image> albedo_image = Image::create_empty(2, 2, false, Image::FORMAT_RGBA8);
+	albedo_image->fill(Color(0.8f, 0.8f, 0.8f, 0.4f));
+	Ref<ImageTexture> albedo_texture = ImageTexture::create_from_image(albedo_image);
+	REQUIRE(albedo_texture.is_valid());
+
+	Ref<Image> packed_image = Image::create_empty(2, 2, false, Image::FORMAT_RGBA8);
+	packed_image->fill(Color(0.6f, 0.2f, 0.9f, 1.0f));
+	Ref<ImageTexture> packed_texture = ImageTexture::create_from_image(packed_image);
+	REQUIRE(packed_texture.is_valid());
+
+	source_material->set_texture(BaseMaterial3D::TEXTURE_ALBEDO, albedo_texture);
+	source_material->set_texture(BaseMaterial3D::TEXTURE_CLEARCOAT, packed_texture);
+	source_material->set_texture(BaseMaterial3D::TEXTURE_AMBIENT_OCCLUSION, packed_texture);
+
+	mesh->surface_set_material(0, source_material);
+
+	MeshInstance3D *mesh_instance = memnew(MeshInstance3D);
+	mesh_instance->set_name("Triangle");
+	mesh_instance->set_mesh(mesh);
+	scene_root->add_child(mesh_instance);
+	mesh_instance->set_owner(scene_root);
+
+	Ref<PackedScene> source_scene;
+	source_scene.instantiate();
+	REQUIRE(source_scene->pack(scene_root) == OK);
+
+	const String save_path = TestUtils::get_temp_path("usd_preview_surface_generated_texture_save.usda");
+	REQUIRE(ResourceSaver::save(source_scene, save_path) == OK);
+	REQUIRE(FileAccess::exists(save_path));
+
+	const String saved_text = FileAccess::get_file_as_string(save_path);
+	CHECK(saved_text.contains("inputs:diffuseColor.connect"));
+	CHECK(saved_text.contains("inputs:opacity.connect"));
+	CHECK(saved_text.contains("inputs:clearcoat.connect"));
+	CHECK(saved_text.contains("inputs:clearcoatRoughness.connect"));
+	CHECK(saved_text.contains("inputs:occlusion.connect"));
+	CHECK(saved_text.contains("usd_preview_surface_generated_texture_save_assets/generatedbodymaterial_albedotexture.png"));
+	CHECK(saved_text.contains("usd_preview_surface_generated_texture_save_assets/generatedbodymaterial_clearcoattexture.png"));
+
+	const String save_dir = save_path.get_base_dir();
+	CHECK(FileAccess::exists(save_dir.path_join("usd_preview_surface_generated_texture_save_assets/generatedbodymaterial_albedotexture.png")));
+	CHECK(FileAccess::exists(save_dir.path_join("usd_preview_surface_generated_texture_save_assets/generatedbodymaterial_clearcoattexture.png")));
+
+	memdelete(scene_root);
+}
+
 TEST_CASE("[SceneTree][USD] Round-trip typed unmapped USD attributes and relationships") {
 	PreviewLightingModeScope preview_lighting_mode_scope;
 	preview_lighting_mode_scope.set(0);

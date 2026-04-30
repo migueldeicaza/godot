@@ -4515,17 +4515,75 @@ class UsdSceneSaver {
 		return save_dir.path_to_file(absolute_asset_path);
 	}
 
-	static String _get_texture_asset_path(const Ref<Texture2D> &p_texture, const String &p_save_path) {
+	static String _get_texture_asset_path(const Ref<Texture2D> &p_texture, const String &p_save_path, const String &p_generated_asset_name = String(), HashMap<uint64_t, String> *r_generated_asset_paths = nullptr) {
 		if (p_texture.is_null()) {
 			return String();
 		}
 
 		const String texture_path = p_texture->get_path();
-		if (texture_path.is_empty() || texture_path.contains("::")) {
+		if (!texture_path.is_empty() && !texture_path.contains("::")) {
+			return _make_relative_asset_path(p_save_path, texture_path);
+		}
+
+		const uint64_t texture_id = p_texture->get_instance_id();
+		if (r_generated_asset_paths != nullptr && r_generated_asset_paths->has(texture_id)) {
+			return (*r_generated_asset_paths)[texture_id];
+		}
+
+		Ref<Image> image = p_texture->get_image();
+		if (image.is_null()) {
 			return String();
 		}
 
-		return _make_relative_asset_path(p_save_path, texture_path);
+		image = image->duplicate(true);
+		if (image.is_null()) {
+			return String();
+		}
+		if (image->is_compressed() && image->decompress() != OK) {
+			return String();
+		}
+		if (image->get_format() != Image::FORMAT_RGBA8) {
+			image->convert(Image::FORMAT_RGBA8);
+		}
+
+		const String absolute_save_path = _get_absolute_path(p_save_path);
+		const String save_dir = absolute_save_path.get_base_dir();
+		if (save_dir.is_empty()) {
+			return String();
+		}
+
+		const String asset_dir_name = absolute_save_path.get_file().get_basename() + "_assets";
+		const String absolute_asset_dir = save_dir.path_join(asset_dir_name);
+		const Error make_dir_error = DirAccess::make_dir_recursive_absolute(absolute_asset_dir);
+		if (make_dir_error != OK) {
+			return String();
+		}
+
+		String asset_base_name = p_generated_asset_name;
+		if (asset_base_name.is_empty()) {
+			asset_base_name = p_texture->get_name();
+		}
+		if (asset_base_name.is_empty()) {
+			asset_base_name = vformat("Texture_%d", (int)texture_id);
+		}
+		asset_base_name = _make_valid_identifier(asset_base_name).to_lower();
+
+		String absolute_asset_path = absolute_asset_dir.path_join(asset_base_name + ".png");
+		int suffix = 1;
+		while (FileAccess::exists(absolute_asset_path)) {
+			absolute_asset_path = absolute_asset_dir.path_join(vformat("%s_%d.png", asset_base_name, suffix));
+			suffix++;
+		}
+
+		if (image->save_png(absolute_asset_path) != OK) {
+			return String();
+		}
+
+		const String relative_asset_path = _make_relative_asset_path(p_save_path, absolute_asset_path);
+		if (r_generated_asset_paths != nullptr) {
+			r_generated_asset_paths->insert(texture_id, relative_asset_path);
+		}
+		return relative_asset_path;
 	}
 
 	static Dictionary _get_preview_surface_texture_sources(const Object *p_object) {
@@ -4638,13 +4696,14 @@ class UsdSceneSaver {
 		return true;
 	}
 
-	static bool _connect_preview_texture(const UsdStageRefPtr &p_stage, const String &p_save_path, const BaseMaterial3D *p_material, const Ref<Texture2D> &p_texture, const SdfPath &p_material_path, const char *p_shader_name, const char *p_input_name, const SdfValueTypeName &p_input_type, const TfToken &p_output_name, const SdfValueTypeName &p_output_type) {
+	static bool _connect_preview_texture(const UsdStageRefPtr &p_stage, const String &p_save_path, const BaseMaterial3D *p_material, const Ref<Texture2D> &p_texture, const SdfPath &p_material_path, const char *p_shader_name, const char *p_input_name, const SdfValueTypeName &p_input_type, const TfToken &p_output_name, const SdfValueTypeName &p_output_type, HashMap<uint64_t, String> *r_generated_asset_paths = nullptr) {
 		ERR_FAIL_NULL_V(p_material, false);
 		if (p_texture.is_null()) {
 			return false;
 		}
 
-		const String asset_path = _get_texture_asset_path(p_texture, p_save_path);
+		const String generated_asset_name = vformat("%s_%s", _make_valid_identifier(_to_godot_string(p_material_path.GetName())), _make_valid_identifier(String(p_shader_name)));
+		const String asset_path = _get_texture_asset_path(p_texture, p_save_path, generated_asset_name, r_generated_asset_paths);
 		if (asset_path.is_empty()) {
 			return false;
 		}
@@ -5053,6 +5112,7 @@ class UsdSceneSaver {
 		UsdShadeShader preview_surface = UsdShadeShader::Define(p_stage, material_path.AppendChild(TfToken("PreviewSurface")));
 		preview_surface.CreateIdAttr(VtValue(TfToken("UsdPreviewSurface")));
 		usd_material.CreateSurfaceOutput().ConnectToSource(preview_surface.CreateOutput(TfToken("surface"), SdfValueTypeNames->Token));
+		HashMap<uint64_t, String> generated_texture_assets;
 
 		const Color albedo = base_material->get_albedo();
 		const Dictionary material_metadata = _get_usd_metadata(base_material);
@@ -5096,11 +5156,11 @@ class UsdSceneSaver {
 			preview_surface.CreateInput(TfToken("opacityThreshold"), SdfValueTypeNames->Float).Set(CLAMP(base_material->get_alpha_scissor_threshold(), 0.0f, 1.0f));
 		}
 
-		_connect_preview_texture(p_stage, p_save_path, base_material, base_material->get_texture(BaseMaterial3D::TEXTURE_ALBEDO), material_path, "AlbedoTexture", "diffuseColor", SdfValueTypeNames->Color3f, TfToken("rgb"), SdfValueTypeNames->Float3);
-		_connect_preview_texture(p_stage, p_save_path, base_material, base_material->get_texture(BaseMaterial3D::TEXTURE_EMISSION), material_path, "EmissionTexture", "emissiveColor", SdfValueTypeNames->Color3f, TfToken("rgb"), SdfValueTypeNames->Float3);
-		_connect_preview_texture(p_stage, p_save_path, base_material, base_material->get_texture(BaseMaterial3D::TEXTURE_NORMAL), material_path, "NormalTexture", "normal", SdfValueTypeNames->Normal3f, TfToken("rgb"), SdfValueTypeNames->Float3);
-		_connect_preview_texture(p_stage, p_save_path, base_material, base_material->get_texture(BaseMaterial3D::TEXTURE_METALLIC), material_path, "MetallicTexture", "metallic", SdfValueTypeNames->Float, _get_usd_texture_output_for_channel(base_material->get_metallic_texture_channel()), _get_usd_output_type_for_channel(base_material->get_metallic_texture_channel()));
-		_connect_preview_texture(p_stage, p_save_path, base_material, base_material->get_texture(BaseMaterial3D::TEXTURE_ROUGHNESS), material_path, "RoughnessTexture", "roughness", SdfValueTypeNames->Float, _get_usd_texture_output_for_channel(base_material->get_roughness_texture_channel()), _get_usd_output_type_for_channel(base_material->get_roughness_texture_channel()));
+		_connect_preview_texture(p_stage, p_save_path, base_material, base_material->get_texture(BaseMaterial3D::TEXTURE_ALBEDO), material_path, "AlbedoTexture", "diffuseColor", SdfValueTypeNames->Color3f, TfToken("rgb"), SdfValueTypeNames->Float3, &generated_texture_assets);
+		_connect_preview_texture(p_stage, p_save_path, base_material, base_material->get_texture(BaseMaterial3D::TEXTURE_EMISSION), material_path, "EmissionTexture", "emissiveColor", SdfValueTypeNames->Color3f, TfToken("rgb"), SdfValueTypeNames->Float3, &generated_texture_assets);
+		_connect_preview_texture(p_stage, p_save_path, base_material, base_material->get_texture(BaseMaterial3D::TEXTURE_NORMAL), material_path, "NormalTexture", "normal", SdfValueTypeNames->Normal3f, TfToken("rgb"), SdfValueTypeNames->Float3, &generated_texture_assets);
+		_connect_preview_texture(p_stage, p_save_path, base_material, base_material->get_texture(BaseMaterial3D::TEXTURE_METALLIC), material_path, "MetallicTexture", "metallic", SdfValueTypeNames->Float, _get_usd_texture_output_for_channel(base_material->get_metallic_texture_channel()), _get_usd_output_type_for_channel(base_material->get_metallic_texture_channel()), &generated_texture_assets);
+		_connect_preview_texture(p_stage, p_save_path, base_material, base_material->get_texture(BaseMaterial3D::TEXTURE_ROUGHNESS), material_path, "RoughnessTexture", "roughness", SdfValueTypeNames->Float, _get_usd_texture_output_for_channel(base_material->get_roughness_texture_channel()), _get_usd_output_type_for_channel(base_material->get_roughness_texture_channel()), &generated_texture_assets);
 		if (base_material->get_transparency() != BaseMaterial3D::TRANSPARENCY_DISABLED) {
 			const Dictionary opacity_source = _get_preview_surface_texture_source(base_material, "opacity");
 			if (!opacity_source.is_empty()) {
@@ -5108,7 +5168,7 @@ class UsdSceneSaver {
 				const String output_name = opacity_source.get("output_name", String("a"));
 				_connect_preview_texture_asset_path(p_stage, _make_relative_asset_path(p_save_path, source_asset_path), base_material, material_path, "OpacityTexture", "opacity", SdfValueTypeNames->Float, _get_usd_texture_output_for_name(output_name), _get_usd_output_type_for_name(output_name));
 			} else {
-				_connect_preview_texture(p_stage, p_save_path, base_material, base_material->get_texture(BaseMaterial3D::TEXTURE_ALBEDO), material_path, "AlbedoTexture", "opacity", SdfValueTypeNames->Float, TfToken("a"), SdfValueTypeNames->Float);
+				_connect_preview_texture(p_stage, p_save_path, base_material, base_material->get_texture(BaseMaterial3D::TEXTURE_ALBEDO), material_path, "AlbedoTexture", "opacity", SdfValueTypeNames->Float, TfToken("a"), SdfValueTypeNames->Float, &generated_texture_assets);
 			}
 		}
 
@@ -5117,13 +5177,13 @@ class UsdSceneSaver {
 			preview_surface.CreateInput(TfToken("clearcoat"), SdfValueTypeNames->Float).Set(base_material->get_clearcoat());
 			preview_surface.CreateInput(TfToken("clearcoatRoughness"), SdfValueTypeNames->Float).Set(base_material->get_clearcoat_roughness());
 			const Ref<Texture2D> clearcoat_texture = base_material->get_texture(BaseMaterial3D::TEXTURE_CLEARCOAT);
-			_connect_preview_texture(p_stage, p_save_path, base_material, clearcoat_texture, material_path, "ClearcoatTexture", "clearcoat", SdfValueTypeNames->Float, TfToken("r"), SdfValueTypeNames->Float);
-			_connect_preview_texture(p_stage, p_save_path, base_material, clearcoat_texture, material_path, "ClearcoatTexture", "clearcoatRoughness", SdfValueTypeNames->Float, TfToken("g"), SdfValueTypeNames->Float);
+			_connect_preview_texture(p_stage, p_save_path, base_material, clearcoat_texture, material_path, "ClearcoatTexture", "clearcoat", SdfValueTypeNames->Float, TfToken("r"), SdfValueTypeNames->Float, &generated_texture_assets);
+			_connect_preview_texture(p_stage, p_save_path, base_material, clearcoat_texture, material_path, "ClearcoatTexture", "clearcoatRoughness", SdfValueTypeNames->Float, TfToken("g"), SdfValueTypeNames->Float, &generated_texture_assets);
 		}
 
 		const bool has_occlusion = base_material->get_feature(BaseMaterial3D::FEATURE_AMBIENT_OCCLUSION) || base_material->get_texture(BaseMaterial3D::TEXTURE_AMBIENT_OCCLUSION).is_valid();
 		if (has_occlusion) {
-			_connect_preview_texture(p_stage, p_save_path, base_material, base_material->get_texture(BaseMaterial3D::TEXTURE_AMBIENT_OCCLUSION), material_path, "OcclusionTexture", "occlusion", SdfValueTypeNames->Float, _get_usd_texture_output_for_channel(base_material->get_ao_texture_channel()), _get_usd_output_type_for_channel(base_material->get_ao_texture_channel()));
+			_connect_preview_texture(p_stage, p_save_path, base_material, base_material->get_texture(BaseMaterial3D::TEXTURE_AMBIENT_OCCLUSION), material_path, "OcclusionTexture", "occlusion", SdfValueTypeNames->Float, _get_usd_texture_output_for_channel(base_material->get_ao_texture_channel()), _get_usd_output_type_for_channel(base_material->get_ao_texture_channel()), &generated_texture_assets);
 		}
 
 		*r_material = usd_material;
@@ -8769,7 +8829,12 @@ Error UsdSceneFormatSaver::save(const Ref<Resource> &p_resource, const String &p
 		return saver.save(packed_scene, p_path);
 	}
 
-	const String package_source_path = p_path + ".tmp.usda";
+	Error temp_dir_error = OK;
+	Ref<DirAccess> temp_dir = DirAccess::create_temp("godot_usdz_save_", false, &temp_dir_error);
+	ERR_FAIL_COND_V_MSG(temp_dir_error != OK || temp_dir.is_null(), temp_dir_error != OK ? temp_dir_error : ERR_CANT_CREATE, vformat("Failed to create temporary directory for composed USDZ save: %s", p_path));
+	const String temp_directory = temp_dir->get_current_dir();
+	const String first_layer_name = p_path.get_file().get_basename() + ".usda";
+	const String package_source_path = temp_directory.path_join(first_layer_name);
 	const bool has_composition_boundaries = _packed_scene_has_usd_composition_boundaries(packed_scene);
 	_report_usd_save_mode(vformat("packaging composed Godot scene as USDZ at %s; preserved read-only composition arcs stored on nodes are reauthored, but original package contents, inactive variant branches, and unsupported arcs are not preserved by this path.", p_path), has_composition_boundaries);
 	Error save_error = saver.save(packed_scene, package_source_path);
@@ -8779,9 +8844,7 @@ Error UsdSceneFormatSaver::save(const Ref<Resource> &p_resource, const String &p
 
 	const String absolute_package_source_path = _get_absolute_path(package_source_path);
 	const String absolute_package_path = _get_absolute_path(p_path);
-	const String first_layer_name = p_path.get_file().get_basename() + ".usda";
 	const bool packaged = UsdUtilsCreateNewUsdzPackage(SdfAssetPath(absolute_package_source_path.utf8().get_data()), absolute_package_path.utf8().get_data(), first_layer_name.utf8().get_data());
-	DirAccess::remove_absolute(package_source_path);
 	return packaged ? OK : ERR_CANT_CREATE;
 }
 
