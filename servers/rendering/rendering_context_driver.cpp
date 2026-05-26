@@ -33,6 +33,10 @@
 RenderingContextDriver::~RenderingContextDriver() {
 }
 
+RenderingContextDriver::SurfaceID RenderingContextDriver::surface_create(Ref<RenderingNativeSurface> p_native_surface) {
+	return SurfaceID();
+}
+
 RenderingContextDriver::SurfaceID RenderingContextDriver::surface_get_from_window(DisplayServer::WindowID p_window) const {
 	HashMap<DisplayServer::WindowID, SurfaceID>::ConstIterator it = window_surface_map.find(p_window);
 	if (it != window_surface_map.end()) {
@@ -44,6 +48,16 @@ RenderingContextDriver::SurfaceID RenderingContextDriver::surface_get_from_windo
 
 Error RenderingContextDriver::window_create(DisplayServer::WindowID p_window, const void *p_platform_data) {
 	SurfaceID surface = surface_create(p_platform_data);
+	if (surface != 0) {
+		window_surface_map[p_window] = surface;
+		return OK;
+	} else {
+		return ERR_CANT_CREATE;
+	}
+}
+
+Error RenderingContextDriver::window_create(DisplayServer::WindowID p_window, Ref<RenderingNativeSurface> p_native_surface) {
+	SurfaceID surface = surface_create(p_native_surface);
 	if (surface != 0) {
 		window_surface_map[p_window] = surface;
 		return OK;

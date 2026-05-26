@@ -46,8 +46,36 @@
 
 static const float kDisplayServerIOSAcceleration = 1.f;
 
+Ref<RenderingNativeSurface> DisplayServerAppleEmbedded::native_surface;
+
+static CALayer *_get_layer_from_native_surface(Ref<RenderingNativeSurface> p_native_surface) {
+	if (!p_native_surface.is_valid()) {
+		return nullptr;
+	}
+	Ref<RenderingNativeSurfaceApple> apple_surface = Object::cast_to<RenderingNativeSurfaceApple>(*p_native_surface);
+	if (apple_surface.is_null()) {
+		return nullptr;
+	}
+	return (__bridge CALayer *)(void *)apple_surface->get_layer();
+}
+
 DisplayServerAppleEmbedded *DisplayServerAppleEmbedded::get_singleton() {
 	return (DisplayServerAppleEmbedded *)DisplayServer::get_singleton();
+}
+
+void DisplayServerAppleEmbedded::set_native_surface(Ref<RenderingNativeSurface> p_native_surface) {
+	native_surface = p_native_surface;
+}
+
+void DisplayServerAppleEmbedded::_bind_methods() {
+	ClassDB::bind_static_method("DisplayServerAppleEmbedded", D_METHOD("set_native_surface", "native_surface"), &DisplayServerAppleEmbedded::set_native_surface);
+	ClassDB::bind_static_method("DisplayServerAppleEmbedded", D_METHOD("get_singleton"), &DisplayServerAppleEmbedded::get_singleton);
+	ClassDB::bind_method(D_METHOD("resize_window", "size", "id"), static_cast<void (DisplayServerAppleEmbedded::*)(Size2i, DisplayServer::WindowID)>(&DisplayServerAppleEmbedded::resize_window));
+	ClassDB::bind_method(D_METHOD("set_content_scale", "content_scale"), &DisplayServerAppleEmbedded::set_content_scale);
+	ClassDB::bind_method(D_METHOD("touch_press", "idx", "x", "y", "pressed", "double_click", "window"), &DisplayServerAppleEmbedded::touch_press, DEFVAL(MAIN_WINDOW_ID));
+	ClassDB::bind_method(D_METHOD("touch_drag", "idx", "prev_x", "prev_y", "x", "y", "pressure", "tilt", "window"), &DisplayServerAppleEmbedded::touch_drag, DEFVAL(MAIN_WINDOW_ID));
+	ClassDB::bind_method(D_METHOD("touches_canceled", "idx", "window"), &DisplayServerAppleEmbedded::touches_canceled, DEFVAL(MAIN_WINDOW_ID));
+	ClassDB::bind_method(D_METHOD("key", "key", "char", "unshifted", "physical", "modifiers", "pressed", "window"), static_cast<void (DisplayServerAppleEmbedded::*)(Key, char32_t, Key, Key, BitField<KeyModifierMask>, bool, DisplayServer::WindowID)>(&DisplayServerAppleEmbedded::key), DEFVAL(MAIN_WINDOW_ID));
 }
 
 DisplayServerAppleEmbedded::DisplayServerAppleEmbedded(const String &p_rendering_driver, WindowMode p_mode, DisplayServer::VSyncMode p_vsync_mode, uint32_t p_flags, const Vector2i *p_position, const Vector2i &p_resolution, int p_screen, Context p_context, int64_t p_parent_window, Error &r_error) {
@@ -84,7 +112,10 @@ DisplayServerAppleEmbedded::DisplayServerAppleEmbedded(const String &p_rendering
 
 #if defined(VULKAN_ENABLED)
 	if (rendering_driver == "vulkan") {
-		layer = [GDTAppDelegateService.viewController.godotView initializeRenderingForDriver:@"vulkan"];
+		layer = _get_layer_from_native_surface(native_surface);
+		if (!layer) {
+			layer = [GDTAppDelegateService.viewController.godotView initializeRenderingForDriver:@"vulkan"];
+		}
 		if (!layer) {
 			ERR_FAIL_MSG("Failed to create iOS Vulkan rendering layer.");
 		}
@@ -95,7 +126,13 @@ DisplayServerAppleEmbedded::DisplayServerAppleEmbedded(const String &p_rendering
 #ifdef METAL_ENABLED
 	if (rendering_driver == "metal") {
 		if (@available(iOS 14.0, *)) {
-			layer = [GDTAppDelegateService.viewController.godotView initializeRenderingForDriver:@"metal"];
+			layer = _get_layer_from_native_surface(native_surface);
+			if (!layer) {
+				layer = [GDTAppDelegateService.viewController.godotView initializeRenderingForDriver:@"metal"];
+			}
+			if (!layer) {
+				ERR_FAIL_MSG("Failed to create iOS Metal rendering layer.");
+			}
 			wpd.metal.layer = (CAMetalLayer *)layer;
 			rendering_context = memnew(RenderingContextDriverMetal);
 		} else {
@@ -138,6 +175,9 @@ DisplayServerAppleEmbedded::DisplayServerAppleEmbedded(const String &p_rendering
 		Size2i size = Size2i(layer.bounds.size.width, layer.bounds.size.height) * screen_get_max_scale();
 		rendering_context->window_set_size(MAIN_WINDOW_ID, size.width, size.height);
 		rendering_context->window_set_vsync_mode(MAIN_WINDOW_ID, p_vsync_mode);
+		if (native_surface.is_valid()) {
+			window_surfaces[MAIN_WINDOW_ID] = native_surface;
+		}
 
 		rendering_device = memnew(RenderingDevice);
 		if (rendering_device->initialize(rendering_context, MAIN_WINDOW_ID) != OK) {
@@ -196,6 +236,8 @@ DisplayServerAppleEmbedded::~DisplayServerAppleEmbedded() {
 		rendering_context = nullptr;
 	}
 #endif
+	native_surface = nullptr;
+	window_surfaces.clear();
 }
 
 Vector<String> DisplayServerAppleEmbedded::get_rendering_drivers_func() {
@@ -219,18 +261,18 @@ Vector<String> DisplayServerAppleEmbedded::get_rendering_drivers_func() {
 // MARK: Events
 
 void DisplayServerAppleEmbedded::window_set_rect_changed_callback(const Callable &p_callable, WindowID p_window) {
-	window_resize_callback = p_callable;
+	window_resize_callbacks[p_window] = p_callable;
 }
 
 void DisplayServerAppleEmbedded::window_set_window_event_callback(const Callable &p_callable, WindowID p_window) {
-	window_event_callback = p_callable;
+	window_event_callbacks[p_window] = p_callable;
 }
 void DisplayServerAppleEmbedded::window_set_input_event_callback(const Callable &p_callable, WindowID p_window) {
-	input_event_callback = p_callable;
+	input_event_callbacks[p_window] = p_callable;
 }
 
 void DisplayServerAppleEmbedded::window_set_input_text_callback(const Callable &p_callable, WindowID p_window) {
-	input_text_callback = p_callable;
+	input_text_callbacks[p_window] = p_callable;
 }
 
 void DisplayServerAppleEmbedded::window_set_drop_files_callback(const Callable &p_callable, WindowID p_window) {
@@ -242,19 +284,39 @@ void DisplayServerAppleEmbedded::process_events() {
 }
 
 void DisplayServerAppleEmbedded::_dispatch_input_events(const Ref<InputEvent> &p_event) {
-	DisplayServerAppleEmbedded::get_singleton()->send_input_event(p_event);
+	Ref<InputEventFromWindow> event_from_window = p_event;
+	WindowID window_id = INVALID_WINDOW_ID;
+	if (event_from_window.is_valid()) {
+		window_id = event_from_window->get_window_id();
+	}
+	DisplayServerAppleEmbedded::get_singleton()->send_input_event(p_event, window_id);
 }
 
-void DisplayServerAppleEmbedded::send_input_event(const Ref<InputEvent> &p_event) const {
-	_window_callback(input_event_callback, p_event);
+void DisplayServerAppleEmbedded::send_input_event(const Ref<InputEvent> &p_event, WindowID p_id) const {
+	if (p_id != INVALID_WINDOW_ID) {
+		const Callable *callback = input_event_callbacks.getptr(p_id);
+		if (callback) {
+			_window_callback(*callback, p_event);
+		}
+	} else {
+		for (const KeyValue<WindowID, Callable> &E : input_event_callbacks) {
+			_window_callback(E.value, p_event);
+		}
+	}
 }
 
-void DisplayServerAppleEmbedded::send_input_text(const String &p_text) const {
-	_window_callback(input_text_callback, p_text);
+void DisplayServerAppleEmbedded::send_input_text(const String &p_text, WindowID p_id) const {
+	const Callable *callback = input_text_callbacks.getptr(p_id);
+	if (callback) {
+		_window_callback(*callback, p_text);
+	}
 }
 
-void DisplayServerAppleEmbedded::send_window_event(DisplayServer::WindowEvent p_event) const {
-	_window_callback(window_event_callback, int(p_event));
+void DisplayServerAppleEmbedded::send_window_event(DisplayServer::WindowEvent p_event, WindowID p_id) const {
+	const Callable *callback = window_event_callbacks.getptr(p_id);
+	if (callback) {
+		_window_callback(*callback, int(p_event));
+	}
 }
 
 void DisplayServerAppleEmbedded::_window_callback(const Callable &p_callable, const Variant &p_arg) const {
@@ -267,10 +329,11 @@ void DisplayServerAppleEmbedded::_window_callback(const Callable &p_callable, co
 
 // MARK: Touches
 
-void DisplayServerAppleEmbedded::touch_press(int p_idx, int p_x, int p_y, bool p_pressed, bool p_double_click) {
+void DisplayServerAppleEmbedded::touch_press(int p_idx, int p_x, int p_y, bool p_pressed, bool p_double_click, WindowID p_window) {
 	Ref<InputEventScreenTouch> ev;
 	ev.instantiate();
 
+	ev->set_window_id(p_window);
 	ev->set_index(p_idx);
 	ev->set_pressed(p_pressed);
 	ev->set_position(Vector2(p_x, p_y));
@@ -278,9 +341,10 @@ void DisplayServerAppleEmbedded::touch_press(int p_idx, int p_x, int p_y, bool p
 	perform_event(ev);
 }
 
-void DisplayServerAppleEmbedded::touch_drag(int p_idx, int p_prev_x, int p_prev_y, int p_x, int p_y, float p_pressure, Vector2 p_tilt) {
+void DisplayServerAppleEmbedded::touch_drag(int p_idx, int p_prev_x, int p_prev_y, int p_x, int p_y, float p_pressure, Vector2 p_tilt, WindowID p_window) {
 	Ref<InputEventScreenDrag> ev;
 	ev.instantiate();
+	ev->set_window_id(p_window);
 	ev->set_index(p_idx);
 	ev->set_pressure(p_pressure);
 	ev->set_tilt(p_tilt);
@@ -299,11 +363,36 @@ void DisplayServerAppleEmbedded::perform_event(const Ref<InputEvent> &p_event) {
 	input_singleton->parse_input_event(p_event);
 }
 
-void DisplayServerAppleEmbedded::touches_canceled(int p_idx) {
-	touch_press(p_idx, -1, -1, false, false);
+void DisplayServerAppleEmbedded::touches_canceled(int p_idx, WindowID p_window) {
+	touch_press(p_idx, -1, -1, false, false, p_window);
 }
 
 // MARK: Keyboard
+
+void DisplayServerAppleEmbedded::key(Key p_key, char32_t p_char, Key p_unshifted, Key p_physical, BitField<KeyModifierMask> p_modifiers, bool p_pressed, WindowID p_window) {
+	Ref<InputEventKey> ev;
+	ev.instantiate();
+	ev->set_window_id(p_window);
+	ev->set_echo(false);
+	ev->set_pressed(p_pressed);
+	ev->set_keycode(fix_keycode(p_char, p_key));
+	if (p_key != Key::SHIFT) {
+		ev->set_shift_pressed(p_modifiers.has_flag(KeyModifierMask::SHIFT));
+	}
+	if (p_key != Key::CTRL) {
+		ev->set_ctrl_pressed(p_modifiers.has_flag(KeyModifierMask::CTRL));
+	}
+	if (p_key != Key::ALT) {
+		ev->set_alt_pressed(p_modifiers.has_flag(KeyModifierMask::ALT));
+	}
+	if (p_key != Key::META) {
+		ev->set_meta_pressed(p_modifiers.has_flag(KeyModifierMask::META));
+	}
+	ev->set_key_label(p_unshifted);
+	ev->set_physical_keycode(p_physical);
+	ev->set_unicode(fix_unicode(p_char));
+	perform_event(ev);
+}
 
 void DisplayServerAppleEmbedded::key(Key p_key, char32_t p_char, Key p_unshifted, Key p_physical, NSInteger p_modifier, bool p_pressed, KeyLocation p_location) {
 	Ref<InputEventKey> ev;
@@ -375,6 +464,7 @@ bool DisplayServerAppleEmbedded::has_feature(Feature p_feature) const {
 		// case FEATURE_WINDOW_TRANSPARENCY:
 		case FEATURE_CLIPBOARD:
 		case FEATURE_KEEP_SCREEN_ON:
+		case FEATURE_NATIVE_WINDOWS:
 		case FEATURE_ORIENTATION:
 		case FEATURE_TOUCHSCREEN:
 		case FEATURE_VIRTUAL_KEYBOARD:
@@ -509,7 +599,10 @@ Size2i DisplayServerAppleEmbedded::screen_get_size(int p_screen) const {
 	int screen_count = get_screen_count();
 	ERR_FAIL_INDEX_V(p_screen, screen_count, Size2i());
 
-	CALayer *layer = GDTAppDelegateService.viewController.godotView.renderingLayer;
+	CALayer *layer = _get_layer_from_native_surface(native_surface);
+	if (!layer) {
+		layer = GDTAppDelegateService.viewController.godotView.renderingLayer;
+	}
 
 	if (!layer) {
 		return Size2i();
@@ -529,11 +622,67 @@ Rect2i DisplayServerAppleEmbedded::screen_get_usable_rect(int p_screen) const {
 Vector<DisplayServer::WindowID> DisplayServerAppleEmbedded::get_window_list() const {
 	Vector<DisplayServer::WindowID> list;
 	list.push_back(MAIN_WINDOW_ID);
+	for (const KeyValue<WindowID, Ref<RenderingNativeSurface>> &E : window_surfaces) {
+		if (E.key != MAIN_WINDOW_ID) {
+			list.push_back(E.key);
+		}
+	}
 	return list;
 }
 
 DisplayServer::WindowID DisplayServerAppleEmbedded::get_window_at_screen_position(const Point2i &p_position) const {
 	return MAIN_WINDOW_ID;
+}
+
+DisplayServer::WindowID DisplayServerAppleEmbedded::create_native_window(Ref<RenderingNativeSurface> p_native_surface) {
+	ERR_FAIL_COND_V(!p_native_surface.is_valid(), INVALID_WINDOW_ID);
+	WindowID window_id = window_id_counter++;
+	window_surfaces[window_id] = p_native_surface;
+
+#if defined(RD_ENABLED)
+	if (rendering_context) {
+		if (rendering_context->window_create(window_id, p_native_surface) != OK) {
+			window_surfaces.erase(window_id);
+			ERR_FAIL_V_MSG(INVALID_WINDOW_ID, "Failed to create native window.");
+		}
+		if (rendering_device) {
+			rendering_device->screen_create(window_id);
+		}
+
+		CALayer *layer = _get_layer_from_native_surface(p_native_surface);
+		if (layer) {
+			Size2i size = Size2i(layer.bounds.size.width, layer.bounds.size.height) * screen_get_max_scale();
+			rendering_context->window_set_size(window_id, size.width, size.height);
+		}
+		return window_id;
+	}
+#endif
+
+	window_surfaces.erase(window_id);
+	ERR_FAIL_V_MSG(INVALID_WINDOW_ID, "Cannot create native window with current driver.");
+}
+
+bool DisplayServerAppleEmbedded::is_native_window(WindowID p_id) {
+	return window_surfaces.has(p_id);
+}
+
+void DisplayServerAppleEmbedded::delete_native_window(WindowID p_id) {
+#if defined(RD_ENABLED)
+	if (rendering_device) {
+		rendering_device->screen_free(p_id);
+	}
+
+	if (rendering_context) {
+		rendering_context->window_destroy(p_id);
+	}
+#endif
+
+	window_surfaces.erase(p_id);
+	window_attached_instance_id.erase(p_id);
+	window_event_callbacks.erase(p_id);
+	window_resize_callbacks.erase(p_id);
+	input_event_callbacks.erase(p_id);
+	input_text_callbacks.erase(p_id);
 }
 
 int64_t DisplayServerAppleEmbedded::window_get_native_handle(HandleType p_handle_type, WindowID p_window) const {
@@ -555,11 +704,12 @@ int64_t DisplayServerAppleEmbedded::window_get_native_handle(HandleType p_handle
 }
 
 void DisplayServerAppleEmbedded::window_attach_instance_id(ObjectID p_instance, WindowID p_window) {
-	window_attached_instance_id = p_instance;
+	window_attached_instance_id[p_window] = p_instance;
 }
 
 ObjectID DisplayServerAppleEmbedded::window_get_attached_instance_id(WindowID p_window) const {
-	return window_attached_instance_id;
+	const ObjectID *instance_id = window_attached_instance_id.getptr(p_window);
+	return instance_id ? *instance_id : ObjectID();
 }
 
 void DisplayServerAppleEmbedded::window_set_title(const String &p_title, WindowID p_window) {
@@ -612,6 +762,13 @@ void DisplayServerAppleEmbedded::window_set_size(const Size2i p_size, WindowID p
 }
 
 Size2i DisplayServerAppleEmbedded::window_get_size(WindowID p_window) const {
+	if (window_surfaces.has(p_window)) {
+		const Ref<RenderingNativeSurface> *surface = window_surfaces.getptr(p_window);
+		CALayer *layer = surface ? _get_layer_from_native_surface(*surface) : nullptr;
+		if (layer) {
+			return Size2i(layer.bounds.size.width, layer.bounds.size.height) * screen_get_max_scale();
+		}
+	}
 	CGRect viewBounds = GDTAppDelegateService.viewController.view.bounds;
 	return Size2i(viewBounds.size.width, viewBounds.size.height) * screen_get_max_scale();
 }
@@ -788,15 +945,26 @@ bool DisplayServerAppleEmbedded::screen_is_kept_on() const {
 
 void DisplayServerAppleEmbedded::resize_window(CGSize viewSize) {
 	Size2i size = Size2i(viewSize.width, viewSize.height) * screen_get_max_scale();
+	resize_window(size, MAIN_WINDOW_ID);
+}
 
+void DisplayServerAppleEmbedded::resize_window(Size2i p_size, WindowID p_id) {
+	Size2i size = p_size * content_scale;
 #if defined(RD_ENABLED)
 	if (rendering_context) {
-		rendering_context->window_set_size(MAIN_WINDOW_ID, size.x, size.y);
+		rendering_context->window_set_size(p_id, size.x, size.y);
 	}
 #endif
 
 	Variant resize_rect = Rect2i(Point2i(), size);
-	_window_callback(window_resize_callback, resize_rect);
+	Callable *callback = window_resize_callbacks.getptr(p_id);
+	if (callback) {
+		_window_callback(*callback, resize_rect);
+	}
+}
+
+void DisplayServerAppleEmbedded::set_content_scale(float p_scale) {
+	content_scale = p_scale;
 }
 
 void DisplayServerAppleEmbedded::window_set_vsync_mode(DisplayServer::VSyncMode p_vsync_mode, WindowID p_window) {

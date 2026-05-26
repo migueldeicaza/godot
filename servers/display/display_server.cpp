@@ -604,12 +604,24 @@ DisplayServer::WindowID DisplayServer::create_sub_window(WindowMode p_mode, VSyn
 	ERR_FAIL_V_MSG(INVALID_WINDOW_ID, "Sub-windows not supported by this display server.");
 }
 
+DisplayServer::WindowID DisplayServer::create_native_window(Ref<RenderingNativeSurface> p_native_surface) {
+	ERR_FAIL_V_MSG(INVALID_WINDOW_ID, "Native windows not supported by this display server.");
+}
+
+bool DisplayServer::is_native_window(WindowID p_id) {
+	ERR_FAIL_V_MSG(false, "Native windows not supported by this display server.");
+}
+
 void DisplayServer::show_window(WindowID p_id) {
 	ERR_FAIL_MSG("Sub-windows not supported by this display server.");
 }
 
 void DisplayServer::delete_sub_window(WindowID p_id) {
 	ERR_FAIL_MSG("Sub-windows not supported by this display server.");
+}
+
+void DisplayServer::delete_native_window(WindowID p_id) {
+	ERR_FAIL_MSG("Native windows not supported by this display server.");
 }
 
 void DisplayServer::window_set_exclusive(WindowID p_window, bool p_exclusive) {
@@ -1659,6 +1671,7 @@ void DisplayServer::_bind_methods() {
 	BIND_ENUM_CONSTANT(FEATURE_NATIVE_COLOR_PICKER);
 	BIND_ENUM_CONSTANT(FEATURE_SELF_FITTING_WINDOWS);
 	BIND_ENUM_CONSTANT(FEATURE_ACCESSIBILITY_SCREEN_READER);
+	BIND_ENUM_CONSTANT(FEATURE_NATIVE_WINDOWS);
 
 	BIND_ENUM_CONSTANT(ROLE_UNKNOWN);
 	BIND_ENUM_CONSTANT(ROLE_DEFAULT_BUTTON);
