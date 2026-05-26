@@ -31,6 +31,7 @@
 #pragma once
 
 #include "core/os/thread_safe.h"
+#include "drivers/apple/rendering_native_surface_apple.h"
 #include "servers/display/display_server.h"
 
 #if defined(RD_ENABLED)
@@ -60,7 +61,7 @@ class NativeMenu;
 
 /// "Embedded" as in "Embedded Device".
 class DisplayServerAppleEmbedded : public DisplayServer {
-	GDSOFTCLASS(DisplayServerAppleEmbedded, DisplayServer);
+	GDCLASS(DisplayServerAppleEmbedded, DisplayServer);
 
 	_THREAD_SAFE_CLASS_
 
@@ -74,26 +75,33 @@ class DisplayServerAppleEmbedded : public DisplayServer {
 
 	DisplayServerEnums::ScreenOrientation screen_orientation;
 
-	ObjectID window_attached_instance_id;
+	HashMap<DisplayServerEnums::WindowID, ObjectID> window_attached_instance_id;
 
-	Callable window_event_callback;
-	Callable window_resize_callback;
-	Callable input_event_callback;
-	Callable input_text_callback;
+	HashMap<DisplayServerEnums::WindowID, Callable> window_event_callbacks;
+	HashMap<DisplayServerEnums::WindowID, Callable> window_resize_callbacks;
+	HashMap<DisplayServerEnums::WindowID, Callable> input_event_callbacks;
+	HashMap<DisplayServerEnums::WindowID, Callable> input_text_callbacks;
 
 	Callable system_theme_changed;
 
 	int virtual_keyboard_height = 0;
+	float content_scale = 1.0f;
+	DisplayServerEnums::WindowID window_id_counter = DisplayServerEnums::MAIN_WINDOW_ID + 1;
 
 	void perform_event(const Ref<InputEvent> &p_event);
 
 	void initialize_tts() const;
+	void _window_callback(const Callable &p_callable, const Variant &p_arg) const;
+
+	static Ref<RenderingNativeSurface> native_surface;
+	HashMap<DisplayServerEnums::WindowID, Ref<RenderingNativeSurface>> window_surfaces;
 
 	bool edr_requested = false;
 	void _update_hdr_output(bool edr_headroom_changed);
 	float _calculate_current_reference_luminance() const;
 
 protected:
+	static void _bind_methods();
 	virtual bool _screen_hdr_is_supported() const { return false; }
 	virtual float _screen_potential_edr_headroom() const { return 1.0f; }
 	virtual float _screen_current_edr_headroom() const { return 1.0f; }
@@ -106,6 +114,7 @@ public:
 	String rendering_driver;
 
 	static DisplayServerAppleEmbedded *get_singleton();
+	static void set_native_surface(Ref<RenderingNativeSurface> p_native_surface);
 
 	static Vector<String> get_rendering_drivers_func();
 
@@ -120,9 +129,9 @@ public:
 	virtual void window_set_drop_files_callback(const Callable &p_callable, DisplayServerEnums::WindowID p_window = DisplayServerEnums::MAIN_WINDOW_ID) override;
 
 	static void _dispatch_input_events(const Ref<InputEvent> &p_event);
-	void send_input_event(const Ref<InputEvent> &p_event) const;
-	void send_input_text(const String &p_text) const;
-	void send_window_event(DisplayServerEnums::WindowEvent p_event) const;
+	void send_input_event(const Ref<InputEvent> &p_event, DisplayServerEnums::WindowID p_id = DisplayServerEnums::MAIN_WINDOW_ID) const;
+	void send_input_text(const String &p_text, DisplayServerEnums::WindowID p_id = DisplayServerEnums::MAIN_WINDOW_ID) const;
+	void send_window_event(DisplayServerEnums::WindowEvent p_event, DisplayServerEnums::WindowID p_id = DisplayServerEnums::MAIN_WINDOW_ID) const;
 	void _window_callback(const Callable &p_callable, const Variant &p_arg) const;
 
 	void emit_system_theme_changed();
@@ -131,12 +140,13 @@ public:
 
 	// MARK: Touches and Apple Pencil
 
-	void touch_press(int p_idx, int p_x, int p_y, bool p_pressed, bool p_double_click);
-	void touch_drag(int p_idx, int p_prev_x, int p_prev_y, int p_x, int p_y, float p_pressure, Vector2 p_tilt);
-	void touches_canceled(int p_idx);
+	void touch_press(int p_idx, int p_x, int p_y, bool p_pressed, bool p_double_click, DisplayServerEnums::WindowID p_window = DisplayServerEnums::MAIN_WINDOW_ID);
+	void touch_drag(int p_idx, int p_prev_x, int p_prev_y, int p_x, int p_y, float p_pressure, Vector2 p_tilt, DisplayServerEnums::WindowID p_window = DisplayServerEnums::MAIN_WINDOW_ID);
+	void touches_canceled(int p_idx, DisplayServerEnums::WindowID p_window = DisplayServerEnums::MAIN_WINDOW_ID);
 
 	// MARK: Keyboard
 
+	void key(Key p_key, char32_t p_char, Key p_unshifted, Key p_physical, BitField<KeyModifierMask> p_modifiers, bool p_pressed, DisplayServerEnums::WindowID p_window = DisplayServerEnums::MAIN_WINDOW_ID);
 	void key(Key p_key, char32_t p_char, Key p_unshifted, Key p_physical, NSInteger p_modifier, bool p_pressed, KeyLocation p_location);
 	bool is_keyboard_active() const;
 
@@ -175,6 +185,9 @@ public:
 	virtual Vector<DisplayServerEnums::WindowID> get_window_list() const override;
 
 	virtual DisplayServerEnums::WindowID get_window_at_screen_position(const Point2i &p_position) const override;
+	virtual DisplayServerEnums::WindowID create_native_window(Ref<RenderingNativeSurface> p_native_surface) override;
+	virtual bool is_native_window(DisplayServerEnums::WindowID p_id) override;
+	virtual void delete_native_window(DisplayServerEnums::WindowID p_id) override;
 
 	virtual int64_t window_get_native_handle(DisplayServerEnums::HandleType p_handle_type, DisplayServerEnums::WindowID p_window = DisplayServerEnums::MAIN_WINDOW_ID) const override;
 
@@ -260,6 +273,8 @@ public:
 	virtual float window_get_output_max_linear_value(DisplayServerEnums::WindowID p_window = DisplayServerEnums::MAIN_WINDOW_ID) const override;
 
 	void resize_window(CGSize size);
+	void resize_window(Size2i p_size, DisplayServerEnums::WindowID p_id);
+	void set_content_scale(float p_scale);
 	virtual void swap_buffers() override {}
 
 	virtual void set_native_icon(const String &p_filename) override;

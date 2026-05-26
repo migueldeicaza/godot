@@ -31,12 +31,15 @@
 #include "core/extension/libgodot.h"
 
 #include "core/extension/godot_instance.h"
+#include "core/object/class_db.h"
+#include "drivers/apple_embedded/display_server_apple_embedded.h"
 #include "main/main.h"
 
 #include "os_ios.h"
 
 static OS_IOS *os = nullptr;
 static GodotInstance *instance = nullptr;
+static bool apple_embedded_class_registered = false;
 
 GDExtensionObjectPtr libgodot_create_godot_instance(int p_argc, char *p_argv[], GDExtensionInitializationFunction p_init_func) {
 	ERR_FAIL_COND_V_MSG(instance != nullptr, nullptr, "Only one Godot Instance may be created.");
@@ -48,6 +51,11 @@ GDExtensionObjectPtr libgodot_create_godot_instance(int p_argc, char *p_argv[], 
 		memdelete(os);
 		os = nullptr;
 		return nullptr;
+	}
+
+	if (!apple_embedded_class_registered) {
+		ClassDB::register_abstract_class<DisplayServerAppleEmbedded>();
+		apple_embedded_class_registered = true;
 	}
 
 	instance = memnew(GodotInstance);

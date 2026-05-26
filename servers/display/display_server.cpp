@@ -613,6 +613,18 @@ DisplayServerEnums::WindowID DisplayServer::create_sub_window(DisplayServerEnums
 	ERR_FAIL_V_MSG(DisplayServerEnums::INVALID_WINDOW_ID, "Sub-windows not supported by this display server.");
 }
 
+DisplayServerEnums::WindowID DisplayServer::create_native_window(Ref<RenderingNativeSurface> p_native_surface) {
+	ERR_FAIL_V_MSG(DisplayServerEnums::INVALID_WINDOW_ID, "Native windows not supported by this display server.");
+}
+
+bool DisplayServer::is_native_window(DisplayServerEnums::WindowID p_id) {
+	return false;
+}
+
+void DisplayServer::delete_native_window(DisplayServerEnums::WindowID p_id) {
+	ERR_FAIL_MSG("Native windows not supported by this display server.");
+}
+
 void DisplayServer::show_window(DisplayServerEnums::WindowID p_id) {
 	ERR_FAIL_MSG("Sub-windows not supported by this display server.");
 }
@@ -1767,6 +1779,7 @@ void DisplayServer::_bind_methods() {
 	BIND_ENUM_CONSTANT(DisplayServerEnums::FEATURE_ACCESSIBILITY_SCREEN_READER);
 	BIND_ENUM_CONSTANT(DisplayServerEnums::FEATURE_HDR_OUTPUT);
 	BIND_ENUM_CONSTANT(DisplayServerEnums::FEATURE_PIP_MODE);
+	BIND_ENUM_CONSTANT(DisplayServerEnums::FEATURE_NATIVE_WINDOWS);
 
 #ifndef DISABLE_DEPRECATED
 	BIND_ENUM_CONSTANT(DisplayServerEnums::ROLE_UNKNOWN);

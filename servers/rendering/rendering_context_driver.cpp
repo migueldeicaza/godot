@@ -52,6 +52,19 @@ Error RenderingContextDriver::window_create(DisplayServerEnums::WindowID p_windo
 	}
 }
 
+RenderingContextDriver::SurfaceID RenderingContextDriver::surface_create(Ref<RenderingNativeSurface> p_native_surface) {
+	return SurfaceID();
+}
+
+Error RenderingContextDriver::window_create(DisplayServerEnums::WindowID p_window, Ref<RenderingNativeSurface> p_native_surface) {
+	SurfaceID surface = surface_create(p_native_surface);
+	if (surface == 0) {
+		return ERR_CANT_CREATE;
+	}
+	window_surface_map[p_window] = surface;
+	return OK;
+}
+
 void RenderingContextDriver::window_set_size(DisplayServerEnums::WindowID p_window, uint32_t p_width, uint32_t p_height) {
 	SurfaceID surface = surface_get_from_window(p_window);
 	if (surface) {

@@ -29,6 +29,7 @@
 /**************************************************************************/
 
 #include "rendering_context_driver_metal.h"
+#include "drivers/apple/rendering_native_surface_apple.h"
 
 #include "core/os/os.h"
 #include "core/templates/sort_array.h"
@@ -403,6 +404,16 @@ RenderingContextDriver::SurfaceID RenderingContextDriverMetal::surface_create(co
 	}
 
 	return SurfaceID(surface);
+}
+
+RenderingContextDriver::SurfaceID RenderingContextDriverMetal::surface_create(Ref<RenderingNativeSurface> p_native_surface) {
+	ERR_FAIL_COND_V(!p_native_surface.is_valid(), SurfaceID());
+	Ref<RenderingNativeSurfaceApple> apple_surface = Object::cast_to<RenderingNativeSurfaceApple>(*p_native_surface);
+	ERR_FAIL_COND_V(apple_surface.is_null(), SurfaceID());
+
+	WindowPlatformData wpd = {};
+	wpd.layer = reinterpret_cast<CA::MetalLayer *>(apple_surface->get_layer());
+	return surface_create(&wpd);
 }
 
 void RenderingContextDriverMetal::surface_set_size(SurfaceID p_surface, uint32_t p_width, uint32_t p_height) {

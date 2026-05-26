@@ -39,6 +39,7 @@
 #include "core/variant/callable.h"
 #include "core/variant/typed_array.h"
 #include "servers/display/display_server_enums.h"
+#include "servers/rendering/rendering_native_surface.h"
 
 class NativeMenu;
 class Texture2D;
@@ -384,6 +385,9 @@ public:
 	virtual int64_t window_get_native_handle(DisplayServerEnums::HandleType p_handle_type, DisplayServerEnums::WindowID p_window = DisplayServerEnums::MAIN_WINDOW_ID) const;
 
 	virtual DisplayServerEnums::WindowID get_window_at_screen_position(const Point2i &p_position) const = 0;
+	virtual DisplayServerEnums::WindowID create_native_window(Ref<RenderingNativeSurface> p_native_surface);
+	virtual bool is_native_window(DisplayServerEnums::WindowID p_id);
+	virtual void delete_native_window(DisplayServerEnums::WindowID p_id);
 
 	virtual void window_attach_instance_id(ObjectID p_instance, DisplayServerEnums::WindowID p_window = DisplayServerEnums::MAIN_WINDOW_ID) = 0; // Note: internal method used by Window, do not expose.
 	virtual ObjectID window_get_attached_instance_id(DisplayServerEnums::WindowID p_window = DisplayServerEnums::MAIN_WINDOW_ID) const = 0;
