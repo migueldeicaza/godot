@@ -9,28 +9,504 @@ use std::{
     ffi::{c_char, c_void, CStr, CString},
     panic::{catch_unwind, AssertUnwindSafe},
     ptr, slice,
+    sync::atomic::{AtomicUsize, Ordering},
 };
+
+static DUMP_INDEX: AtomicUsize = AtomicUsize::new(0);
 
 struct ParsedShader {
     module: naga::Module,
     info: naga::valid::ModuleInfo,
     stage: ShaderStage,
+    specialization_constants: Vec<SpecializationConstant>,
+    combined_samplers: Vec<CombinedSampler>,
 }
 
-fn godot_source(stage: ShaderStage, source: &str) -> Result<String, String> {
-    let mut adjusted = source
-        .replace("highp ", "")
-        .replace("mediump ", "")
-        .replace("lowp ", "");
+struct SpecializationConstant {
+    id: u32,
+    name: String,
+}
+
+struct CombinedSampler {
+    group: u32,
+    binding: u32,
+    synthetic_sampler_binding: u32,
+}
+
+const SYNTHETIC_SAMPLER_BINDING_OFFSET: u32 = 1_000;
+
+const INVERSE_POLYFILLS: &str = r#"
+mat2 _godot_naga_inverse(mat2 m) {
+    mat2 adj;
+    adj[0][0] = m[1][1];
+    adj[0][1] = -m[0][1];
+    adj[1][0] = -m[1][0];
+    adj[1][1] = m[0][0];
+    float det = m[0][0] * m[1][1] - m[1][0] * m[0][1];
+    return adj * (1.0 / det);
+}
+
+mat3 _godot_naga_inverse(mat3 m) {
+    mat3 adj;
+    adj[0][0] =   (m[1][1] * m[2][2] - m[2][1] * m[1][2]);
+    adj[1][0] = - (m[1][0] * m[2][2] - m[2][0] * m[1][2]);
+    adj[2][0] =   (m[1][0] * m[2][1] - m[2][0] * m[1][1]);
+    adj[0][1] = - (m[0][1] * m[2][2] - m[2][1] * m[0][2]);
+    adj[1][1] =   (m[0][0] * m[2][2] - m[2][0] * m[0][2]);
+    adj[2][1] = - (m[0][0] * m[2][1] - m[2][0] * m[0][1]);
+    adj[0][2] =   (m[0][1] * m[1][2] - m[1][1] * m[0][2]);
+    adj[1][2] = - (m[0][0] * m[1][2] - m[1][0] * m[0][2]);
+    adj[2][2] =   (m[0][0] * m[1][1] - m[1][0] * m[0][1]);
+    float det = m[0][0] * (m[1][1] * m[2][2] - m[1][2] * m[2][1])
+        - m[0][1] * (m[1][0] * m[2][2] - m[1][2] * m[2][0])
+        + m[0][2] * (m[1][0] * m[2][1] - m[1][1] * m[2][0]);
+    return adj * (1.0 / det);
+}
+
+mat4 _godot_naga_inverse(mat4 m) {
+    float f00 = m[2][2] * m[3][3] - m[3][2] * m[2][3];
+    float f01 = m[2][1] * m[3][3] - m[3][1] * m[2][3];
+    float f02 = m[2][1] * m[3][2] - m[3][1] * m[2][2];
+    float f03 = m[2][0] * m[3][3] - m[3][0] * m[2][3];
+    float f04 = m[2][0] * m[3][2] - m[3][0] * m[2][2];
+    float f05 = m[2][0] * m[3][1] - m[3][0] * m[2][1];
+    float f06 = m[1][2] * m[3][3] - m[3][2] * m[1][3];
+    float f07 = m[1][1] * m[3][3] - m[3][1] * m[1][3];
+    float f08 = m[1][1] * m[3][2] - m[3][1] * m[1][2];
+    float f09 = m[1][0] * m[3][3] - m[3][0] * m[1][3];
+    float f10 = m[1][0] * m[3][2] - m[3][0] * m[1][2];
+    float f11 = m[1][1] * m[3][3] - m[3][1] * m[1][3];
+    float f12 = m[1][0] * m[3][1] - m[3][0] * m[1][1];
+    float f13 = m[1][2] * m[2][3] - m[2][2] * m[1][3];
+    float f14 = m[1][1] * m[2][3] - m[2][1] * m[1][3];
+    float f15 = m[1][1] * m[2][2] - m[2][1] * m[1][2];
+    float f16 = m[1][0] * m[2][3] - m[2][0] * m[1][3];
+    float f17 = m[1][0] * m[2][2] - m[2][0] * m[1][2];
+    float f18 = m[1][0] * m[2][1] - m[2][0] * m[1][1];
+    mat4 adj;
+    adj[0][0] =   (m[1][1] * f00 - m[1][2] * f01 + m[1][3] * f02);
+    adj[1][0] = - (m[1][0] * f00 - m[1][2] * f03 + m[1][3] * f04);
+    adj[2][0] =   (m[1][0] * f01 - m[1][1] * f03 + m[1][3] * f05);
+    adj[3][0] = - (m[1][0] * f02 - m[1][1] * f04 + m[1][2] * f05);
+    adj[0][1] = - (m[0][1] * f00 - m[0][2] * f01 + m[0][3] * f02);
+    adj[1][1] =   (m[0][0] * f00 - m[0][2] * f03 + m[0][3] * f04);
+    adj[2][1] = - (m[0][0] * f01 - m[0][1] * f03 + m[0][3] * f05);
+    adj[3][1] =   (m[0][0] * f02 - m[0][1] * f04 + m[0][2] * f05);
+    adj[0][2] =   (m[0][1] * f06 - m[0][2] * f07 + m[0][3] * f08);
+    adj[1][2] = - (m[0][0] * f06 - m[0][2] * f09 + m[0][3] * f10);
+    adj[2][2] =   (m[0][0] * f11 - m[0][1] * f09 + m[0][3] * f12);
+    adj[3][2] = - (m[0][0] * f08 - m[0][1] * f10 + m[0][2] * f12);
+    adj[0][3] = - (m[0][1] * f13 - m[0][2] * f14 + m[0][3] * f15);
+    adj[1][3] =   (m[0][0] * f13 - m[0][2] * f16 + m[0][3] * f17);
+    adj[2][3] = - (m[0][0] * f14 - m[0][1] * f16 + m[0][3] * f18);
+    adj[3][3] =   (m[0][0] * f15 - m[0][1] * f17 + m[0][2] * f18);
+    float det = m[0][0] * adj[0][0] + m[0][1] * adj[1][0]
+        + m[0][2] * adj[2][0] + m[0][3] * adj[3][0];
+    return adj * (1.0 / det);
+}
+"#;
+
+fn lower_specialization_constants(
+    source: &str,
+) -> Result<(String, Vec<SpecializationConstant>), String> {
+    let mut adjusted = String::with_capacity(source.len());
+    let mut constants = Vec::new();
+    for line in source.split_inclusive('\n') {
+        let Some(layout_start) = line.find("layout(constant_id") else {
+            adjusted.push_str(line);
+            continue;
+        };
+        let layout = &line[layout_start..];
+        let equals = layout
+            .find('=')
+            .ok_or_else(|| "Specialization constant has no ID".to_owned())?;
+        let id_text: String = layout[equals + 1..]
+            .trim_start()
+            .chars()
+            .take_while(char::is_ascii_digit)
+            .collect();
+        let id = id_text
+            .parse()
+            .map_err(|_| "Specialization constant has an invalid ID".to_owned())?;
+        let layout_end = layout
+            .find(')')
+            .ok_or_else(|| "Specialization constant has an unterminated layout".to_owned())?;
+        let declaration = layout[layout_end + 1..].trim_start();
+        let before_value = declaration
+            .split_once('=')
+            .map(|(before, _)| before)
+            .ok_or_else(|| "Specialization constant has no default value".to_owned())?;
+        let name = before_value
+            .trim()
+            .strip_prefix("const ")
+            .and_then(|declaration| declaration.split_whitespace().last())
+            .ok_or_else(|| "Specialization constant has an invalid declaration".to_owned())?
+            .to_owned();
+        constants.push(SpecializationConstant { id, name });
+        adjusted.push_str(&line[..layout_start]);
+        adjusted.push_str(&layout[layout_end + 1..]);
+    }
+    Ok((adjusted, constants))
+}
+
+fn strip_precision_qualifiers(source: &str) -> String {
+    let mut adjusted = String::with_capacity(source.len());
+    let mut position = 0;
+    while position < source.len() {
+        let next = ["highp", "mediump", "lowp"]
+            .into_iter()
+            .filter_map(|qualifier| {
+                source[position..]
+                    .find(qualifier)
+                    .map(|relative| (position + relative, qualifier))
+            })
+            .min_by_key(|(start, _)| *start);
+        let Some((start, qualifier)) = next else {
+            adjusted.push_str(&source[position..]);
+            break;
+        };
+        let end = start + qualifier.len();
+        let before_is_identifier = source[..start]
+            .chars()
+            .next_back()
+            .is_some_and(|ch| ch.is_ascii_alphanumeric() || ch == '_');
+        let after_is_identifier = source[end..]
+            .chars()
+            .next()
+            .is_some_and(|ch| ch.is_ascii_alphanumeric() || ch == '_');
+        adjusted.push_str(&source[position..start]);
+        if before_is_identifier || after_is_identifier {
+            adjusted.push_str(qualifier);
+        }
+        position = end;
+    }
+    adjusted
+}
+
+fn layout_value(line: &str, name: &str) -> Result<u32, String> {
+    let start = line
+        .find(name)
+        .ok_or_else(|| format!("Combined sampler declaration is missing '{name}'"))?
+        + name.len();
+    let value = line[start..]
+        .trim_start()
+        .strip_prefix('=')
+        .ok_or_else(|| format!("Combined sampler declaration has no value for '{name}'"))?
+        .trim_start();
+    let digits = value
+        .chars()
+        .take_while(char::is_ascii_digit)
+        .collect::<String>();
+    digits
+        .parse()
+        .map_err(|_| format!("Combined sampler declaration has an invalid '{name}' value"))
+}
+
+fn split_known_combined_samplers(source: String) -> Result<(String, Vec<CombinedSampler>), String> {
+    let mut active = Vec::new();
+    for name in ["ltc_lut1", "ltc_lut2"] {
+        let declaration = format!("uniform sampler2D {name};");
+        let Some(line) = source.lines().find(|line| line.contains(&declaration)) else {
+            continue;
+        };
+        let group = layout_value(line, "set")?;
+        let binding = layout_value(line, "binding")?;
+        active.push((
+            name,
+            CombinedSampler {
+                group,
+                binding,
+                synthetic_sampler_binding: binding + SYNTHETIC_SAMPLER_BINDING_OFFSET,
+            },
+        ));
+    }
+    if active.is_empty() {
+        return Ok((source, Vec::new()));
+    }
+
+    let mut adjusted = String::with_capacity(source.len());
+    for source_line in source.split_inclusive('\n') {
+        let mut line = source_line.to_owned();
+        for (name, combined) in &active {
+            let declaration = format!("uniform sampler2D {name};");
+            if line.contains(&declaration) {
+                line = line.replace(
+                    &declaration,
+                    &format!(
+                        "uniform texture2D {name}_texture;\n\
+                         layout(set = {}, binding = {}) uniform sampler {name}_sampler;",
+                        combined.group, combined.synthetic_sampler_binding
+                    ),
+                );
+                continue;
+            }
+
+            if line.trim_start().starts_with("void ltc_evaluate_specular(") {
+                line = line.replace(&format!("sampler2D {name}, "), "");
+                continue;
+            }
+            if line.contains("ltc_evaluate_specular(") {
+                line = line.replace(&format!("{name}, "), "");
+                continue;
+            }
+            line = line.replace(
+                &format!("texture({name},"),
+                &format!("texture(sampler2D({name}_texture, {name}_sampler),"),
+            );
+        }
+        adjusted.push_str(&line);
+    }
+    Ok((
+        adjusted,
+        active.into_iter().map(|(_, combined)| combined).collect(),
+    ))
+}
+
+fn add_inverse_polyfills(source: String) -> Result<String, String> {
+    let mut adjusted = String::with_capacity(source.len());
+    let mut position = 0;
+    let mut replaced = false;
+    while let Some(relative) = source[position..].find("inverse") {
+        let start = position + relative;
+        let name_end = start + "inverse".len();
+        let before_is_identifier = source[..start]
+            .chars()
+            .next_back()
+            .is_some_and(|ch| ch.is_ascii_alphanumeric() || ch == '_');
+        let call_start = name_end
+            + source[name_end..]
+                .chars()
+                .take_while(|ch| ch.is_ascii_whitespace())
+                .map(char::len_utf8)
+                .sum::<usize>();
+        adjusted.push_str(&source[position..start]);
+        if !before_is_identifier && source[call_start..].starts_with('(') {
+            adjusted.push_str("_godot_naga_inverse");
+            replaced = true;
+        } else {
+            adjusted.push_str("inverse");
+        }
+        position = name_end;
+    }
+    adjusted.push_str(&source[position..]);
+
+    if replaced {
+        let version_start = adjusted
+            .find("#version")
+            .ok_or_else(|| "Godot shader has no version directive".to_owned())?;
+        let header_end = version_start
+            + adjusted[version_start..]
+                .find('\n')
+                .ok_or_else(|| "Godot shader has an unterminated version directive".to_owned())?
+            + 1;
+        adjusted.insert_str(header_end, INVERSE_POLYFILLS);
+    }
+    Ok(adjusted)
+}
+
+fn godot_source(
+    stage: ShaderStage,
+    source: &str,
+) -> Result<(String, Vec<SpecializationConstant>, Vec<CombinedSampler>), String> {
+    let mut adjusted = strip_precision_qualifiers(source);
+    let (source, combined_samplers) = split_known_combined_samplers(adjusted)?;
+    adjusted = source;
+    let (source, specialization_constants) = lower_specialization_constants(&adjusted)?;
+    adjusted = add_inverse_polyfills(source)?;
     if stage != ShaderStage::Vertex {
-        return Ok(adjusted);
+        return Ok((adjusted, specialization_constants, combined_samplers));
     }
 
     let main_end = adjusted
         .rfind('}')
         .ok_or_else(|| "Godot vertex shader has no closing main brace".to_owned())?;
     adjusted.insert_str(main_end, "\n    gl_Position.y = -gl_Position.y;\n");
-    Ok(adjusted)
+    Ok((adjusted, specialization_constants, combined_samplers))
+}
+
+fn godot_glslang_source(source: &str) -> Result<String, String> {
+    let (source, _) = split_known_combined_samplers(strip_precision_qualifiers(source))?;
+    add_inverse_polyfills(source)
+}
+
+fn lower_ir_overrides(module: &mut naga::Module) -> Result<Vec<SpecializationConstant>, String> {
+    struct OverrideData {
+        handle: naga::Handle<naga::Override>,
+        name: String,
+        id: u32,
+        ty: naga::Handle<naga::Type>,
+        init: naga::Handle<naga::Expression>,
+        span: naga::Span,
+    }
+
+    let overrides = module
+        .overrides
+        .iter()
+        .map(|(handle, value)| {
+            let name = value
+                .name
+                .clone()
+                .ok_or_else(|| "Naga specialization constant has no name".to_owned())?;
+            let id = value
+                .id
+                .ok_or_else(|| format!("Naga specialization constant '{name}' has no ID"))?;
+            let init = value.init.ok_or_else(|| {
+                format!("Naga specialization constant '{name}' has no default value")
+            })?;
+            Ok(OverrideData {
+                handle,
+                name,
+                id: id.into(),
+                ty: value.ty,
+                init,
+                span: module.overrides.get_span(handle),
+            })
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+    if overrides.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let mut replacements = Vec::with_capacity(overrides.len());
+    let mut specialization_constants = Vec::with_capacity(overrides.len());
+    for value in overrides {
+        if value.handle.index() != replacements.len() {
+            return Err("Naga specialization constant handles are not contiguous".to_owned());
+        }
+        let constant = module.constants.append(
+            naga::Constant {
+                name: Some(value.name.clone()),
+                ty: value.ty,
+                init: value.init,
+            },
+            value.span,
+        );
+        replacements.push(constant);
+        specialization_constants.push(SpecializationConstant {
+            id: value.id,
+            name: value.name,
+        });
+    }
+
+    let replace = |expressions: &mut naga::Arena<naga::Expression>| {
+        for (_, expression) in expressions.iter_mut() {
+            if let naga::Expression::Override(handle) = *expression {
+                *expression = naga::Expression::Constant(replacements[handle.index()]);
+            }
+        }
+    };
+    replace(&mut module.global_expressions);
+    for (_, function) in module.functions.iter_mut() {
+        replace(&mut function.expressions);
+    }
+    for entry_point in &mut module.entry_points {
+        replace(&mut entry_point.function.expressions);
+    }
+    module.overrides.clear();
+    Ok(specialization_constants)
+}
+
+fn find_combined_samplers(module: &naga::Module) -> Vec<CombinedSampler> {
+    module
+        .global_variables
+        .iter()
+        .filter_map(|(_, variable)| {
+            let binding = variable.binding.as_ref()?;
+            (binding.binding >= SYNTHETIC_SAMPLER_BINDING_OFFSET).then(|| CombinedSampler {
+                group: binding.group,
+                binding: binding.binding - SYNTHETIC_SAMPLER_BINDING_OFFSET,
+                synthetic_sampler_binding: binding.binding,
+            })
+        })
+        .collect()
+}
+
+fn invalid_spirv_id_context(bytes: &[u8], id: u32) -> String {
+    let words = bytes
+        .chunks_exact(4)
+        .map(|word| u32::from_le_bytes(word.try_into().unwrap()))
+        .collect::<Vec<_>>();
+    let mut context = Vec::new();
+    let mut offset = 5;
+    while offset < words.len() {
+        let instruction = words[offset];
+        let word_count = (instruction >> 16) as usize;
+        if word_count == 0 || offset + word_count > words.len() {
+            break;
+        }
+        let operands = &words[offset + 1..offset + word_count];
+        if operands.contains(&id) {
+            let opcode = instruction & 0xffff;
+            let name = spirv::Op::from_u32(opcode)
+                .map(|op| format!("{op:?}"))
+                .unwrap_or_else(|| format!("Op({opcode})"));
+            context.push(format!("word {offset}: {name} {operands:?}"));
+        }
+        offset += word_count;
+    }
+    if context.is_empty() {
+        String::new()
+    } else {
+        format!("\nInstructions referencing %{id}:\n{}", context.join("\n"))
+    }
+}
+
+fn combined_sampler_context(source: &str) -> String {
+    let lines = source
+        .lines()
+        .enumerate()
+        .filter(|(_, line)| line.contains("ltc_lut1") || line.contains("ltc_lut2"))
+        .map(|(index, line)| format!("{}: {}", index + 1, line.trim()))
+        .collect::<Vec<_>>();
+    if lines.is_empty() {
+        String::new()
+    } else {
+        format!("\nCombined sampler occurrences:\n{}", lines.join("\n"))
+    }
+}
+
+fn restore_specialization_constants(
+    mut source: String,
+    constants: &[SpecializationConstant],
+) -> Result<String, String> {
+    for constant in constants {
+        let name_marker = format!(" {} = ", constant.name);
+        let Some(line) = source
+            .lines()
+            .find(|line| line.starts_with("constant ") && line.contains(&name_marker))
+            .map(str::to_owned)
+        else {
+            // Naga omits constants that are unused by this entry point. Metal permits
+            // the pipeline to provide only the function constants that remain active.
+            continue;
+        };
+        let (declaration, default) = line
+            .strip_suffix(';')
+            .and_then(|line| line.split_once(" = "))
+            .ok_or_else(|| {
+                format!(
+                    "Naga MSL specialization constant '{}' has an invalid declaration",
+                    constant.name
+                )
+            })?;
+        let type_name = declaration
+            .strip_prefix("constant ")
+            .and_then(|declaration| declaration.strip_suffix(&format!(" {}", constant.name)))
+            .ok_or_else(|| {
+                format!(
+                    "Naga MSL specialization constant '{}' has an invalid type",
+                    constant.name
+                )
+            })?;
+        let temporary = format!("{}_tmp", constant.name);
+        let replacement = format!(
+            "constant {type_name} {temporary} [[function_constant({})]];\n\
+             constant {type_name} {} = is_function_constant_defined({temporary}) ? {temporary} : {default};",
+            constant.id, constant.name
+        );
+        source = source.replacen(&line, &replacement, 1);
+    }
+    Ok(source)
 }
 
 #[repr(C)]
@@ -93,11 +569,17 @@ pub unsafe extern "C" fn godot_naga_parse(
         let source = CStr::from_ptr(source)
             .to_str()
             .map_err(|err| format!("GLSL source is not UTF-8: {err}"))?;
-        let source = godot_source(stage, source)?;
+        let (source, specialization_constants, combined_samplers) = godot_source(stage, source)?;
         let mut frontend = glsl::Frontend::default();
         let module = frontend
             .parse(&glsl::Options::from(stage), &source)
-            .map_err(|errors| errors.emit_to_string(&source))?;
+            .map_err(|errors| {
+                format!(
+                    "{}{}",
+                    errors.emit_to_string(&source),
+                    combined_sampler_context(&source)
+                )
+            })?;
         let info = Validator::new(ValidationFlags::all(), msl::supported_capabilities())
             .validate(&module)
             .map_err(|err| format!("Naga validation failed: {err}"))?;
@@ -105,6 +587,8 @@ pub unsafe extern "C" fn godot_naga_parse(
             module,
             info,
             stage,
+            specialization_constants,
+            combined_samplers,
         })
     }));
 
@@ -114,6 +598,32 @@ pub unsafe extern "C" fn godot_naga_parse(
             .unwrap_or(ptr::null_mut()),
         Err(_) => {
             set_string(error, "Naga panicked while parsing GLSL".to_owned());
+            ptr::null_mut()
+        }
+    }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn godot_naga_preprocess_for_glslang(
+    source: *const c_char,
+    error: *mut *mut c_char,
+) -> *mut c_char {
+    if source.is_null() {
+        set_string(error, "Naga received a null GLSL source".to_owned());
+        return ptr::null_mut();
+    }
+    let result = catch_unwind(AssertUnwindSafe(|| -> Result<String, String> {
+        let source = CStr::from_ptr(source)
+            .to_str()
+            .map_err(|err| format!("GLSL source is not UTF-8: {err}"))?;
+        godot_glslang_source(source)
+    }));
+    match result {
+        Ok(result) => ffi_error(error, result)
+            .map(|source| CString::new(source).unwrap().into_raw())
+            .unwrap_or(ptr::null_mut()),
+        Err(_) => {
+            set_string(error, "Naga panicked while preprocessing GLSL".to_owned());
             ptr::null_mut()
         }
     }
@@ -134,8 +644,17 @@ pub unsafe extern "C" fn godot_naga_parse_spirv(
     let result = catch_unwind(AssertUnwindSafe(|| -> Result<ParsedShader, String> {
         let stage = stage_from_u32(stage)?;
         let bytes = slice::from_raw_parts(spirv, length);
-        let module = naga::front::spv::parse_u8_slice(bytes, &naga::front::spv::Options::default())
-            .map_err(|err| format!("Naga SPIR-V parsing failed: {err}"))?;
+        let mut module =
+            naga::front::spv::parse_u8_slice(bytes, &naga::front::spv::Options::default())
+                .map_err(|err| {
+                    let context = match err {
+                        naga::front::spv::Error::InvalidId(id) => {
+                            invalid_spirv_id_context(bytes, id)
+                        }
+                        _ => String::new(),
+                    };
+                    format!("Naga SPIR-V parsing failed: {err}{context}")
+                })?;
         if !module
             .entry_points
             .iter()
@@ -143,6 +662,8 @@ pub unsafe extern "C" fn godot_naga_parse_spirv(
         {
             return Err("SPIR-V does not contain the expected 'main' entry point".to_owned());
         }
+        let specialization_constants = lower_ir_overrides(&mut module)?;
+        let combined_samplers = find_combined_samplers(&module);
         let info = Validator::new(ValidationFlags::all(), msl::supported_capabilities())
             .validate(&module)
             .map_err(|err| format!("Naga validation failed: {err}"))?;
@@ -150,6 +671,8 @@ pub unsafe extern "C" fn godot_naga_parse_spirv(
             module,
             info,
             stage,
+            specialization_constants,
+            combined_samplers,
         })
     }));
 
@@ -264,12 +787,43 @@ pub unsafe extern "C" fn godot_naga_write_msl(
                 target,
             );
         }
+        for combined in &shader.combined_samplers {
+            let original = ResourceBinding {
+                group: combined.group,
+                binding: combined.binding,
+            };
+            let original_target = resources.resources.get_mut(&original).ok_or_else(|| {
+                format!(
+                    "Metal binding map is missing combined sampler {}:{}",
+                    combined.group, combined.binding
+                )
+            })?;
+            let sampler = original_target.sampler.take().ok_or_else(|| {
+                format!(
+                    "Metal binding map has no sampler slot for combined sampler {}:{}",
+                    combined.group, combined.binding
+                )
+            })?;
+            resources.resources.insert(
+                ResourceBinding {
+                    group: combined.group,
+                    binding: combined.synthetic_sampler_binding,
+                },
+                msl::BindTarget {
+                    sampler: Some(sampler),
+                    ..Default::default()
+                },
+            );
+        }
         if push_constant_buffer >= 0 {
             resources.immediates_buffer = Some(
                 u8::try_from(push_constant_buffer)
                     .map_err(|_| format!("Metal push constant slot {push_constant_buffer} exceeds Naga's limit of 255"))?,
             );
         }
+        // Match SPIRV-Cross' reserved Metal buffer slot. Naga requires this for
+        // storage-buffer types with runtime-sized trailing arrays.
+        resources.sizes_buffer = Some(25);
 
         let mut options = msl::Options {
             lang_version: (msl_major, msl_minor),
@@ -284,6 +838,17 @@ pub unsafe extern "C" fn godot_naga_write_msl(
         };
         let (source, info) = msl::write_string(&shader.module, &shader.info, &options, &pipeline)
             .map_err(|err| format!("Naga MSL generation failed: {err}"))?;
+        let source = restore_specialization_constants(source, &shader.specialization_constants)?;
+        if let Ok(directory) = std::env::var("GODOT_NAGA_DUMP_MSL_DIR") {
+            std::fs::create_dir_all(&directory)
+                .map_err(|err| format!("Could not create Naga MSL dump directory: {err}"))?;
+            let index = DUMP_INDEX.fetch_add(1, Ordering::Relaxed);
+            std::fs::write(
+                format!("{directory}/naga_{index}_{:?}.metal", shader.stage),
+                &source,
+            )
+            .map_err(|err| format!("Could not write Naga MSL dump: {err}"))?;
+        }
         let translated_entry = info
             .entry_point_names
             .into_iter()
@@ -336,8 +901,21 @@ mod tests {
 
     const VERTEX: &str = r#"#version 450
 layout(location = 0) in vec3 position;
-void main() { gl_Position = vec4(position, 1.0); }
+layout(constant_id = 7) const bool flip_x = false;
+void main() {
+    mat3 transform = inverse(mat3(2.0));
+    vec3 transformed = transform * position;
+    gl_Position = vec4(flip_x ? -transformed.x : transformed.x, transformed.yz, 1.0);
+}
 "#;
+
+    #[test]
+    fn strips_only_standalone_precision_qualifiers() {
+        assert_eq!(
+            strip_precision_qualifiers("highp float albedo_highp = mediump_value;"),
+            " float albedo_highp = mediump_value;"
+        );
+    }
 
     #[test]
     fn translates_godot_vertex_glsl_to_spirv_and_msl() {
@@ -367,7 +945,57 @@ void main() { gl_Position = vec4(position, 1.0); }
             let source = CStr::from_ptr(msl).to_string_lossy();
             assert!(source.contains("vertex"));
             assert!(source.contains("-"));
+            assert!(source.contains("flip_x_tmp [[function_constant(7)]]"));
+            assert!(source.contains("is_function_constant_defined(flip_x_tmp)"));
+            assert!(!source.contains("metal::inverse("));
             assert!(!CStr::from_ptr(entry).to_bytes().is_empty());
+
+            godot_naga_string_free(msl);
+            godot_naga_string_free(entry);
+            godot_naga_module_free(shader);
+        }
+    }
+
+    #[test]
+    fn splits_forward_combined_samplers_and_uses_globals_in_ltc_helper() {
+        const FRAGMENT: &str = r#"#version 450
+layout(location = 0) out vec4 color;
+layout(set = 0, binding = 18) uniform sampler2D ltc_lut1;
+void ltc_evaluate_specular(sampler2D ltc_lut1, out vec4 result) {
+    result = texture(ltc_lut1, vec2(0.5));
+}
+void main() {
+    ltc_evaluate_specular(ltc_lut1, color);
+}
+"#;
+        unsafe {
+            let source = CString::new(FRAGMENT).unwrap();
+            let mut error = ptr::null_mut();
+            let shader = godot_naga_parse(1, source.as_ptr(), &mut error);
+            assert!(
+                !shader.is_null(),
+                "{}",
+                CStr::from_ptr(error).to_string_lossy()
+            );
+
+            let binding = GodotNagaBinding {
+                group: 0,
+                binding: 18,
+                buffer: -1,
+                texture: 2,
+                sampler: 3,
+                writable: 0,
+            };
+            let mut entry = ptr::null_mut();
+            let msl = godot_naga_write_msl(shader, 2, 4, &binding, 1, -1, &mut entry, &mut error);
+            assert!(
+                !msl.is_null(),
+                "{}",
+                CStr::from_ptr(error).to_string_lossy()
+            );
+            let source = CStr::from_ptr(msl).to_string_lossy();
+            assert!(source.contains("[[texture(2)]]"));
+            assert!(source.contains("[[sampler(3)]]"));
 
             godot_naga_string_free(msl);
             godot_naga_string_free(entry);

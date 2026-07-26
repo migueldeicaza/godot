@@ -48,6 +48,7 @@ struct GodotNagaBytes {
 };
 
 void *godot_naga_parse(uint32_t p_stage, const char *p_source, char **r_error);
+char *godot_naga_preprocess_for_glslang(const char *p_source, char **r_error);
 void *godot_naga_parse_spirv(uint32_t p_stage, const uint8_t *p_spirv, size_t p_length, char **r_error);
 GodotNagaBytes godot_naga_write_spirv(const void *p_module, char **r_error);
 char *godot_naga_write_msl(const void *p_module, uint8_t p_msl_major, uint8_t p_msl_minor, const GodotNagaBinding *p_bindings, size_t p_binding_count, int32_t p_push_constant_buffer, char **r_entry_point, char **r_error);
@@ -69,6 +70,14 @@ NagaShaderModule::~NagaShaderModule() {
 	if (module != nullptr) {
 		godot_naga_module_free(module);
 	}
+}
+
+String NagaShaderModule::preprocess_for_glslang(const String &p_source, String &r_error) {
+	CharString source = p_source.utf8();
+	char *error = nullptr;
+	char *preprocessed = godot_naga_preprocess_for_glslang(source.get_data(), &error);
+	r_error = take_naga_string(error);
+	return take_naga_string(preprocessed);
 }
 
 bool NagaShaderModule::parse(RenderingDeviceCommons::ShaderStage p_stage, const String &p_source, String &r_error) {

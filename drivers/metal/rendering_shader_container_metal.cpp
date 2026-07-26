@@ -41,6 +41,9 @@
 #ifdef MODULE_NAGA_ENABLED
 #include "modules/naga/naga_bridge.h"
 #endif
+#if defined(MODULE_NAGA_ENABLED) && defined(MODULE_GLSLANG_ENABLED)
+#include "modules/glslang/shader_compile.h"
+#endif
 
 #include <thirdparty/spirv-reflect/spirv_reflect.h>
 
@@ -842,15 +845,35 @@ bool RenderingShaderContainerMetal::_set_code_from_source(const String &p_shader
 	for (uint32_t i = 0; i < p_source.size(); i++) {
 		NagaShaderModule *module = memnew(NagaShaderModule);
 		String error;
+		Vector<uint8_t> reflection_spirv = p_source[i].reflection_spirv;
 		if (!module->parse(p_source[i].shader_stage, p_source[i].source, error)) {
+			String transformed_error;
+			bool transformed_parsed = false;
+#ifdef MODULE_GLSLANG_ENABLED
+			String transformed_source = NagaShaderModule::preprocess_for_glslang(p_source[i].source, transformed_error);
+			if (!transformed_source.is_empty()) {
+				String glslang_error;
+				Vector<uint8_t> transformed_spirv = compile_glslang_shader(p_source[i].shader_stage, transformed_source, RDC::SHADER_LANGUAGE_VULKAN_VERSION_1_1, RDC::SHADER_SPIRV_VERSION_1_3, &glslang_error);
+				if (!transformed_spirv.is_empty()) {
+					String parse_error;
+					if (module->parse_spirv(p_source[i].shader_stage, transformed_spirv, parse_error)) {
+						transformed_parsed = true;
+					} else {
+						transformed_error = "Naga could not parse transformed GLSLang SPIR-V:\n" + parse_error;
+					}
+				} else {
+					transformed_error = "GLSLang could not compile Naga's transformed source:\n" + glslang_error;
+				}
+			}
+#endif
 			String spirv_error;
-			if (p_source[i].reflection_spirv.is_empty() || !module->parse_spirv(p_source[i].shader_stage, p_source[i].reflection_spirv, spirv_error)) {
+			if (!transformed_parsed && (reflection_spirv.is_empty() || !module->parse_spirv(p_source[i].shader_stage, reflection_spirv, spirv_error))) {
 				memdelete(module);
 				for (NagaShaderModule *parsed_module : modules) {
 					memdelete(parsed_module);
 				}
 				if (r_error != nullptr) {
-					*r_error = error + "\nNaga SPIR-V fallback also failed:\n" + spirv_error;
+					*r_error = error + "\n" + transformed_error + "\nNaga SPIR-V fallback also failed:\n" + spirv_error;
 				}
 				return false;
 			}
@@ -858,7 +881,7 @@ bool RenderingShaderContainerMetal::_set_code_from_source(const String &p_shader
 		RDC::ShaderStageSPIRVData stage_spirv;
 		stage_spirv.shader_stage = p_source[i].shader_stage;
 		stage_spirv.dynamic_buffers = p_source[i].dynamic_buffers;
-		stage_spirv.spirv = p_source[i].reflection_spirv;
+		stage_spirv.spirv = reflection_spirv;
 		if (stage_spirv.spirv.is_empty()) {
 			stage_spirv.spirv = module->write_spirv(error);
 		}

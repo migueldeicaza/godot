@@ -20,16 +20,19 @@ variants through Naga, which is useful only for exercising the fallback boundary
 
 The bridge applies Godot's Vulkan-to-Metal vertex-Y convention before parsing and
 strips desktop-GLSL precision qualifiers that Naga does not accept in structure
-members. It uses flat Metal resource slots. The current proof of concept retains
-GLSLang output as reflection metadata and as a Naga SPIR-V-frontend fallback for
-GLSL constructs Naga cannot yet parse; successful output is never passed through
-SPIRV-Cross.
+members. It preserves Godot's specialization constants as Metal function constants,
+lowers matrix inverse operations using Naga's own WGSL inverse formulas, and splits
+the LTC combined samplers used by the color Uber Shader. It uses flat Metal resource
+slots. The current proof of concept retains GLSLang output as reflection metadata and
+as a Naga SPIR-V-frontend fallback for GLSL constructs Naga cannot yet parse;
+successful output is never passed through SPIRV-Cross.
 
-Naga 29 and current Naga trunk do not yet emit MSL for two constructs present in
-the forward Uber Shaders: specialization overrides and matrix inverse operations.
-The smoke test therefore currently demonstrates selection and safe fallback rather
-than a fully direct Uber Shader. Those are the next two backend gaps to close (or
-polyfill) before enabling this by default.
+The clustered depth Uber variants and most tested clustered and mobile color/depth
+permutations now compile to MSL through Naga. Some color material permutations still
+fall back because Naga's GLSL frontend cannot consistently infer comparison samplers,
+and its SPIR-V frontend rejects some dynamically indexed resource arrays. GLSLang is
+also still paid once for reflection, so this is not yet an end-to-end compile-time
+win even when SPIRV-Cross is skipped.
 
 Run the included Metal smoke test with verbose compiler selection logging:
 
@@ -38,3 +41,6 @@ GODOT_NAGA_UBERSHADERS=1 bin/godot.macos.editor.dev.arm64 \
   --path modules/naga/tests --rendering-method forward_plus \
   --rendering-driver metal --quit-after 2 --verbose
 ```
+
+Set `GODOT_NAGA_DUMP_MSL_DIR` to a directory to retain the generated MSL while
+diagnosing a shader permutation.

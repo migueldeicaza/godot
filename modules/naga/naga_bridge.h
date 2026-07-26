@@ -52,6 +52,7 @@ public:
 	NagaShaderModule(const NagaShaderModule &) = delete;
 	NagaShaderModule &operator=(const NagaShaderModule &) = delete;
 
+	static String preprocess_for_glslang(const String &p_source, String &r_error);
 	bool parse(RenderingDeviceCommons::ShaderStage p_stage, const String &p_source, String &r_error);
 	bool parse_spirv(RenderingDeviceCommons::ShaderStage p_stage, const Vector<uint8_t> &p_spirv, String &r_error);
 	Vector<uint8_t> write_spirv(String &r_error) const;

@@ -91,6 +91,7 @@ name = "godot-naga"
 version = "0.1.0"
 dependencies = [
  "naga",
+ "spirv",
 ]
 
 [[package]]
