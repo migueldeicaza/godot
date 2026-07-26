@@ -163,7 +163,19 @@ protected:
 	};
 
 	struct ReflectImageTraits {
+		enum Dimension : uint32_t {
+			DIMENSION_NONE,
+			DIMENSION_1D,
+			DIMENSION_2D,
+			DIMENSION_3D,
+			DIMENSION_CUBE,
+			DIMENSION_BUFFER,
+		};
+
 		RDC::DataFormat format = RDC::DATA_FORMAT_MAX;
+		Dimension dimension = DIMENSION_NONE;
+		bool arrayed = false;
+		bool multisampled = false;
 	};
 
 	struct ReflectUniform : ReflectSymbol<SpvReflectDescriptorBinding> {

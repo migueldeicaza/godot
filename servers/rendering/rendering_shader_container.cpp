@@ -248,6 +248,7 @@ Error RenderingShaderContainer::reflect_spirv(const String &p_shader_name, Span<
 		RDC::ShaderStage stage_flag = (RDC::ShaderStage)(1 << stage);
 		r_refl[i].shader_stage = stage;
 		r_refl[i]._spirv_data = p_spirv[i].spirv;
+		reflection.stages_vector.push_back(stage);
 
 		RDC::PipelineType pipeline_type = {};
 		switch (stage) {
@@ -440,6 +441,30 @@ Error RenderingShaderContainer::reflect_spirv(const String &p_shader_name, Span<
 
 					if (is_image) {
 						uniform.image.format = spv_image_format_to_data_format(binding.image.image_format);
+						uniform.image.arrayed = binding.image.arrayed;
+						uniform.image.multisampled = binding.image.ms;
+						switch (binding.image.dim) {
+							case SpvDim1D:
+								uniform.image.dimension = ReflectImageTraits::DIMENSION_1D;
+								break;
+							case SpvDimSubpassData:
+							case SpvDim2D:
+								uniform.image.dimension = ReflectImageTraits::DIMENSION_2D;
+								break;
+							case SpvDim3D:
+								uniform.image.dimension = ReflectImageTraits::DIMENSION_3D;
+								break;
+							case SpvDimCube:
+								uniform.image.dimension = ReflectImageTraits::DIMENSION_CUBE;
+								break;
+							case SpvDimBuffer:
+								uniform.image.dimension = ReflectImageTraits::DIMENSION_BUFFER;
+								break;
+							case SpvDimRect:
+							case SpvDimTileImageDataEXT:
+							case SpvDimMax:
+								break;
+						}
 					}
 
 					uniform.binding = binding.binding;

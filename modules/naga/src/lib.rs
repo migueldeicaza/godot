@@ -634,6 +634,362 @@ pub struct GodotNagaBytes {
     length: usize,
 }
 
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct GodotNagaUniformReflection {
+    group: u32,
+    binding: u32,
+    kind: u32,
+    length: u32,
+    writable: u32,
+    image_dimension: u32,
+    image_arrayed: u32,
+    image_multisampled: u32,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct GodotNagaSpecializationReflection {
+    kind: u32,
+    constant_id: u32,
+    default_value: u32,
+}
+
+#[repr(C)]
+pub struct GodotNagaReflection {
+    stage: u32,
+    vertex_input_mask: u64,
+    fragment_output_mask: u32,
+    push_constant_size: u32,
+    has_multiview: u32,
+    compute_local_size: [u32; 3],
+    uniforms: *mut GodotNagaUniformReflection,
+    uniform_count: usize,
+    specialization_constants: *mut GodotNagaSpecializationReflection,
+    specialization_constant_count: usize,
+}
+
+impl Default for GodotNagaReflection {
+    fn default() -> Self {
+        Self {
+            stage: u32::MAX,
+            vertex_input_mask: 0,
+            fragment_output_mask: 0,
+            push_constant_size: 0,
+            has_multiview: 0,
+            compute_local_size: [0; 3],
+            uniforms: ptr::null_mut(),
+            uniform_count: 0,
+            specialization_constants: ptr::null_mut(),
+            specialization_constant_count: 0,
+        }
+    }
+}
+
+const REFLECTION_UNIFORM_SAMPLER: u32 = 0;
+const REFLECTION_UNIFORM_TEXTURE: u32 = 1;
+const REFLECTION_UNIFORM_UNIFORM_BUFFER: u32 = 3;
+const REFLECTION_UNIFORM_STORAGE_BUFFER: u32 = 4;
+
+const REFLECTION_IMAGE_DIMENSION_NONE: u32 = 0;
+const REFLECTION_IMAGE_DIMENSION_1D: u32 = 1;
+const REFLECTION_IMAGE_DIMENSION_2D: u32 = 2;
+const REFLECTION_IMAGE_DIMENSION_3D: u32 = 3;
+const REFLECTION_IMAGE_DIMENSION_CUBE: u32 = 4;
+
+const REFLECTION_SPECIALIZATION_BOOL: u32 = 0;
+const REFLECTION_SPECIALIZATION_INT: u32 = 1;
+const REFLECTION_SPECIALIZATION_FLOAT: u32 = 2;
+
+fn reflection_array_size(size: naga::ArraySize) -> Result<u32, String> {
+    match size {
+        naga::ArraySize::Constant(size) => Ok(size.get()),
+        naga::ArraySize::Pending(_) => {
+            Err("Naga reflection does not support override-sized resource arrays".to_owned())
+        }
+        naga::ArraySize::Dynamic => {
+            Err("Naga reflection does not support runtime-sized resource arrays".to_owned())
+        }
+    }
+}
+
+fn reflection_resource_type(
+    module: &naga::Module,
+    ty: naga::Handle<naga::Type>,
+) -> Result<(naga::Handle<naga::Type>, u32), String> {
+    match module.types[ty].inner {
+        naga::TypeInner::BindingArray { base, size } => Ok((base, reflection_array_size(size)?)),
+        _ => Ok((ty, 1)),
+    }
+}
+
+fn reflection_image_dimension(dim: naga::ImageDimension) -> u32 {
+    match dim {
+        naga::ImageDimension::D1 => REFLECTION_IMAGE_DIMENSION_1D,
+        naga::ImageDimension::D2 => REFLECTION_IMAGE_DIMENSION_2D,
+        naga::ImageDimension::D3 => REFLECTION_IMAGE_DIMENSION_3D,
+        naga::ImageDimension::Cube => REFLECTION_IMAGE_DIMENSION_CUBE,
+    }
+}
+
+fn visit_io_bindings(
+    module: &naga::Module,
+    ty: naga::Handle<naga::Type>,
+    binding: Option<&naga::Binding>,
+    visitor: &mut impl FnMut(&naga::Binding),
+) {
+    if let Some(binding) = binding {
+        visitor(binding);
+        return;
+    }
+    if let naga::TypeInner::Struct { ref members, .. } = module.types[ty].inner {
+        for member in members {
+            visit_io_bindings(module, member.ty, member.binding.as_ref(), visitor);
+        }
+    }
+}
+
+fn specialization_default(
+    module: &naga::Module,
+    constant: &SpecializationConstant,
+) -> Result<GodotNagaSpecializationReflection, String> {
+    let value = module
+        .constants
+        .iter()
+        .find_map(|(_, value)| (value.name.as_deref() == Some(&constant.name)).then_some(value))
+        .ok_or_else(|| {
+            format!(
+                "Naga reflection could not find specialization constant '{}'",
+                constant.name
+            )
+        })?;
+    let scalar = match module.types[value.ty].inner {
+        naga::TypeInner::Scalar(scalar) => scalar,
+        _ => {
+            return Err(format!(
+                "Naga specialization constant '{}' is not scalar",
+                constant.name
+            ))
+        }
+    };
+    if scalar.width != 4 && scalar.kind != naga::ScalarKind::Bool {
+        return Err(format!(
+            "Naga specialization constant '{}' is not 32-bit",
+            constant.name
+        ));
+    }
+    let (kind, default_value) = match module.global_expressions[value.init] {
+        naga::Expression::Literal(naga::Literal::Bool(value)) => {
+            (REFLECTION_SPECIALIZATION_BOOL, u32::from(value))
+        }
+        naga::Expression::Literal(naga::Literal::I32(value)) => {
+            (REFLECTION_SPECIALIZATION_INT, value as u32)
+        }
+        naga::Expression::Literal(naga::Literal::U32(value)) => {
+            (REFLECTION_SPECIALIZATION_INT, value)
+        }
+        naga::Expression::Literal(naga::Literal::F32(value)) => {
+            (REFLECTION_SPECIALIZATION_FLOAT, value.to_bits())
+        }
+        naga::Expression::ZeroValue(_) => match scalar.kind {
+            naga::ScalarKind::Bool => (REFLECTION_SPECIALIZATION_BOOL, 0),
+            naga::ScalarKind::Sint | naga::ScalarKind::Uint => (REFLECTION_SPECIALIZATION_INT, 0),
+            naga::ScalarKind::Float => (REFLECTION_SPECIALIZATION_FLOAT, 0),
+            _ => {
+                return Err(format!(
+                    "Naga specialization constant '{}' has an unsupported scalar kind",
+                    constant.name
+                ))
+            }
+        },
+        _ => {
+            return Err(format!(
+                "Naga specialization constant '{}' has a non-literal default",
+                constant.name
+            ))
+        }
+    };
+    Ok(GodotNagaSpecializationReflection {
+        kind,
+        constant_id: constant.id,
+        default_value,
+    })
+}
+
+fn reflect_shader(shader: &ParsedShader) -> Result<GodotNagaReflection, String> {
+    let module = &shader.module;
+    let entry_point = module
+        .entry_points
+        .iter()
+        .find(|entry| entry.stage == shader.stage && entry.name == "main")
+        .ok_or_else(|| "Naga reflection could not find the main entry point".to_owned())?;
+    let mut layouter = naga::proc::Layouter::default();
+    layouter
+        .update(naga::proc::GlobalCtx {
+            types: &module.types,
+            constants: &module.constants,
+            overrides: &module.overrides,
+            global_expressions: &module.global_expressions,
+        })
+        .map_err(|err| format!("Naga reflection layout failed: {err}"))?;
+
+    let mut uniforms = Vec::new();
+    let mut push_constant_size = 0;
+    for (_, variable) in module.global_variables.iter() {
+        if variable.space == naga::AddressSpace::Immediate {
+            push_constant_size = layouter[variable.ty].size;
+        }
+        let Some(binding) = variable.binding else {
+            continue;
+        };
+        let (resource_ty, resource_count) = reflection_resource_type(module, variable.ty)?;
+        let resource_inner = &module.types[resource_ty].inner;
+        let mut uniform = GodotNagaUniformReflection {
+            group: binding.group,
+            binding: binding.binding,
+            kind: u32::MAX,
+            length: 0,
+            writable: 0,
+            image_dimension: REFLECTION_IMAGE_DIMENSION_NONE,
+            image_arrayed: 0,
+            image_multisampled: 0,
+        };
+        match variable.space {
+            naga::AddressSpace::Uniform => {
+                uniform.kind = REFLECTION_UNIFORM_UNIFORM_BUFFER;
+                uniform.length = layouter[resource_ty]
+                    .size
+                    .checked_mul(resource_count)
+                    .ok_or_else(|| "Naga uniform-buffer reflection size overflow".to_owned())?;
+            }
+            naga::AddressSpace::Storage { access } => {
+                uniform.kind = REFLECTION_UNIFORM_STORAGE_BUFFER;
+                // Godot's storage-buffer layouts use zero here; their runtime size
+                // is supplied by the bound buffer rather than the shader reflection.
+                uniform.length = 0;
+                uniform.writable = u32::from(
+                    access.intersects(naga::StorageAccess::STORE | naga::StorageAccess::ATOMIC),
+                );
+            }
+            naga::AddressSpace::Handle => match *resource_inner {
+                naga::TypeInner::Sampler { .. } => {
+                    uniform.kind = REFLECTION_UNIFORM_SAMPLER;
+                    uniform.length = resource_count;
+                }
+                naga::TypeInner::Image {
+                    dim,
+                    arrayed,
+                    class,
+                } => {
+                    uniform.kind = match class {
+                        naga::ImageClass::Storage { .. } => {
+                            return Err(
+                                "Naga direct reflection does not yet map storage image formats"
+                                    .to_owned(),
+                            )
+                        }
+                        naga::ImageClass::External => {
+                            return Err(
+                                "Naga reflection does not support external textures".to_owned()
+                            )
+                        }
+                        _ => REFLECTION_UNIFORM_TEXTURE,
+                    };
+                    uniform.length = resource_count;
+                    uniform.image_dimension = reflection_image_dimension(dim);
+                    uniform.image_arrayed = u32::from(arrayed);
+                    uniform.image_multisampled = u32::from(match class {
+                        naga::ImageClass::Sampled { multi, .. }
+                        | naga::ImageClass::Depth { multi } => multi,
+                        _ => false,
+                    });
+                }
+                _ => {
+                    return Err(format!(
+                        "Naga reflection does not support handle resource type {resource_inner:?}"
+                    ))
+                }
+            },
+            _ => {
+                return Err(format!(
+                    "Naga reflection does not support bound address space {:?}",
+                    variable.space
+                ))
+            }
+        }
+        uniforms.push(uniform);
+    }
+    uniforms.sort_by_key(|uniform| (uniform.group, uniform.binding));
+
+    let mut vertex_input_mask = 0;
+    let mut fragment_output_mask = 0;
+    let mut has_multiview = false;
+    let mut inspect_input = |binding: &naga::Binding| match *binding {
+        naga::Binding::Location { location, .. } if shader.stage == ShaderStage::Vertex => {
+            vertex_input_mask |= 1u64 << location;
+        }
+        naga::Binding::BuiltIn(naga::BuiltIn::ViewIndex) => has_multiview = true,
+        _ => {}
+    };
+    for argument in &entry_point.function.arguments {
+        visit_io_bindings(
+            module,
+            argument.ty,
+            argument.binding.as_ref(),
+            &mut inspect_input,
+        );
+    }
+    if let Some(ref result) = entry_point.function.result {
+        visit_io_bindings(
+            module,
+            result.ty,
+            result.binding.as_ref(),
+            &mut |binding| match *binding {
+                naga::Binding::Location { location, .. }
+                    if shader.stage == ShaderStage::Fragment =>
+                {
+                    fragment_output_mask |= 1 << location;
+                }
+                naga::Binding::BuiltIn(naga::BuiltIn::ViewIndex) => has_multiview = true,
+                _ => {}
+            },
+        );
+    }
+
+    let specialization_constants = shader
+        .specialization_constants
+        .iter()
+        .map(|constant| specialization_default(module, constant))
+        .collect::<Result<Vec<_>, _>>()?;
+    let mut uniform_slice = uniforms.into_boxed_slice();
+    let mut specialization_slice = specialization_constants.into_boxed_slice();
+    let reflection = GodotNagaReflection {
+        stage: match shader.stage {
+            ShaderStage::Vertex => 0,
+            ShaderStage::Fragment => 1,
+            ShaderStage::Compute => 4,
+            _ => {
+                return Err(format!(
+                    "Naga reflection does not support stage {:?}",
+                    shader.stage
+                ))
+            }
+        },
+        vertex_input_mask,
+        fragment_output_mask,
+        push_constant_size,
+        has_multiview: u32::from(has_multiview),
+        compute_local_size: entry_point.workgroup_size,
+        uniforms: uniform_slice.as_mut_ptr(),
+        uniform_count: uniform_slice.len(),
+        specialization_constants: specialization_slice.as_mut_ptr(),
+        specialization_constant_count: specialization_slice.len(),
+    };
+    std::mem::forget(uniform_slice);
+    std::mem::forget(specialization_slice);
+    Ok(reflection)
+}
+
 fn stage_from_u32(stage: u32) -> Result<ShaderStage, String> {
     match stage {
         0 => Ok(ShaderStage::Vertex),
@@ -794,6 +1150,57 @@ pub unsafe extern "C" fn godot_naga_parse_spirv(
             ptr::null_mut()
         }
     }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn godot_naga_reflect(
+    shader: *const c_void,
+    reflection: *mut GodotNagaReflection,
+    error: *mut *mut c_char,
+) -> u8 {
+    if shader.is_null() || reflection.is_null() {
+        set_string(
+            error,
+            "Naga received invalid reflection arguments".to_owned(),
+        );
+        return 0;
+    }
+    *reflection = GodotNagaReflection::default();
+    let shader = &*shader.cast::<ParsedShader>();
+    match catch_unwind(AssertUnwindSafe(|| reflect_shader(shader))) {
+        Ok(result) => match ffi_error(error, result) {
+            Some(result) => {
+                *reflection = result;
+                1
+            }
+            None => 0,
+        },
+        Err(_) => {
+            set_string(error, "Naga panicked while reflecting shader IR".to_owned());
+            0
+        }
+    }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn godot_naga_reflection_free(reflection: *mut GodotNagaReflection) {
+    if reflection.is_null() {
+        return;
+    }
+    let reflection = &mut *reflection;
+    if !reflection.uniforms.is_null() {
+        drop(Box::from_raw(ptr::slice_from_raw_parts_mut(
+            reflection.uniforms,
+            reflection.uniform_count,
+        )));
+    }
+    if !reflection.specialization_constants.is_null() {
+        drop(Box::from_raw(ptr::slice_from_raw_parts_mut(
+            reflection.specialization_constants,
+            reflection.specialization_constant_count,
+        )));
+    }
+    *reflection = GodotNagaReflection::default();
 }
 
 #[no_mangle]
@@ -1057,6 +1464,17 @@ void main() {
             }));
             godot_naga_bytes_free(spirv);
 
+            let mut reflection = GodotNagaReflection::default();
+            assert_eq!(godot_naga_reflect(shader, &mut reflection, &mut error), 1);
+            assert_eq!(reflection.stage, 0);
+            assert_eq!(reflection.vertex_input_mask, 1);
+            assert_eq!(reflection.specialization_constant_count, 1);
+            let specialization = *reflection.specialization_constants;
+            assert_eq!(specialization.kind, REFLECTION_SPECIALIZATION_BOOL);
+            assert_eq!(specialization.constant_id, 7);
+            assert_eq!(specialization.default_value, 0);
+            godot_naga_reflection_free(&mut reflection);
+
             let mut entry = ptr::null_mut();
             let msl =
                 godot_naga_write_msl(shader, 2, 4, ptr::null(), 0, -1, &mut entry, &mut error);
@@ -1100,6 +1518,21 @@ void main() {
                 "{}",
                 CStr::from_ptr(error).to_string_lossy()
             );
+
+            let mut reflection = GodotNagaReflection::default();
+            assert_eq!(godot_naga_reflect(shader, &mut reflection, &mut error), 1);
+            let uniforms = slice::from_raw_parts(reflection.uniforms, reflection.uniform_count);
+            assert!(uniforms.iter().any(|uniform| {
+                uniform.group == 0
+                    && uniform.binding == 18
+                    && uniform.kind == REFLECTION_UNIFORM_TEXTURE
+            }));
+            assert!(uniforms.iter().any(|uniform| {
+                uniform.group == 0
+                    && uniform.binding == 1018
+                    && uniform.kind == REFLECTION_UNIFORM_SAMPLER
+            }));
+            godot_naga_reflection_free(&mut reflection);
 
             let binding = GodotNagaBinding {
                 group: 0,

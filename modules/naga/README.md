@@ -23,10 +23,12 @@ strips desktop-GLSL precision qualifiers that Naga does not accept in structure
 members. It preserves Godot's specialization constants as Metal function constants,
 lowers matrix inverse operations using Naga's own WGSL inverse formulas, and splits
 the LTC combined samplers used by the color Uber Shader. It uses flat Metal resource
-slots. For successful direct translations, Naga emits a whole-module SPIR-V view for
-Godot's existing reflection machinery, including restored specialization IDs and the
-full declared resource layout. This avoids invoking both GLSLang and SPIRV-Cross on
-the direct path. GLSLang remains available as a transformed SPIR-V fallback for GLSL
+slots. For successful direct translations, Godot reflects descriptor layouts, stage
+interfaces, push constants, and specialization defaults directly from Naga IR. The
+direct path therefore performs no SPIR-V serialization and invokes neither GLSLang,
+SPIRV-Reflect, nor SPIRV-Cross. A Naga-generated SPIR-V reflection view remains as a
+compatibility fallback for IR resource types outside the tested built-in shader
+surface. GLSLang also remains available as a transformed SPIR-V fallback for GLSL
 constructs Naga cannot yet parse; successful output is never passed through
 SPIRV-Cross.
 

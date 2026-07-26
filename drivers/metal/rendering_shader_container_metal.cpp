@@ -347,24 +347,27 @@ bool RenderingShaderContainerMetal::_set_code_from_reflection(const ReflectShade
 		// that the target profile can't support natively. SPIRV-Cross would emulate
 		// image atomics with auxiliary buffer bindings incompatible with Godot's binding
 		// layout. Return an empty baked shader so the runtime recompiles for the actual device.
-		MetalDeviceProfile::MinimumRequirements reqs = inspect_spirv(p_shader);
-		MetalDeviceProfile::MinimumRequirements target = device_profile->get_minimum_requirements();
-		if (reqs > target) {
-			uint32_t req_maj, req_min, tgt_maj, tgt_min;
-			parse_msl_version(reqs.msl_version, req_maj, req_min);
-			parse_msl_version(target.msl_version, tgt_maj, tgt_min);
-			WARN_PRINT(vformat("Shader '%s' requires Apple%d / MSL %d.%d but target is Apple%d / MSL %d.%d. Shader will be compiled at runtime on the device.",
-					String(shader_name.ptr()),
-					static_cast<uint32_t>(reqs.gpu) - 1000, req_maj, req_min,
-					static_cast<uint32_t>(target.gpu) - 1000, tgt_maj, tgt_min));
-			mtl_reflection_data.mark_invalid();
-			return true;
+		if (p_naga_modules == nullptr) {
+			MetalDeviceProfile::MinimumRequirements reqs = inspect_spirv(p_shader);
+			MetalDeviceProfile::MinimumRequirements target = device_profile->get_minimum_requirements();
+			if (reqs > target) {
+				uint32_t req_maj, req_min, tgt_maj, tgt_min;
+				parse_msl_version(reqs.msl_version, req_maj, req_min);
+				parse_msl_version(target.msl_version, tgt_maj, tgt_min);
+				WARN_PRINT(vformat("Shader '%s' requires Apple%d / MSL %d.%d but target is Apple%d / MSL %d.%d. Shader will be compiled at runtime on the device.",
+						String(shader_name.ptr()),
+						static_cast<uint32_t>(reqs.gpu) - 1000, req_maj, req_min,
+						static_cast<uint32_t>(target.gpu) - 1000, tgt_maj, tgt_min));
+				mtl_reflection_data.mark_invalid();
+				return true;
+			}
 		}
 	}
 
 	// initialize Metal-specific reflection data
-	shaders.resize(p_spirv.size());
-	mtl_shaders.resize(p_spirv.size());
+	const uint32_t shader_stage_count = p_naga_modules != nullptr ? p_shader.stages_vector.size() : p_spirv.size();
+	shaders.resize(shader_stage_count);
+	mtl_shaders.resize(shader_stage_count);
 	mtl_reflection_binding_set_uniforms_data.resize(reflection_binding_set_uniforms_data.size());
 
 	mtl_reflection_data.set_needs_view_mask_buffer(reflection_data.has_multiview);
@@ -476,7 +479,7 @@ bool RenderingShaderContainerMetal::_set_code_from_reflection(const ReflectShade
 			};
 
 			for (const ReflectUniform &uniform : dset) {
-				const SpvReflectDescriptorBinding &binding = uniform.get_spv_reflect();
+				const SpvReflectDescriptorBinding *binding = p_naga_modules == nullptr ? &uniform.get_spv_reflect() : nullptr;
 
 				found->active_stages = uniform.stages;
 
@@ -498,10 +501,15 @@ bool RenderingShaderContainerMetal::_set_code_from_reflection(const ReflectShade
 				}
 
 				// Determine access type.
-				switch (binding.descriptor_type) {
+				if (binding == nullptr) {
+					if (uniform.writable) {
+						found->access = MTL::BindingAccessReadWrite;
+					}
+				} else {
+					switch (binding->descriptor_type) {
 					case SPV_REFLECT_DESCRIPTOR_TYPE_STORAGE_IMAGE: {
-						if (!(binding.decoration_flags & SPV_REFLECT_DECORATION_NON_WRITABLE)) {
-							if (!(binding.decoration_flags & SPV_REFLECT_DECORATION_NON_READABLE)) {
+						if (!(binding->decoration_flags & SPV_REFLECT_DECORATION_NON_WRITABLE)) {
+							if (!(binding->decoration_flags & SPV_REFLECT_DECORATION_NON_READABLE)) {
 								found->access = MTL::BindingAccessReadWrite;
 							} else {
 								found->access = MTL::BindingAccessWriteOnly;
@@ -510,8 +518,8 @@ bool RenderingShaderContainerMetal::_set_code_from_reflection(const ReflectShade
 					} break;
 					case SPV_REFLECT_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER:
 					case SPV_REFLECT_DESCRIPTOR_TYPE_STORAGE_BUFFER: {
-						if (!(binding.decoration_flags & SPV_REFLECT_DECORATION_NON_WRITABLE) && !(binding.block.decoration_flags & SPV_REFLECT_DECORATION_NON_WRITABLE)) {
-							if (!(binding.decoration_flags & SPV_REFLECT_DECORATION_NON_READABLE) && !(binding.block.decoration_flags & SPV_REFLECT_DECORATION_NON_READABLE)) {
+						if (!(binding->decoration_flags & SPV_REFLECT_DECORATION_NON_WRITABLE) && !(binding->block.decoration_flags & SPV_REFLECT_DECORATION_NON_WRITABLE)) {
+							if (!(binding->decoration_flags & SPV_REFLECT_DECORATION_NON_READABLE) && !(binding->block.decoration_flags & SPV_REFLECT_DECORATION_NON_READABLE)) {
 								found->access = MTL::BindingAccessReadWrite;
 							} else {
 								found->access = MTL::BindingAccessWriteOnly;
@@ -520,6 +528,7 @@ bool RenderingShaderContainerMetal::_set_code_from_reflection(const ReflectShade
 					} break;
 					default:
 						break;
+					}
 				}
 
 				switch (found->access) {
@@ -607,42 +616,38 @@ bool RenderingShaderContainerMetal::_set_code_from_reflection(const ReflectShade
 #endif
 
 				if (found->data_type == MTL::DataTypeTexture) {
-					const SpvReflectImageTraits &image = uniform.get_spv_reflect().image;
+					const ReflectImageTraits &image = uniform.image;
 
-					switch (image.dim) {
-						case SpvDim1D: {
+					switch (image.dimension) {
+						case ReflectImageTraits::DIMENSION_1D: {
 							if (image.arrayed) {
 								found->texture_type = MTL::TextureType1DArray;
 							} else {
 								found->texture_type = MTL::TextureType1D;
 							}
 						} break;
-						case SpvDimSubpassData:
-						case SpvDim2D: {
-							if (image.arrayed && image.ms) {
+						case ReflectImageTraits::DIMENSION_2D: {
+							if (image.arrayed && image.multisampled) {
 								found->texture_type = MTL::TextureType2DMultisampleArray;
 							} else if (image.arrayed) {
 								found->texture_type = MTL::TextureType2DArray;
-							} else if (image.ms) {
+							} else if (image.multisampled) {
 								found->texture_type = MTL::TextureType2DMultisample;
 							} else {
 								found->texture_type = MTL::TextureType2D;
 							}
 						} break;
-						case SpvDim3D: {
+						case ReflectImageTraits::DIMENSION_3D: {
 							found->texture_type = MTL::TextureType3D;
 						} break;
-						case SpvDimCube: {
+						case ReflectImageTraits::DIMENSION_CUBE: {
 							if (image.arrayed) {
 								found->texture_type = MTL::TextureTypeCubeArray;
 							} else {
 								found->texture_type = MTL::TextureTypeCube;
 							}
 						} break;
-						case SpvDimRect: {
-							// Ignored.
-						} break;
-						case SpvDimBuffer: {
+						case ReflectImageTraits::DIMENSION_BUFFER: {
 							found->texture_type = MTL::TextureTypeTextureBuffer;
 							// If this is used with atomics, we need to use a read-write texture.
 							// 	scan_atomic_accesses();
@@ -654,14 +659,8 @@ bool RenderingShaderContainerMetal::_set_code_from_reflection(const ReflectShade
 							// 		found->access = MTLBindingAccessReadOnly;
 							// 	}
 						} break;
-						case SpvDimTileImageDataEXT: {
-							// Godot does not use this extension.
-							// See: https://registry.khronos.org/vulkan/specs/latest/man/html/VK_EXT_shader_tile_image.html
-						} break;
-						case SpvDimMax: {
-							// Add all enumerations to silence the compiler warning
-							// and generate future warnings, should a new one be added.
-						} break;
+						case ReflectImageTraits::DIMENSION_NONE:
+							break;
 					}
 				}
 
@@ -683,11 +682,9 @@ bool RenderingShaderContainerMetal::_set_code_from_reflection(const ReflectShade
 		}
 	}
 
-	for (uint32_t i = 0; i < p_spirv.size(); i++) {
+	for (uint32_t i = 0; i < shader_stage_count; i++) {
 		StageData &stage_data = mtl_shaders.write[i];
-		const ReflectShaderStage &v = p_spirv[i];
-		RDC::ShaderStage stage = v.shader_stage;
-		Span<uint32_t> spirv = v.spirv();
+		RDC::ShaderStage stage = p_naga_modules != nullptr ? p_shader.stages_vector[i] : p_spirv[i].shader_stage;
 
 #ifdef MODULE_NAGA_ENABLED
 		if (p_naga_modules != nullptr) {
@@ -741,6 +738,8 @@ bool RenderingShaderContainerMetal::_set_code_from_reflection(const ReflectShade
 			continue;
 		}
 #endif
+		const ReflectShaderStage &v = p_spirv[i];
+		Span<uint32_t> spirv = v.spirv();
 
 		Parser parser(spirv.ptr(), spirv.size());
 		try {
@@ -878,29 +877,209 @@ bool RenderingShaderContainerMetal::_set_code_from_source(const String &p_shader
 				return false;
 			}
 		}
-		RDC::ShaderStageSPIRVData stage_spirv;
-		stage_spirv.shader_stage = p_source[i].shader_stage;
-		stage_spirv.dynamic_buffers = p_source[i].dynamic_buffers;
-		stage_spirv.spirv = reflection_spirv;
-		if (stage_spirv.spirv.is_empty()) {
-			stage_spirv.spirv = module->write_spirv(error);
-		}
-		if (stage_spirv.spirv.is_empty()) {
-			memdelete(module);
-			for (NagaShaderModule *parsed_module : modules) {
-				memdelete(parsed_module);
-			}
-			if (r_error != nullptr) {
-				*r_error = error;
-			}
-			return false;
-		}
 		modules.push_back(module);
-		spirv.push_back(stage_spirv);
 	}
 
 	ReflectShader reflection;
-	bool success = reflect_spirv(p_shader_name, spirv, reflection) == OK;
+	shader_name = p_shader_name.utf8();
+	bool success = true;
+	bool pipeline_type_detected = false;
+	String direct_reflection_error;
+	for (uint32_t i = 0; i < modules.size() && success; i++) {
+		NagaShaderModule::Reflection naga_reflection;
+		String error;
+		if (!modules[i]->reflect(naga_reflection, error)) {
+			direct_reflection_error = error;
+			success = false;
+			break;
+		}
+
+		RDC::ShaderStage stage = naga_reflection.stage;
+		RDC::ShaderStage stage_flag = RDC::ShaderStage(1 << stage);
+		RDC::PipelineType pipeline_type = stage == RDC::SHADER_STAGE_COMPUTE ? RDC::PIPELINE_TYPE_COMPUTE : RDC::PIPELINE_TYPE_RASTERIZATION;
+		if (pipeline_type_detected && reflection.pipeline_type != pipeline_type) {
+			direct_reflection_error = "Naga reflected shader stages from different pipeline types.";
+			success = false;
+			break;
+		}
+		reflection.pipeline_type = pipeline_type;
+		pipeline_type_detected = true;
+		if (reflection.stages_bits.has_flag(stage_flag)) {
+			direct_reflection_error = "Naga reflected the same shader stage more than once.";
+			success = false;
+			break;
+		}
+		reflection.stages_bits.set_flag(stage_flag);
+		reflection.stages_vector.push_back(stage);
+		reflection.vertex_input_mask |= naga_reflection.vertex_input_mask;
+		reflection.fragment_output_mask |= naga_reflection.fragment_output_mask;
+		reflection.has_multiview |= naga_reflection.has_multiview;
+		if (stage == RDC::SHADER_STAGE_COMPUTE) {
+			for (uint32_t axis = 0; axis < 3; axis++) {
+				reflection.compute_local_size[axis] = naga_reflection.compute_local_size[axis];
+			}
+		}
+		if (naga_reflection.push_constant_size > 0) {
+			if (reflection.push_constant_size > 0 && reflection.push_constant_size != naga_reflection.push_constant_size) {
+				direct_reflection_error = "Naga reflected different push constant sizes across shader stages.";
+				success = false;
+				break;
+			}
+			reflection.push_constant_size = naga_reflection.push_constant_size;
+			reflection.push_constant_stages.set_flag(stage_flag);
+		}
+
+		for (const NagaShaderModule::ReflectionUniform &source : naga_reflection.uniforms) {
+			if (source.group >= RDC::MAX_UNIFORM_SETS) {
+				direct_reflection_error = vformat("Naga reflected unsupported uniform set %d.", source.group);
+				success = false;
+				break;
+			}
+			ReflectUniform uniform;
+			switch (source.kind) {
+				case NagaShaderModule::REFLECTION_UNIFORM_SAMPLER:
+					uniform.type = RDC::UNIFORM_TYPE_SAMPLER;
+					break;
+				case NagaShaderModule::REFLECTION_UNIFORM_TEXTURE:
+					uniform.type = RDC::UNIFORM_TYPE_TEXTURE;
+					break;
+				case NagaShaderModule::REFLECTION_UNIFORM_IMAGE:
+					uniform.type = RDC::UNIFORM_TYPE_IMAGE;
+					break;
+				case NagaShaderModule::REFLECTION_UNIFORM_UNIFORM_BUFFER: {
+					const uint64_t key = uint64_t(source.group) << 32 | source.binding;
+					if (p_source[i].dynamic_buffers.has(key)) {
+						uniform.type = RDC::UNIFORM_TYPE_UNIFORM_BUFFER_DYNAMIC;
+						reflection.has_dynamic_buffers = true;
+					} else {
+						uniform.type = RDC::UNIFORM_TYPE_UNIFORM_BUFFER;
+					}
+				} break;
+				case NagaShaderModule::REFLECTION_UNIFORM_STORAGE_BUFFER: {
+					const uint64_t key = uint64_t(source.group) << 32 | source.binding;
+					if (p_source[i].dynamic_buffers.has(key)) {
+						uniform.type = RDC::UNIFORM_TYPE_STORAGE_BUFFER_DYNAMIC;
+						reflection.has_dynamic_buffers = true;
+					} else {
+						uniform.type = RDC::UNIFORM_TYPE_STORAGE_BUFFER;
+					}
+				} break;
+			}
+			uniform.binding = source.binding;
+			uniform.length = source.length;
+			uniform.writable = source.writable;
+			uniform.stages.set_flag(stage_flag);
+			uniform.image.arrayed = source.image_arrayed;
+			uniform.image.multisampled = source.image_multisampled;
+			switch (source.image_dimension) {
+				case NagaShaderModule::REFLECTION_IMAGE_DIMENSION_NONE:
+					uniform.image.dimension = ReflectImageTraits::DIMENSION_NONE;
+					break;
+				case NagaShaderModule::REFLECTION_IMAGE_DIMENSION_1D:
+					uniform.image.dimension = ReflectImageTraits::DIMENSION_1D;
+					break;
+				case NagaShaderModule::REFLECTION_IMAGE_DIMENSION_2D:
+					uniform.image.dimension = ReflectImageTraits::DIMENSION_2D;
+					break;
+				case NagaShaderModule::REFLECTION_IMAGE_DIMENSION_3D:
+					uniform.image.dimension = ReflectImageTraits::DIMENSION_3D;
+					break;
+				case NagaShaderModule::REFLECTION_IMAGE_DIMENSION_CUBE:
+					uniform.image.dimension = ReflectImageTraits::DIMENSION_CUBE;
+					break;
+			}
+
+			if (source.group >= reflection.uniform_sets.size()) {
+				reflection.uniform_sets.resize(source.group + 1);
+			}
+			ReflectDescriptorSet &set = reflection.uniform_sets[source.group];
+			ReflectUniform *existing = nullptr;
+			for (ReflectUniform &candidate : set) {
+				if (candidate.binding == uniform.binding) {
+					existing = &candidate;
+					break;
+				}
+			}
+			if (existing != nullptr) {
+				if (existing->type != uniform.type || existing->length != uniform.length || existing->writable != uniform.writable || existing->image.dimension != uniform.image.dimension || existing->image.arrayed != uniform.image.arrayed || existing->image.multisampled != uniform.image.multisampled) {
+					direct_reflection_error = vformat("Naga reflected incompatible declarations at set %d, binding %d.", source.group, source.binding);
+					success = false;
+					break;
+				}
+				existing->stages.set_flag(stage_flag);
+			} else {
+				set.push_back(uniform);
+			}
+		}
+		if (!success) {
+			break;
+		}
+
+		for (const NagaShaderModule::ReflectionSpecialization &source : naga_reflection.specialization_constants) {
+			ReflectSpecializationConstant specialization;
+			switch (source.kind) {
+				case NagaShaderModule::REFLECTION_SPECIALIZATION_BOOL:
+					specialization.type = RDC::PIPELINE_SPECIALIZATION_CONSTANT_TYPE_BOOL;
+					break;
+				case NagaShaderModule::REFLECTION_SPECIALIZATION_INT:
+					specialization.type = RDC::PIPELINE_SPECIALIZATION_CONSTANT_TYPE_INT;
+					break;
+				case NagaShaderModule::REFLECTION_SPECIALIZATION_FLOAT:
+					specialization.type = RDC::PIPELINE_SPECIALIZATION_CONSTANT_TYPE_FLOAT;
+					break;
+			}
+			specialization.constant_id = source.constant_id;
+			specialization.int_value = source.default_value;
+			specialization.stages.set_flag(stage_flag);
+			ReflectSpecializationConstant *existing = nullptr;
+			for (ReflectSpecializationConstant &candidate : reflection.specialization_constants) {
+				if (candidate.constant_id == specialization.constant_id) {
+					existing = &candidate;
+					break;
+				}
+			}
+			if (existing != nullptr) {
+				if (existing->type != specialization.type || existing->int_value != specialization.int_value) {
+					direct_reflection_error = vformat("Naga reflected incompatible specialization constant %d.", source.constant_id);
+					success = false;
+					break;
+				}
+				existing->stages.set_flag(stage_flag);
+			} else {
+				reflection.specialization_constants.push_back(specialization);
+			}
+		}
+	}
+
+	if (!success) {
+		// Direct reflection intentionally supports the built-in shader surface first.
+		// Retain Naga's SPIR-V reflection view as a compatibility fallback.
+		print_verbose("Naga direct IR reflection unavailable; using SPIR-V reflection fallback:\n" + direct_reflection_error);
+		spirv.clear();
+		for (uint32_t i = 0; i < modules.size(); i++) {
+			RDC::ShaderStageSPIRVData stage_spirv;
+			stage_spirv.shader_stage = p_source[i].shader_stage;
+			stage_spirv.dynamic_buffers = p_source[i].dynamic_buffers;
+			stage_spirv.spirv = p_source[i].reflection_spirv;
+			String error;
+			if (stage_spirv.spirv.is_empty()) {
+				stage_spirv.spirv = modules[i]->write_spirv(error);
+			}
+			if (stage_spirv.spirv.is_empty()) {
+				if (r_error != nullptr) {
+					*r_error = direct_reflection_error + "\n" + error;
+				}
+				break;
+			}
+			spirv.push_back(stage_spirv);
+		}
+		reflection = ReflectShader();
+		success = spirv.size() == modules.size() && reflect_spirv(p_shader_name, spirv, reflection) == OK;
+	}
+	for (ReflectDescriptorSet &set : reflection.uniform_sets) {
+		set.sort();
+	}
+	reflection.specialization_constants.sort();
 	if (success) {
 		// Naga represents the two legacy LTC combined samplers as separate texture
 		// and sampler resources. Merge their synthetic reflection bindings back into

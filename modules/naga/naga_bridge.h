@@ -46,6 +46,56 @@ public:
 		bool writable = false;
 	};
 
+	enum ReflectionUniformKind : uint32_t {
+		REFLECTION_UNIFORM_SAMPLER,
+		REFLECTION_UNIFORM_TEXTURE,
+		REFLECTION_UNIFORM_IMAGE,
+		REFLECTION_UNIFORM_UNIFORM_BUFFER,
+		REFLECTION_UNIFORM_STORAGE_BUFFER,
+	};
+
+	enum ReflectionImageDimension : uint32_t {
+		REFLECTION_IMAGE_DIMENSION_NONE,
+		REFLECTION_IMAGE_DIMENSION_1D,
+		REFLECTION_IMAGE_DIMENSION_2D,
+		REFLECTION_IMAGE_DIMENSION_3D,
+		REFLECTION_IMAGE_DIMENSION_CUBE,
+	};
+
+	enum ReflectionSpecializationKind : uint32_t {
+		REFLECTION_SPECIALIZATION_BOOL,
+		REFLECTION_SPECIALIZATION_INT,
+		REFLECTION_SPECIALIZATION_FLOAT,
+	};
+
+	struct ReflectionUniform {
+		uint32_t group = 0;
+		uint32_t binding = 0;
+		ReflectionUniformKind kind = REFLECTION_UNIFORM_SAMPLER;
+		uint32_t length = 0;
+		bool writable = false;
+		ReflectionImageDimension image_dimension = REFLECTION_IMAGE_DIMENSION_NONE;
+		bool image_arrayed = false;
+		bool image_multisampled = false;
+	};
+
+	struct ReflectionSpecialization {
+		ReflectionSpecializationKind kind = REFLECTION_SPECIALIZATION_BOOL;
+		uint32_t constant_id = 0;
+		uint32_t default_value = 0;
+	};
+
+	struct Reflection {
+		RenderingDeviceCommons::ShaderStage stage = RenderingDeviceCommons::SHADER_STAGE_MAX;
+		uint64_t vertex_input_mask = 0;
+		uint32_t fragment_output_mask = 0;
+		uint32_t push_constant_size = 0;
+		bool has_multiview = false;
+		uint32_t compute_local_size[3] = {};
+		Vector<ReflectionUniform> uniforms;
+		Vector<ReflectionSpecialization> specialization_constants;
+	};
+
 	NagaShaderModule() = default;
 	~NagaShaderModule();
 
@@ -55,6 +105,7 @@ public:
 	static String preprocess_for_glslang(const String &p_source, String &r_error);
 	bool parse(RenderingDeviceCommons::ShaderStage p_stage, const String &p_source, String &r_error);
 	bool parse_spirv(RenderingDeviceCommons::ShaderStage p_stage, const Vector<uint8_t> &p_spirv, String &r_error);
+	bool reflect(Reflection &r_reflection, String &r_error) const;
 	Vector<uint8_t> write_spirv(String &r_error) const;
 	String write_msl(uint32_t p_msl_major, uint32_t p_msl_minor, const Vector<Binding> &p_bindings, int32_t p_push_constant_buffer, String &r_entry_point, String &r_error) const;
 };

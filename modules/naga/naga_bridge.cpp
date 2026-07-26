@@ -47,9 +47,41 @@ struct GodotNagaBytes {
 	size_t length;
 };
 
+struct GodotNagaUniformReflection {
+	uint32_t group;
+	uint32_t binding;
+	uint32_t kind;
+	uint32_t length;
+	uint32_t writable;
+	uint32_t image_dimension;
+	uint32_t image_arrayed;
+	uint32_t image_multisampled;
+};
+
+struct GodotNagaSpecializationReflection {
+	uint32_t kind;
+	uint32_t constant_id;
+	uint32_t default_value;
+};
+
+struct GodotNagaReflection {
+	uint32_t stage;
+	uint64_t vertex_input_mask;
+	uint32_t fragment_output_mask;
+	uint32_t push_constant_size;
+	uint32_t has_multiview;
+	uint32_t compute_local_size[3];
+	GodotNagaUniformReflection *uniforms;
+	size_t uniform_count;
+	GodotNagaSpecializationReflection *specialization_constants;
+	size_t specialization_constant_count;
+};
+
 void *godot_naga_parse(uint32_t p_stage, const char *p_source, char **r_error);
 char *godot_naga_preprocess_for_glslang(const char *p_source, char **r_error);
 void *godot_naga_parse_spirv(uint32_t p_stage, const uint8_t *p_spirv, size_t p_length, char **r_error);
+uint8_t godot_naga_reflect(const void *p_module, GodotNagaReflection *r_reflection, char **r_error);
+void godot_naga_reflection_free(GodotNagaReflection *p_reflection);
 GodotNagaBytes godot_naga_write_spirv(const void *p_module, char **r_error);
 char *godot_naga_write_msl(const void *p_module, uint8_t p_msl_major, uint8_t p_msl_minor, const GodotNagaBinding *p_bindings, size_t p_binding_count, int32_t p_push_constant_buffer, char **r_entry_point, char **r_error);
 void godot_naga_module_free(void *p_module);
@@ -95,6 +127,50 @@ bool NagaShaderModule::parse_spirv(RenderingDeviceCommons::ShaderStage p_stage, 
 	module = godot_naga_parse_spirv(uint32_t(p_stage), p_spirv.ptr(), p_spirv.size(), &error);
 	r_error = take_naga_string(error);
 	return module != nullptr;
+}
+
+bool NagaShaderModule::reflect(Reflection &r_reflection, String &r_error) const {
+	ERR_FAIL_NULL_V(module, false);
+	GodotNagaReflection reflection = {};
+	char *error = nullptr;
+	bool success = godot_naga_reflect(module, &reflection, &error);
+	r_error = take_naga_string(error);
+	if (!success) {
+		godot_naga_reflection_free(&reflection);
+		return false;
+	}
+
+	r_reflection.stage = RenderingDeviceCommons::ShaderStage(reflection.stage);
+	r_reflection.vertex_input_mask = reflection.vertex_input_mask;
+	r_reflection.fragment_output_mask = reflection.fragment_output_mask;
+	r_reflection.push_constant_size = reflection.push_constant_size;
+	r_reflection.has_multiview = reflection.has_multiview;
+	for (uint32_t i = 0; i < 3; i++) {
+		r_reflection.compute_local_size[i] = reflection.compute_local_size[i];
+	}
+	r_reflection.uniforms.resize(reflection.uniform_count);
+	for (uint32_t i = 0; i < reflection.uniform_count; i++) {
+		const GodotNagaUniformReflection &source = reflection.uniforms[i];
+		ReflectionUniform &target = r_reflection.uniforms.write[i];
+		target.group = source.group;
+		target.binding = source.binding;
+		target.kind = ReflectionUniformKind(source.kind);
+		target.length = source.length;
+		target.writable = source.writable;
+		target.image_dimension = ReflectionImageDimension(source.image_dimension);
+		target.image_arrayed = source.image_arrayed;
+		target.image_multisampled = source.image_multisampled;
+	}
+	r_reflection.specialization_constants.resize(reflection.specialization_constant_count);
+	for (uint32_t i = 0; i < reflection.specialization_constant_count; i++) {
+		const GodotNagaSpecializationReflection &source = reflection.specialization_constants[i];
+		ReflectionSpecialization &target = r_reflection.specialization_constants.write[i];
+		target.kind = ReflectionSpecializationKind(source.kind);
+		target.constant_id = source.constant_id;
+		target.default_value = source.default_value;
+	}
+	godot_naga_reflection_free(&reflection);
+	return true;
 }
 
 Vector<uint8_t> NagaShaderModule::write_spirv(String &r_error) const {
