@@ -1,0 +1,40 @@
+#!/usr/bin/env python
+
+import os
+import shutil
+import subprocess
+
+Import("env")
+Import("env_modules")
+
+env_naga = env_modules.Clone()
+module_dir = Dir(".").abspath
+manifest = os.path.join(module_dir, "Cargo.toml")
+target_dir = os.path.join(env.Dir("#bin").abspath, "naga-rust")
+rust_target = {
+    "arm64": "aarch64-apple-darwin",
+    "x86_64": "x86_64-apple-darwin",
+}[env["arch"]]
+rust_library = os.path.join(target_dir, rust_target, "release", "libgodot_naga.a")
+output_library = os.path.join(env.Dir("#bin").abspath, "libgodot_naga.a")
+
+
+def build_naga(target, source, env):
+    cargo_env = os.environ.copy()
+    cargo_env["CARGO_TARGET_DIR"] = target_dir
+    subprocess.run(
+        ["cargo", "build", "--locked", "--release", "--target", rust_target, "--manifest-path", manifest],
+        check=True,
+        env=cargo_env,
+    )
+    shutil.copyfile(rust_library, output_library)
+    return 0
+
+
+naga_library = env.Command(output_library, [manifest, os.path.join(module_dir, "Cargo.lock"), os.path.join(module_dir, "src", "lib.rs")], build_naga)
+
+module_obj = []
+env_naga.add_source_files(module_obj, "*.cpp")
+env.modules_sources += module_obj
+env.Depends(module_obj, naga_library)
+env.Prepend(LIBS=naga_library)

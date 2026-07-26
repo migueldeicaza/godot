@@ -225,12 +225,12 @@ void RenderingDevice::_free_dependencies(RID p_id) {
 /**** SHADER INFRASTRUCTURE ****/
 /*******************************/
 
-Vector<uint8_t> RenderingDevice::shader_compile_spirv_from_source(ShaderStage p_stage, const String &p_source_code, ShaderLanguage p_language, String *r_error, bool p_allow_cache) {
+Vector<uint8_t> RenderingDevice::shader_compile_spirv_from_source(ShaderStage p_stage, const String &p_source_code, ShaderLanguage p_language, String *r_error, bool p_allow_cache, ShaderSpirvVersion p_spirv_version) {
 	switch (p_language) {
 #ifdef MODULE_GLSLANG_ENABLED
 		case ShaderLanguage::SHADER_LANGUAGE_GLSL: {
 			ShaderLanguageVersion language_version = driver->get_shader_container_format().get_shader_language_version();
-			ShaderSpirvVersion spirv_version = driver->get_shader_container_format().get_shader_spirv_version();
+			ShaderSpirvVersion spirv_version = p_spirv_version == SHADER_SPIRV_VERSION_MAX ? driver->get_shader_container_format().get_shader_spirv_version() : p_spirv_version;
 			return compile_glslang_shader(p_stage, ShaderIncludeDB::parse_include_files(p_source_code), language_version, spirv_version, r_error);
 		}
 #endif
@@ -4158,6 +4158,17 @@ Vector<uint8_t> RenderingDevice::shader_compile_binary_from_spirv(const Vector<S
 	bool code_compiled = shader_container->set_code_from_spirv(p_shader_name, p_spirv);
 	ERR_FAIL_COND_V_MSG(!code_compiled, Vector<uint8_t>(), vformat("Failed to compile code to native for SPIR-V."));
 
+	return shader_container->to_bytes();
+}
+
+Vector<uint8_t> RenderingDevice::shader_compile_binary_from_source(const Vector<ShaderStageSourceData> &p_source, const String &p_shader_name, String *r_error) {
+	const RenderingShaderContainerFormat &container_format = driver->get_shader_container_format();
+	Ref<RenderingShaderContainer> shader_container = container_format.create_container();
+	ERR_FAIL_COND_V(shader_container.is_null(), Vector<uint8_t>());
+
+	if (!shader_container->set_code_from_source(p_shader_name, p_source, r_error)) {
+		return Vector<uint8_t>();
+	}
 	return shader_container->to_bytes();
 }
 

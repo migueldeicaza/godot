@@ -31,6 +31,7 @@
 #include "shader_rd.h"
 
 #include "core/config/engine.h"
+#include "core/config/project_settings.h"
 #include "core/io/dir_access.h"
 #include "core/io/file_access.h"
 #include "core/object/worker_thread_pool.h"
@@ -39,7 +40,15 @@
 #include "core/version.h"
 #include "servers/rendering/shader_include_db.h"
 
+#include "modules/modules_enabled.gen.h" // For Naga.
+
 #define ENABLE_SHADER_CACHE 1
+
+#ifdef MODULE_NAGA_ENABLED
+static bool use_naga_metal_ubershaders() {
+	return bool(GLOBAL_GET("rendering/shader_compiler/metal/use_naga_for_ubershaders")) || OS::get_singleton()->get_environment("GODOT_NAGA_UBERSHADERS") == "1";
+}
+#endif
 
 void ShaderRD::_add_stage(const char *p_code, StageType p_stage_type) {
 	Vector<String> lines = String(p_code).split("\n");
@@ -177,6 +186,10 @@ void ShaderRD::setup(const char *p_vertex_code, const char *p_fragment_code, con
 	tohash.append(p_compute_code ? p_compute_code : "");
 	tohash.append("[DebugInfo]");
 	tohash.append(Engine::get_singleton()->is_generate_spirv_debug_info_enabled() ? "1" : "0");
+#ifdef MODULE_NAGA_ENABLED
+	tohash.append("[NagaMetalUbershaders]");
+	tohash.append(use_naga_metal_ubershaders() ? "1" : "0");
+#endif
 
 	base_sha256 = tohash.as_string().sha256_text();
 }
@@ -410,7 +423,48 @@ void ShaderRD::_compile_variant(uint32_t p_variant, CompileData p_data) {
 	}
 
 	Vector<String> variant_stage_sources = _build_variant_stage_sources(variant, p_data);
-	Vector<RD::ShaderStageSPIRVData> variant_stages = compile_stages(variant_stage_sources, dynamic_buffers);
+	Vector<RD::ShaderStageSPIRVData> variant_stages;
+
+#ifdef MODULE_NAGA_ENABLED
+	const bool use_naga = OS::get_singleton()->get_current_rendering_driver_name() == "metal" &&
+			use_naga_metal_ubershaders() &&
+			(name == "SceneForwardClusteredShaderRD" || name == "SceneForwardMobileShaderRD") &&
+			(String::utf8(variant_defines[variant].text.get_data()).contains("UBERSHADER") || OS::get_singleton()->get_environment("GODOT_NAGA_TEST_ALL_FORWARD_VARIANTS") == "1");
+	if (use_naga) {
+		variant_stages = compile_stages(variant_stage_sources, dynamic_buffers, RD::SHADER_SPIRV_VERSION_1_3);
+		ERR_FAIL_COND(variant_stages.is_empty());
+		Vector<RD::ShaderStageSourceData> source_stages;
+		for (uint32_t i = 0; i < variant_stage_sources.size(); i++) {
+			if (variant_stage_sources[i].is_empty()) {
+				continue;
+			}
+			RD::ShaderStageSourceData stage;
+			stage.shader_stage = RD::ShaderStage(i);
+			stage.source = variant_stage_sources[i];
+			stage.dynamic_buffers = dynamic_buffers;
+			for (const RD::ShaderStageSPIRVData &reflection_stage : variant_stages) {
+				if (reflection_stage.shader_stage == stage.shader_stage) {
+					stage.reflection_spirv = reflection_stage.spirv;
+					break;
+				}
+			}
+			source_stages.push_back(stage);
+		}
+		String naga_error;
+		Vector<uint8_t> shader_data = RD::get_singleton()->shader_compile_binary_from_source(source_stages, name + ":" + itos(variant), &naga_error);
+		if (!shader_data.is_empty()) {
+			print_verbose(vformat("Compiled Metal forward shader variant %s:%d with Naga.", name, variant));
+			p_data.version->variants.write[variant] = RD::get_singleton()->shader_create_from_bytecode_with_samplers(shader_data, p_data.version->variants[variant], immutable_samplers);
+			p_data.version->variant_data.write[variant] = shader_data;
+			return;
+		}
+		print_verbose(vformat("Naga could not compile Metal forward shader variant %s:%d; falling back to GLSLang/SPIRV-Cross.\n%s", name, variant, naga_error));
+	}
+#endif
+
+	if (variant_stages.is_empty()) {
+		variant_stages = compile_stages(variant_stage_sources, dynamic_buffers);
+	}
 	ERR_FAIL_COND(variant_stages.is_empty());
 
 	Vector<uint8_t> shader_data = RD::get_singleton()->shader_compile_binary_from_spirv(variant_stages, name + ":" + itos(variant));
@@ -1152,7 +1206,7 @@ void ShaderRD::set_shader_cache_save_debug(bool p_enable) {
 	shader_cache_save_debug = p_enable;
 }
 
-Vector<RD::ShaderStageSPIRVData> ShaderRD::compile_stages(const Vector<String> &p_stage_sources, const Vector<uint64_t> &p_dynamic_buffers) {
+Vector<RD::ShaderStageSPIRVData> ShaderRD::compile_stages(const Vector<String> &p_stage_sources, const Vector<uint64_t> &p_dynamic_buffers, RD::ShaderSpirvVersion p_spirv_version) {
 	RD::ShaderStageSPIRVData stage;
 	Vector<RD::ShaderStageSPIRVData> stages;
 	String error;
@@ -1163,7 +1217,7 @@ Vector<RD::ShaderStageSPIRVData> ShaderRD::compile_stages(const Vector<String> &
 			continue;
 		}
 
-		stage.spirv = RD::get_singleton()->shader_compile_spirv_from_source(RD::ShaderStage(i), p_stage_sources[i], RD::SHADER_LANGUAGE_GLSL, &error);
+		stage.spirv = RD::get_singleton()->shader_compile_spirv_from_source(RD::ShaderStage(i), p_stage_sources[i], RD::SHADER_LANGUAGE_GLSL, &error, true, p_spirv_version);
 		stage.dynamic_buffers = p_dynamic_buffers;
 		stage.shader_stage = RD::ShaderStage(i);
 		if (!stage.spirv.is_empty()) {

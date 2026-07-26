@@ -35,6 +35,8 @@
 #include "servers/rendering/rendering_device_driver.h"
 #include "servers/rendering/rendering_shader_container.h"
 
+class NagaShaderModule;
+
 constexpr uint32_t R32UI_ALIGNMENT_CONSTANT_ID = 65535;
 /// Metal buffer index for the view mask when rendering multi-view.
 const uint32_t VIEW_MASK_BUFFER_INDEX = 24;
@@ -132,6 +134,7 @@ public:
 		SHA256Digest hash; ///< SHA 256 hash of the shader code
 		uint32_t source_size = 0; ///< size of the source code in the returned bytes
 		uint32_t library_size = 0; ///< size of the compiled library in the returned bytes, 0 if it is not compiled
+		char entry_point[64] = "main0";
 	};
 
 	struct UniformData {
@@ -197,7 +200,7 @@ private:
 	MetalDeviceProfile::MinimumRequirements inspect_spirv(const ReflectShader &p_shader);
 
 public:
-	static constexpr uint32_t FORMAT_VERSION = 2;
+	static constexpr uint32_t FORMAT_VERSION = 3;
 
 	void set_export_mode(bool p_export_mode) { export_mode = p_export_mode; }
 	void set_device_profile(const MetalDeviceProfile *p_device_profile) { device_profile = p_device_profile; }
@@ -222,6 +225,9 @@ protected:
 	virtual uint32_t _format() const override;
 	virtual uint32_t _format_version() const override;
 	virtual bool _set_code_from_spirv(const ReflectShader &p_shader) override;
+	virtual bool _set_code_from_source(const String &p_shader_name, Span<RDC::ShaderStageSourceData> p_source, String *r_error) override;
+
+	bool _set_code_from_reflection(const ReflectShader &p_shader, const Vector<NagaShaderModule *> *p_naga_modules, String *r_error = nullptr);
 };
 
 class RenderingShaderContainerFormatMetal : public RenderingShaderContainerFormat {

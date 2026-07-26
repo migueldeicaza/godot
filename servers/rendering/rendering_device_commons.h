@@ -632,11 +632,19 @@ public:
 		SHADER_SPIRV_VERSION_1_4 = (1 << 16) | (4 << 8),
 		SHADER_SPIRV_VERSION_1_5 = (1 << 16) | (5 << 8),
 		SHADER_SPIRV_VERSION_1_6 = (1 << 16) | (6 << 8),
+		SHADER_SPIRV_VERSION_MAX = 0xFFFFFFFF,
 	};
 
 	struct ShaderStageSPIRVData {
 		ShaderStage shader_stage = SHADER_STAGE_MAX;
 		Vector<uint8_t> spirv;
+		Vector<uint64_t> dynamic_buffers;
+	};
+
+	struct ShaderStageSourceData {
+		ShaderStage shader_stage = SHADER_STAGE_MAX;
+		String source;
+		Vector<uint8_t> reflection_spirv;
 		Vector<uint64_t> dynamic_buffers;
 	};
 

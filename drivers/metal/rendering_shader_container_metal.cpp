@@ -36,6 +36,12 @@
 #include "core/templates/fixed_vector.h"
 #include "drivers/metal/metal_utils.h"
 
+#include "modules/modules_enabled.gen.h" // For Naga.
+
+#ifdef MODULE_NAGA_ENABLED
+#include "modules/naga/naga_bridge.h"
+#endif
+
 #include <thirdparty/spirv-reflect/spirv_reflect.h>
 
 #include <Metal/Metal.hpp>
@@ -321,6 +327,10 @@ MetalDeviceProfile::MinimumRequirements RenderingShaderContainerMetal::inspect_s
 }
 
 bool RenderingShaderContainerMetal::_set_code_from_spirv(const ReflectShader &p_shader) {
+	return _set_code_from_reflection(p_shader, nullptr);
+}
+
+bool RenderingShaderContainerMetal::_set_code_from_reflection(const ReflectShader &p_shader, const Vector<NagaShaderModule *> *p_naga_modules, String *r_error) {
 	using namespace spirv_cross;
 	using spirv_cross::CompilerMSL;
 	using spirv_cross::Resource;
@@ -384,7 +394,7 @@ bool RenderingShaderContainerMetal::_set_code_from_spirv(const ReflectShader &p_
 		msl_options.ios_support_base_vertex_instance = true;
 	}
 
-	if (device_profile->features.use_argument_buffers) {
+	if (device_profile->features.use_argument_buffers && p_naga_modules == nullptr) {
 		msl_options.argument_buffers_tier = CompilerMSL::Options::ArgumentBuffersTier::Tier2;
 		msl_options.argument_buffers = true;
 		mtl_reflection_data.set_uses_argument_buffers(true);
@@ -420,6 +430,9 @@ bool RenderingShaderContainerMetal::_set_code_from_spirv(const ReflectShader &p_
 	// Assign MSL bindings for all the descriptor sets.
 	typedef std::pair<MSLResourceBinding, uint32_t> MSLBindingInfo;
 	LocalVector<MSLBindingInfo> spirv_bindings;
+#ifdef MODULE_NAGA_ENABLED
+	::Vector<NagaShaderModule::Binding> naga_bindings;
+#endif
 	MSLResourceBinding push_constant_resource_binding;
 	{
 		enum IndexType {
@@ -432,6 +445,11 @@ bool RenderingShaderContainerMetal::_set_code_from_spirv(const ReflectShader &p_
 		uint32_t dset_count = p_shader.uniform_sets.size();
 		uint32_t size = reflection_binding_set_uniforms_data.size();
 		spirv_bindings.resize(size);
+#ifdef MODULE_NAGA_ENABLED
+		if (p_naga_modules != nullptr) {
+			naga_bindings.resize(size);
+		}
+#endif
 
 		uint32_t indices[IndexType::Max] = { 0 };
 		auto next_index = [&indices](IndexType p_t, uint32_t p_stride) -> uint32_t {
@@ -573,6 +591,18 @@ bool RenderingShaderContainerMetal::_set_code_from_spirv(const ReflectShader &p_
 				rb.msl_texture = found->get_indexes(shader_index_type).texture;
 				rb.msl_sampler = found->get_indexes(shader_index_type).sampler;
 
+#ifdef MODULE_NAGA_ENABLED
+				if (p_naga_modules != nullptr) {
+					NagaShaderModule::Binding &naga_binding = naga_bindings.write[iter - spirv_bindings.ptr()];
+					naga_binding.group = rb.desc_set;
+					naga_binding.binding = rb.binding;
+					naga_binding.buffer = rb.msl_buffer == UINT32_MAX ? -1 : int32_t(rb.msl_buffer);
+					naga_binding.texture = rb.msl_texture == UINT32_MAX ? -1 : int32_t(rb.msl_texture);
+					naga_binding.sampler = rb.msl_sampler == UINT32_MAX ? -1 : int32_t(rb.msl_sampler);
+					naga_binding.writable = found->access != MTL::BindingAccessReadOnly;
+				}
+#endif
+
 				if (found->data_type == MTL::DataTypeTexture) {
 					const SpvReflectImageTraits &image = uniform.get_spv_reflect().image;
 
@@ -655,6 +685,60 @@ bool RenderingShaderContainerMetal::_set_code_from_spirv(const ReflectShader &p_
 		const ReflectShaderStage &v = p_spirv[i];
 		RDC::ShaderStage stage = v.shader_stage;
 		Span<uint32_t> spirv = v.spirv();
+
+#ifdef MODULE_NAGA_ENABLED
+		if (p_naga_modules != nullptr) {
+			ERR_FAIL_COND_V_MSG(i >= p_naga_modules->size(), false, "Naga module count does not match reflected shader stage count.");
+			uint32_t msl_major = 0;
+			uint32_t msl_minor = 0;
+			parse_msl_version(msl_version, msl_major, msl_minor);
+			String entry_point;
+			String naga_error;
+			String msl_source = (*p_naga_modules)[i]->write_msl(msl_major, msl_minor, naga_bindings, reflection_data.push_constant_size > 0 ? int32_t(mtl_reflection_data.push_constant_binding) : -1, entry_point, naga_error);
+			if (msl_source.is_empty()) {
+				if (r_error != nullptr) {
+					*r_error = naga_error;
+				}
+				return false;
+			}
+
+			CharString source_utf8 = msl_source.utf8();
+			std::string source(source_utf8.get_data(), source_utf8.length());
+			CharString entry_utf8 = entry_point.utf8();
+			ERR_FAIL_COND_V_MSG(entry_utf8.length() >= int(sizeof(stage_data.entry_point)), false, "Naga Metal entry point name is too long.");
+			memset(stage_data.entry_point, 0, sizeof(stage_data.entry_point));
+			memcpy(stage_data.entry_point, entry_utf8.get_data(), entry_utf8.length());
+			stage_data.vertex_input_binding_mask = stage == RDC::SHADER_STAGE_VERTEX ? reflection_data.vertex_input_mask : 0;
+			stage_data.is_position_invariant = true;
+			stage_data.supports_fast_math = true;
+			stage_data.hash = SHA256Digest(source.c_str(), source.length());
+			stage_data.source_size = source.length();
+			::Vector<uint8_t> binary_data;
+			binary_data.resize(stage_data.source_size);
+			memcpy(binary_data.ptrw(), source.c_str(), stage_data.source_size);
+
+			if (export_mode && compiler_props.is_valid()) {
+				::Vector<uint8_t> library_data;
+				Error compile_err = compile_metal_source(source.c_str(), stage_data, library_data);
+				if (compile_err == OK) {
+					stage_data.library_size = library_data.size();
+					binary_data.resize(stage_data.source_size + stage_data.library_size);
+					memcpy(binary_data.ptrw() + stage_data.source_size, library_data.ptr(), stage_data.library_size);
+				}
+			}
+
+			Shader &shader = shaders.write[i];
+			shader.shader_stage = stage;
+			shader.code_decompressed_size = binary_data.size();
+			shader.code_compressed_bytes.resize(binary_data.size());
+			uint32_t compressed_size = 0;
+			bool compressed = compress_code(binary_data.ptr(), binary_data.size(), shader.code_compressed_bytes.ptrw(), &compressed_size, &shader.code_compression_flags);
+			ERR_FAIL_COND_V_MSG(!compressed, false, vformat("Failed to compress Naga Metal source #%d.", i));
+			shader.code_compressed_bytes.resize(compressed_size);
+			continue;
+		}
+#endif
+
 		Parser parser(spirv.ptr(), spirv.size());
 		try {
 			parser.parse();
@@ -749,6 +833,61 @@ bool RenderingShaderContainerMetal::_set_code_from_spirv(const ReflectShader &p_
 	}
 
 	return true;
+}
+
+bool RenderingShaderContainerMetal::_set_code_from_source(const String &p_shader_name, Span<RDC::ShaderStageSourceData> p_source, String *r_error) {
+#ifdef MODULE_NAGA_ENABLED
+	Vector<NagaShaderModule *> modules;
+	Vector<RDC::ShaderStageSPIRVData> spirv;
+	for (uint32_t i = 0; i < p_source.size(); i++) {
+		NagaShaderModule *module = memnew(NagaShaderModule);
+		String error;
+		if (!module->parse(p_source[i].shader_stage, p_source[i].source, error)) {
+			String spirv_error;
+			if (p_source[i].reflection_spirv.is_empty() || !module->parse_spirv(p_source[i].shader_stage, p_source[i].reflection_spirv, spirv_error)) {
+				memdelete(module);
+				for (NagaShaderModule *parsed_module : modules) {
+					memdelete(parsed_module);
+				}
+				if (r_error != nullptr) {
+					*r_error = error + "\nNaga SPIR-V fallback also failed:\n" + spirv_error;
+				}
+				return false;
+			}
+		}
+		RDC::ShaderStageSPIRVData stage_spirv;
+		stage_spirv.shader_stage = p_source[i].shader_stage;
+		stage_spirv.dynamic_buffers = p_source[i].dynamic_buffers;
+		stage_spirv.spirv = p_source[i].reflection_spirv;
+		if (stage_spirv.spirv.is_empty()) {
+			stage_spirv.spirv = module->write_spirv(error);
+		}
+		if (stage_spirv.spirv.is_empty()) {
+			memdelete(module);
+			for (NagaShaderModule *parsed_module : modules) {
+				memdelete(parsed_module);
+			}
+			if (r_error != nullptr) {
+				*r_error = error;
+			}
+			return false;
+		}
+		modules.push_back(module);
+		spirv.push_back(stage_spirv);
+	}
+
+	ReflectShader reflection;
+	bool success = reflect_spirv(p_shader_name, spirv, reflection) == OK && _set_code_from_reflection(reflection, &modules, r_error);
+	for (NagaShaderModule *module : modules) {
+		memdelete(module);
+	}
+	return success;
+#else
+	if (r_error != nullptr) {
+		*r_error = "Godot was built without the Naga module.";
+	}
+	return false;
+#endif
 }
 
 #pragma clang diagnostic pop

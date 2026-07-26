@@ -713,6 +713,17 @@ bool RenderingShaderContainer::set_code_from_spirv(const String &p_shader_name, 
 	return _set_code_from_spirv(shader);
 }
 
+bool RenderingShaderContainer::_set_code_from_source(const String &p_shader_name, Span<RDC::ShaderStageSourceData> p_source, String *r_error) {
+	if (r_error != nullptr) {
+		*r_error = "The active rendering driver does not support direct source compilation.";
+	}
+	return false;
+}
+
+bool RenderingShaderContainer::set_code_from_source(const String &p_shader_name, Span<RDC::ShaderStageSourceData> p_source, String *r_error) {
+	return _set_code_from_source(p_shader_name, p_source, r_error);
+}
+
 RenderingDeviceCommons::ShaderReflection RenderingShaderContainer::get_shader_reflection() const {
 	RDC::ShaderReflection shader_refl;
 	shader_refl.push_constant_size = reflection_data.push_constant_size;

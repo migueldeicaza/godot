@@ -1,0 +1,17 @@
+[package]
+name = "godot-naga"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.87"
+license = "MIT"
+publish = false
+
+[lib]
+crate-type = ["staticlib"]
+
+[dependencies]
+naga = { version = "=29.0.3", features = ["glsl-in", "msl-out", "spv-in", "spv-out"] }
+
+[profile.release]
+panic = "unwind"
+lto = "thin"

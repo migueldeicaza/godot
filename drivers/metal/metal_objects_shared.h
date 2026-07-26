@@ -917,10 +917,11 @@ public:
 class API_AVAILABLE(macos(11.0), ios(14.0), tvos(14.0), visionos(2.0)) MDComputeShader final : public MDShader {
 public:
 	MTL::Size local = {};
+	CharString entry_point;
 
 	std::shared_ptr<MDLibrary> kernel;
 
-	MDComputeShader(CharString p_name, Vector<UniformSet> p_sets, bool p_uses_argument_buffers, std::shared_ptr<MDLibrary> p_kernel);
+	MDComputeShader(CharString p_name, Vector<UniformSet> p_sets, bool p_uses_argument_buffers, std::shared_ptr<MDLibrary> p_kernel, CharString p_entry_point);
 };
 
 class API_AVAILABLE(macos(11.0), ios(14.0), tvos(14.0), visionos(2.0)) MDRenderShader final : public MDShader {
@@ -929,12 +930,15 @@ public:
 
 	std::shared_ptr<MDLibrary> vert;
 	std::shared_ptr<MDLibrary> frag;
+	CharString vertex_entry_point;
+	CharString fragment_entry_point;
 
 	MDRenderShader(CharString p_name,
 			Vector<UniformSet> p_sets,
 			bool p_needs_view_mask_buffer,
 			bool p_uses_argument_buffers,
-			std::shared_ptr<MDLibrary> p_vert, std::shared_ptr<MDLibrary> p_frag);
+			std::shared_ptr<MDLibrary> p_vert, std::shared_ptr<MDLibrary> p_frag,
+			CharString p_vertex_entry_point, CharString p_fragment_entry_point);
 };
 
 #pragma mark - Uniform Set

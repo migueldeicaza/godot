@@ -1112,12 +1112,14 @@ RDD::ShaderID RenderingDeviceDriverMetal::shader_create_from_container(const Ref
 	}
 
 	HashMap<RDD::ShaderStage, std::shared_ptr<MDLibrary>> libraries;
+	HashMap<RDD::ShaderStage, CharString> entry_points;
 
 	PipelineType pipeline_type = PIPELINE_TYPE_RASTERIZATION;
 	Vector<uint8_t> decompressed_code;
 	for (uint32_t shader_index = 0; shader_index < shaders.size(); shader_index++) {
 		const RenderingShaderContainer::Shader &shader = shaders[shader_index];
 		const RSCM::StageData &shader_data = mtl_shaders[shader_index];
+		entry_points[shader.shader_stage] = CharString(shader_data.entry_point);
 
 		if (shader.shader_stage == RDD::ShaderStage::SHADER_STAGE_COMPUTE) {
 			pipeline_type = PIPELINE_TYPE_COMPUTE;
@@ -1234,7 +1236,8 @@ RDD::ShaderID RenderingDeviceDriverMetal::shader_create_from_container(const Ref
 				shader_name,
 				uniform_sets,
 				mtl_reflection_data.uses_argument_buffers(),
-				libraries[RDD::ShaderStage::SHADER_STAGE_COMPUTE]);
+				libraries[RDD::ShaderStage::SHADER_STAGE_COMPUTE],
+				entry_points[RDD::ShaderStage::SHADER_STAGE_COMPUTE]);
 
 		cs->local = MTL::Size(refl.compute_local_size[0], refl.compute_local_size[1], refl.compute_local_size[2]);
 		shader = cs;
@@ -1245,7 +1248,9 @@ RDD::ShaderID RenderingDeviceDriverMetal::shader_create_from_container(const Ref
 				mtl_reflection_data.needs_view_mask_buffer(),
 				mtl_reflection_data.uses_argument_buffers(),
 				libraries[RDD::ShaderStage::SHADER_STAGE_VERTEX],
-				libraries[RDD::ShaderStage::SHADER_STAGE_FRAGMENT]);
+				libraries[RDD::ShaderStage::SHADER_STAGE_FRAGMENT],
+				entry_points[RDD::ShaderStage::SHADER_STAGE_VERTEX],
+				entry_points[RDD::ShaderStage::SHADER_STAGE_FRAGMENT]);
 		shader = rs;
 	}
 
@@ -1761,7 +1766,7 @@ RenderingDeviceDriverMetal::Result<NS::SharedPtr<MTL::Function>> RenderingDevice
 	}
 
 	MTL::Function *function = library->newFunction(p_name);
-	ERR_FAIL_NULL_V_MSG(function, ERR_CANT_CREATE, "No function named main0");
+	ERR_FAIL_NULL_V_MSG(function, ERR_CANT_CREATE, vformat("No Metal function named '%s'", p_name->utf8String()));
 
 	NS::Dictionary *constants_dict = function->functionConstantsDictionary();
 	if (constants_dict->count() == 0) {
@@ -2145,13 +2150,13 @@ RDD::PipelineID RenderingDeviceDriverMetal::render_pipeline_create(
 	}
 
 	if (shader->vert) {
-		Result<NS::SharedPtr<MTL::Function>> function_or_err = _create_function(shader->vert.get(), MTLSTR("main0"), p_specialization_constants);
+		Result<NS::SharedPtr<MTL::Function>> function_or_err = _create_function(shader->vert.get(), conv::to_nsstring(shader->vertex_entry_point), p_specialization_constants);
 		ERR_FAIL_COND_V(std::holds_alternative<Error>(function_or_err), PipelineID());
 		desc->setVertexFunction(std::get<NS::SharedPtr<MTL::Function>>(function_or_err).get());
 	}
 
 	if (shader->frag) {
-		Result<NS::SharedPtr<MTL::Function>> function_or_err = _create_function(shader->frag.get(), MTLSTR("main0"), p_specialization_constants);
+		Result<NS::SharedPtr<MTL::Function>> function_or_err = _create_function(shader->frag.get(), conv::to_nsstring(shader->fragment_entry_point), p_specialization_constants);
 		ERR_FAIL_COND_V(std::holds_alternative<Error>(function_or_err), PipelineID());
 		desc->setFragmentFunction(std::get<NS::SharedPtr<MTL::Function>>(function_or_err).get());
 	}
@@ -2221,7 +2226,7 @@ RDD::PipelineID RenderingDeviceDriverMetal::compute_pipeline_create(ShaderID p_s
 
 	os_signpost_event_emit(LOG_DRIVER, OS_SIGNPOST_ID_EXCLUSIVE, "create_pipeline");
 
-	Result<NS::SharedPtr<MTL::Function>> function_or_err = _create_function(shader->kernel.get(), MTLSTR("main0"), p_specialization_constants);
+	Result<NS::SharedPtr<MTL::Function>> function_or_err = _create_function(shader->kernel.get(), conv::to_nsstring(shader->entry_point), p_specialization_constants);
 	ERR_FAIL_COND_V(std::holds_alternative<Error>(function_or_err), PipelineID());
 	NS::SharedPtr<MTL::Function> function = std::get<NS::SharedPtr<MTL::Function>>(function_or_err);
 

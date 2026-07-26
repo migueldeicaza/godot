@@ -275,6 +275,7 @@ protected:
 
 	// This method will be called when set_code_from_spirv() is called.
 	virtual bool _set_code_from_spirv(const ReflectShader &p_shader) = 0;
+	virtual bool _set_code_from_source(const String &p_shader_name, Span<RDC::ShaderStageSourceData> p_source, String *r_error);
 
 	void set_from_shader_reflection(const ReflectShader &p_reflection);
 	Error reflect_spirv(const String &p_shader_name, Span<RDC::ShaderStageSPIRVData> p_spirv, ReflectShader &r_shader);
@@ -295,6 +296,7 @@ public:
 	Vector<Shader> shaders;
 
 	bool set_code_from_spirv(const String &p_shader_name, Span<RDC::ShaderStageSPIRVData> p_spirv);
+	bool set_code_from_source(const String &p_shader_name, Span<RDC::ShaderStageSourceData> p_source, String *r_error = nullptr);
 	RDC::ShaderReflection get_shader_reflection() const;
 	bool from_bytes(const PackedByteArray &p_bytes);
 	PackedByteArray to_bytes() const;

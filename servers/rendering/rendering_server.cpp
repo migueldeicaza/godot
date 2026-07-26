@@ -41,6 +41,8 @@
 #include "servers/rendering/shader_language.h"
 #include "servers/rendering/shader_warnings.h"
 
+#include "modules/modules_enabled.gen.h" // For Naga.
+
 RenderingServer *RenderingServer::singleton = nullptr;
 RenderingServer *(*RenderingServer::create_func)() = nullptr;
 
@@ -3692,6 +3694,9 @@ void RenderingServer::init() {
 	GLOBAL_DEF("rendering/shader_compiler/shader_cache/use_zstd_compression", true);
 	GLOBAL_DEF("rendering/shader_compiler/shader_cache/strip_debug", false);
 	GLOBAL_DEF("rendering/shader_compiler/shader_cache/strip_debug.release", true);
+#ifdef MODULE_NAGA_ENABLED
+	GLOBAL_DEF("rendering/shader_compiler/metal/use_naga_for_ubershaders", false);
+#endif
 
 	GLOBAL_DEF_RST(PropertyInfo(Variant::INT, "rendering/reflections/sky_reflections/roughness_layers", PROPERTY_HINT_RANGE, "1,32,1"), 8);
 	GLOBAL_DEF_RST("rendering/reflections/sky_reflections/texture_array_reflections", true);

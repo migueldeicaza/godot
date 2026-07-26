@@ -1,0 +1,19 @@
+; Minimal smoke-test project for the experimental Naga Metal path.
+
+config_version=5
+
+[application]
+
+config/name="NagaMetalSmokeTest"
+run/main_scene="res://main.tscn"
+
+[display]
+
+window/size/viewport_width=320
+window/size/viewport_height=240
+
+[rendering]
+
+renderer/rendering_method="gl_compatibility"
+renderer/rendering_method.mobile="gl_compatibility"
+

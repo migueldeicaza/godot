@@ -1523,19 +1523,23 @@ void MDCommandBuffer::_end_blit() {
 MDComputeShader::MDComputeShader(CharString p_name,
 		Vector<UniformSet> p_sets,
 		bool p_uses_argument_buffers,
-		std::shared_ptr<MDLibrary> p_kernel) :
-		MDShader(p_name, p_sets, p_uses_argument_buffers), kernel(std::move(p_kernel)) {
+		std::shared_ptr<MDLibrary> p_kernel,
+		CharString p_entry_point) :
+		MDShader(p_name, p_sets, p_uses_argument_buffers), entry_point(p_entry_point), kernel(std::move(p_kernel)) {
 }
 
 MDRenderShader::MDRenderShader(CharString p_name,
 		Vector<UniformSet> p_sets,
 		bool p_needs_view_mask_buffer,
 		bool p_uses_argument_buffers,
-		std::shared_ptr<MDLibrary> p_vert, std::shared_ptr<MDLibrary> p_frag) :
+		std::shared_ptr<MDLibrary> p_vert, std::shared_ptr<MDLibrary> p_frag,
+		CharString p_vertex_entry_point, CharString p_fragment_entry_point) :
 		MDShader(p_name, p_sets, p_uses_argument_buffers),
 		needs_view_mask_buffer(p_needs_view_mask_buffer),
 		vert(std::move(p_vert)),
-		frag(std::move(p_frag)) {
+		frag(std::move(p_frag)),
+		vertex_entry_point(p_vertex_entry_point),
+		fragment_entry_point(p_fragment_entry_point) {
 }
 
 void DirectEncoder::set(MTL::Texture **p_textures, NS::Range p_range) {
