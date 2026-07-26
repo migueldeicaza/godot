@@ -23,16 +23,18 @@ strips desktop-GLSL precision qualifiers that Naga does not accept in structure
 members. It preserves Godot's specialization constants as Metal function constants,
 lowers matrix inverse operations using Naga's own WGSL inverse formulas, and splits
 the LTC combined samplers used by the color Uber Shader. It uses flat Metal resource
-slots. The current proof of concept retains GLSLang output as reflection metadata and
-as a Naga SPIR-V-frontend fallback for GLSL constructs Naga cannot yet parse;
-successful output is never passed through SPIRV-Cross.
+slots. For successful direct translations, Naga emits a whole-module SPIR-V view for
+Godot's existing reflection machinery, including restored specialization IDs and the
+full declared resource layout. This avoids invoking both GLSLang and SPIRV-Cross on
+the direct path. GLSLang remains available as a transformed SPIR-V fallback for GLSL
+constructs Naga cannot yet parse; successful output is never passed through
+SPIRV-Cross.
 
 The clustered depth Uber variants and most tested clustered and mobile color/depth
 permutations now compile to MSL through Naga. Some color material permutations still
 fall back because Naga's GLSL frontend cannot consistently infer comparison samplers,
-and its SPIR-V frontend rejects some dynamically indexed resource arrays. GLSLang is
-also still paid once for reflection, so this is not yet an end-to-end compile-time
-win even when SPIRV-Cross is skipped.
+and its SPIR-V frontend rejects some dynamically indexed resource arrays. Those
+fallback permutations still pay the existing compiler costs.
 
 Run the included Metal smoke test with verbose compiler selection logging:
 

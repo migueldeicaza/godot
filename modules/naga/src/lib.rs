@@ -509,6 +509,115 @@ fn restore_specialization_constants(
     Ok(source)
 }
 
+fn restore_spirv_specialization_constants(
+    words: &mut Vec<u32>,
+    constants: &[SpecializationConstant],
+) -> Result<(), String> {
+    if constants.is_empty() {
+        return Ok(());
+    }
+
+    let mut ids_by_name = BTreeMap::new();
+    let mut offset = 5;
+    while offset < words.len() {
+        let instruction = words[offset];
+        let word_count = (instruction >> 16) as usize;
+        if word_count == 0 || offset + word_count > words.len() {
+            return Err(
+                "Naga generated malformed SPIR-V while restoring specialization constants"
+                    .to_owned(),
+            );
+        }
+        if instruction & 0xffff == spirv::Op::Name as u32 && word_count >= 3 {
+            let mut name_bytes = words[offset + 2..offset + word_count]
+                .iter()
+                .flat_map(|word| word.to_le_bytes())
+                .collect::<Vec<_>>();
+            name_bytes.truncate(
+                name_bytes
+                    .iter()
+                    .position(|byte| *byte == 0)
+                    .unwrap_or(name_bytes.len()),
+            );
+            if let Ok(name) = String::from_utf8(name_bytes) {
+                ids_by_name.insert(name, words[offset + 1]);
+            }
+        }
+        offset += word_count;
+    }
+
+    let mut specialization_ids = BTreeMap::new();
+    for constant in constants {
+        let result_id = ids_by_name.get(&constant.name).ok_or_else(|| {
+            format!(
+                "Naga SPIR-V omitted specialization constant '{}'",
+                constant.name
+            )
+        })?;
+        specialization_ids.insert(*result_id, constant.id);
+    }
+
+    let mut restored = BTreeMap::new();
+    offset = 5;
+    while offset < words.len() {
+        let instruction = words[offset];
+        let word_count = (instruction >> 16) as usize;
+        let opcode = instruction & 0xffff;
+        if word_count >= 3 {
+            let result_id = words[offset + 2];
+            if let Some(constant_id) = specialization_ids.get(&result_id) {
+                let replacement = if opcode == spirv::Op::ConstantTrue as u32 {
+                    spirv::Op::SpecConstantTrue
+                } else if opcode == spirv::Op::ConstantFalse as u32 {
+                    spirv::Op::SpecConstantFalse
+                } else if opcode == spirv::Op::Constant as u32 {
+                    spirv::Op::SpecConstant
+                } else {
+                    return Err(format!(
+                        "Naga SPIR-V specialization constant %{result_id} uses unsupported opcode {opcode}"
+                    ));
+                };
+                words[offset] = (instruction & 0xffff_0000) | replacement as u32;
+                restored.insert(result_id, *constant_id);
+            }
+        }
+        offset += word_count;
+    }
+
+    if restored.len() != specialization_ids.len() {
+        return Err(
+            "Naga omitted the value of an active SPIR-V specialization constant".to_owned(),
+        );
+    }
+
+    let type_start = {
+        let mut offset = 5;
+        loop {
+            if offset >= words.len() {
+                return Err("Naga SPIR-V has no type section".to_owned());
+            }
+            let instruction = words[offset];
+            let opcode = instruction & 0xffff;
+            if (spirv::Op::TypeVoid as u32..=spirv::Op::TypeForwardPointer as u32).contains(&opcode)
+            {
+                break offset;
+            }
+            offset += (instruction >> 16) as usize;
+        }
+    };
+    let mut decorations = Vec::with_capacity(restored.len() * 4);
+    for (result_id, constant_id) in restored {
+        decorations.extend_from_slice(&[
+            (4 << 16) | spirv::Op::Decorate as u32,
+            result_id,
+            spirv::Decoration::SpecId as u32,
+            constant_id,
+        ]);
+    }
+    words.splice(type_start..type_start, decorations);
+    Ok(())
+}
+
 #[repr(C)]
 pub struct GodotNagaBinding {
     group: u32,
@@ -701,16 +810,18 @@ pub unsafe extern "C" fn godot_naga_write_spirv(
     }
     let shader = &*shader.cast::<ParsedShader>();
     let result = catch_unwind(AssertUnwindSafe(|| {
-        let pipeline = spv::PipelineOptions {
-            shader_stage: shader.stage,
-            entry_point: "main".to_owned(),
-        };
         let mut options = spv::Options::default();
         options
             .flags
             .remove(spv::WriterFlags::ADJUST_COORDINATE_SPACE);
-        spv::write_vec(&shader.module, &shader.info, &options, Some(&pipeline))
-            .map_err(|err| format!("Naga SPIR-V generation failed: {err}"))
+        options.flags.insert(spv::WriterFlags::DEBUG);
+        // Reflection must retain the full declared resource layout. Godot binds
+        // complete descriptor sets even when a particular entry point does not
+        // access every declaration in the shared forward-shader template.
+        let mut words = spv::write_vec(&shader.module, &shader.info, &options, None)
+            .map_err(|err| format!("Naga SPIR-V generation failed: {err}"))?;
+        restore_spirv_specialization_constants(&mut words, &shader.specialization_constants)?;
+        Ok(words)
     }));
 
     let words = match result {
@@ -792,12 +903,12 @@ pub unsafe extern "C" fn godot_naga_write_msl(
                 group: combined.group,
                 binding: combined.binding,
             };
-            let original_target = resources.resources.get_mut(&original).ok_or_else(|| {
-                format!(
-                    "Metal binding map is missing combined sampler {}:{}",
-                    combined.group, combined.binding
-                )
-            })?;
+            let Some(original_target) = resources.resources.get_mut(&original) else {
+                // Reflection only contains resources active in the selected entry
+                // point. The forward templates still declare LTC resources in depth
+                // variants that never reference them.
+                continue;
+            };
             let sampler = original_target.sampler.take().ok_or_else(|| {
                 format!(
                     "Metal binding map has no sampler slot for combined sampler {}:{}",
@@ -932,6 +1043,18 @@ void main() {
             let spirv = godot_naga_write_spirv(shader, &mut error);
             assert!(spirv.length >= 20);
             assert_eq!(*(spirv.data.cast::<u32>()), 0x0723_0203);
+            let words = slice::from_raw_parts(spirv.data.cast::<u32>(), spirv.length / 4);
+            assert!(words.iter().enumerate().any(|(offset, instruction)| {
+                instruction & 0xffff == spirv::Op::Decorate as u32
+                    && words.get(offset + 2) == Some(&(spirv::Decoration::SpecId as u32))
+                    && words.get(offset + 3) == Some(&7)
+            }));
+            assert!(words.iter().any(|instruction| {
+                matches!(
+                    spirv::Op::from_u32(instruction & 0xffff),
+                    Some(spirv::Op::SpecConstantFalse)
+                )
+            }));
             godot_naga_bytes_free(spirv);
 
             let mut entry = ptr::null_mut();

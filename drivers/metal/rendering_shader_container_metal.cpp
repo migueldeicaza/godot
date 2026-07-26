@@ -900,7 +900,49 @@ bool RenderingShaderContainerMetal::_set_code_from_source(const String &p_shader
 	}
 
 	ReflectShader reflection;
-	bool success = reflect_spirv(p_shader_name, spirv, reflection) == OK && _set_code_from_reflection(reflection, &modules, r_error);
+	bool success = reflect_spirv(p_shader_name, spirv, reflection) == OK;
+	if (success) {
+		// Naga represents the two legacy LTC combined samplers as separate texture
+		// and sampler resources. Merge their synthetic reflection bindings back into
+		// Godot's original combined binding before assigning Metal slots.
+		constexpr uint32_t NAGA_SYNTHETIC_SAMPLER_BINDING_OFFSET = 1000;
+		for (ReflectDescriptorSet &set : reflection.uniform_sets) {
+			for (uint32_t sampler_index = set.size(); sampler_index > 0; sampler_index--) {
+				ReflectUniform &sampler = set[sampler_index - 1];
+				if (sampler.type != RDC::UNIFORM_TYPE_SAMPLER || sampler.binding < NAGA_SYNTHETIC_SAMPLER_BINDING_OFFSET) {
+					continue;
+				}
+
+				const uint32_t texture_binding = sampler.binding - NAGA_SYNTHETIC_SAMPLER_BINDING_OFFSET;
+				ReflectUniform *texture = nullptr;
+				for (ReflectUniform &candidate : set) {
+					if (candidate.binding == texture_binding) {
+						texture = &candidate;
+						break;
+					}
+				}
+				if (texture == nullptr || texture->type != RDC::UNIFORM_TYPE_TEXTURE || texture->length != sampler.length) {
+					success = false;
+					if (r_error != nullptr) {
+						*r_error = vformat("Naga reflection could not merge synthetic sampler binding %d.", sampler.binding);
+					}
+					break;
+				}
+
+				texture->type = RDC::UNIFORM_TYPE_SAMPLER_WITH_TEXTURE;
+				texture->stages.set_flag(sampler.stages);
+				set.remove_at(sampler_index - 1);
+			}
+			if (!success) {
+				break;
+			}
+			set.sort();
+		}
+	}
+	if (success) {
+		set_from_shader_reflection(reflection);
+		success = _set_code_from_reflection(reflection, &modules, r_error);
+	}
 	for (NagaShaderModule *module : modules) {
 		memdelete(module);
 	}

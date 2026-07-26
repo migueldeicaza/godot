@@ -431,8 +431,6 @@ void ShaderRD::_compile_variant(uint32_t p_variant, CompileData p_data) {
 			(name == "SceneForwardClusteredShaderRD" || name == "SceneForwardMobileShaderRD") &&
 			(String::utf8(variant_defines[variant].text.get_data()).contains("UBERSHADER") || OS::get_singleton()->get_environment("GODOT_NAGA_TEST_ALL_FORWARD_VARIANTS") == "1");
 	if (use_naga) {
-		variant_stages = compile_stages(variant_stage_sources, dynamic_buffers, RD::SHADER_SPIRV_VERSION_1_3);
-		ERR_FAIL_COND(variant_stages.is_empty());
 		Vector<RD::ShaderStageSourceData> source_stages;
 		for (uint32_t i = 0; i < variant_stage_sources.size(); i++) {
 			if (variant_stage_sources[i].is_empty()) {
@@ -442,12 +440,6 @@ void ShaderRD::_compile_variant(uint32_t p_variant, CompileData p_data) {
 			stage.shader_stage = RD::ShaderStage(i);
 			stage.source = variant_stage_sources[i];
 			stage.dynamic_buffers = dynamic_buffers;
-			for (const RD::ShaderStageSPIRVData &reflection_stage : variant_stages) {
-				if (reflection_stage.shader_stage == stage.shader_stage) {
-					stage.reflection_spirv = reflection_stage.spirv;
-					break;
-				}
-			}
 			source_stages.push_back(stage);
 		}
 		String naga_error;
