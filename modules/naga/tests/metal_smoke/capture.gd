@@ -6,8 +6,11 @@ func _ready() -> void:
 	if capture_path.is_empty():
 		return
 
-	# Let render resources and shadows settle before taking the deterministic sample.
-	for frame in 8:
+	# Let render resources, asynchronous specialized pipelines, and shadows settle.
+	var settle_frames := int(OS.get_environment("GODOT_NAGA_RENDER_CAPTURE_FRAMES"))
+	if settle_frames <= 0:
+		settle_frames = 8
+	for frame in settle_frames:
 		await RenderingServer.frame_post_draw
 		await get_tree().process_frame
 

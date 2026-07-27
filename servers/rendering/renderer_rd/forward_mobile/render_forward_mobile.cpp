@@ -2565,7 +2565,7 @@ void RenderForwardMobile::_render_list_template(RenderingDevice::DrawListID p_dr
 		RID pipeline_rd;
 		RID vertex_array_rd;
 		RID index_array_rd;
-		uint32_t ubershader_iterations = (disable_ubershaders ? 1 : 2);
+		uint32_t ubershader_iterations = (disable_ubershaders || force_specialized_shaders) ? 1 : 2;
 		bool pipeline_valid = false;
 		while (pipeline_key.ubershader < ubershader_iterations) {
 			// Skeleton and blend shape.
@@ -2590,7 +2590,7 @@ void RenderForwardMobile::_render_list_template(RenderingDevice::DrawListID p_dr
 
 			if (shader != prev_shader || pipeline_hash != prev_pipeline_hash) {
 				RSE::PipelineSource pipeline_source = pipeline_key.ubershader ? RSE::PIPELINE_SOURCE_DRAW : RSE::PIPELINE_SOURCE_SPECIALIZATION;
-				pipeline_rd = shader->pipeline_hash_map.get_pipeline(pipeline_key, pipeline_hash, pipeline_key.ubershader == (ubershader_iterations - 1), pipeline_source);
+				pipeline_rd = shader->pipeline_hash_map.get_pipeline(pipeline_key, pipeline_hash, pipeline_key.ubershader == (ubershader_iterations - 1) || force_specialized_shaders, pipeline_source);
 
 				if (pipeline_rd.is_valid()) {
 					pipeline_valid = true;
@@ -3560,10 +3560,13 @@ RenderForwardMobile::RenderForwardMobile() {
 
 	disable_ubershaders = RD::get_singleton()->get_driver_workarounds().disable_ubershaders;
 	force_ubershaders = !disable_ubershaders && OS::get_singleton()->get_environment("GODOT_NAGA_FORCE_UBERSHADERS") == "1";
+	force_specialized_shaders = !force_ubershaders && OS::get_singleton()->get_environment("GODOT_NAGA_FORCE_SPECIALIZED_SHADERS") == "1";
 	if (disable_ubershaders) {
 		print_verbose("Ubershaders: Disabled");
 	} else if (force_ubershaders) {
 		print_verbose("Ubershaders: Forced by GODOT_NAGA_FORCE_UBERSHADERS");
+	} else if (force_specialized_shaders) {
+		print_verbose("Specialized shaders: Forced by GODOT_NAGA_FORCE_SPECIALIZED_SHADERS");
 	} else {
 		print_verbose("Ubershaders: Enabled");
 	}

@@ -1213,7 +1213,7 @@ void light_process_area(uint idx, vec3 vertex, hvec3 eye_vec, hvec3 normal, vec3
 	hvec3 isotropic_light_color = hvec3(1.0); // independent of normal
 	if (area_lights.data[idx].projector_rect != vec4(0.0)) {
 		half lod = dist / sqrt(area);
-		lod = log(half(2048.0) * lod) / log(half(3.0));
+		lod = half(log(half(2048.0) * lod) / log(half(3.0)));
 
 		hvec2 uv = (closest_point_local_to_light.xy + hvec2(a_half_len, b_half_len)) / hvec2(a_len, b_len);
 		isotropic_light_color = hvec3(fetch_ltc_lod(vec2(hvec2(1.0) - uv), area_lights.data[idx].projector_rect, float(lod), max_mipmap, area_light_atlas, SAMPLER_LINEAR_WITH_MIPMAPS_CLAMP));

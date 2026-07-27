@@ -375,6 +375,34 @@ fn add_modf_polyfill(mut source: String) -> Result<String, String> {
     Ok(source)
 }
 
+fn wrap_qualified_boolean_access(source: String, access: &str) -> String {
+    let is_identifier_character =
+        |character: char| character.is_ascii_alphanumeric() || character == '_';
+    let mut adjusted = String::with_capacity(source.len());
+    let mut offset = 0;
+    while let Some(relative_start) = source[offset..].find(access) {
+        let start = offset + relative_start;
+        let end = start + access.len();
+        let has_identifier_prefix = source[..start]
+            .chars()
+            .next_back()
+            .is_some_and(is_identifier_character);
+        let has_identifier_suffix = source[end..]
+            .chars()
+            .next()
+            .is_some_and(is_identifier_character);
+        adjusted.push_str(&source[offset..start]);
+        if has_identifier_prefix || has_identifier_suffix {
+            adjusted.push_str(access);
+        } else {
+            adjusted.push_str(&format!("bool({access})"));
+        }
+        offset = end;
+    }
+    adjusted.push_str(&source[offset..]);
+    adjusted
+}
+
 fn lower_forward_buffer_booleans(mut source: String) -> String {
     // GLSL buffer booleans occupy a 32-bit slot in Godot's CPU-side layouts,
     // while Naga deliberately rejects `bool` as a host-shareable IR type. Keep
@@ -401,9 +429,64 @@ fn lower_forward_buffer_booleans(mut source: String) -> String {
         "implementation_data.volumetric_fog_enabled",
         "voxel_gi_instances.data[index].blend_ambient",
     ] {
-        source = source.replace(access, &format!("bool({access})"));
+        source = wrap_qualified_boolean_access(source, access);
     }
-    source
+
+    // Material uniforms are generated dynamically, so their field names cannot
+    // be enumerated above. Scalar booleans have the same 32-bit ABI as uints in
+    // Godot's uniform layouts; expose them as uints to Naga and restore boolean
+    // semantics at every qualified read.
+    let mut adjusted = String::with_capacity(source.len());
+    let mut in_resource_block = false;
+    let mut boolean_fields = Vec::new();
+    let mut qualified_accesses = Vec::new();
+    for source_line in source.split_inclusive('\n') {
+        let mut line = source_line.to_owned();
+        let trimmed = line.trim_start().to_owned();
+        if !in_resource_block
+            && trimmed.contains("layout(")
+            && (trimmed.contains(" uniform ") || trimmed.contains(" buffer "))
+            && trimmed.contains('{')
+        {
+            in_resource_block = true;
+            boolean_fields.clear();
+        }
+        if in_resource_block {
+            if let Some(declaration) = trimmed.strip_prefix("bool ") {
+                if let Some(field) = declaration.trim().strip_suffix(';') {
+                    if field
+                        .chars()
+                        .all(|character| character.is_ascii_alphanumeric() || character == '_')
+                    {
+                        let indentation = line.len() - trimmed.len();
+                        line.replace_range(indentation..indentation + "bool".len(), "uint");
+                        boolean_fields.push(field.to_owned());
+                    }
+                }
+            }
+            if let Some(after_brace) = trimmed.strip_prefix('}') {
+                if let Some(instance) = after_brace.trim().strip_suffix(';') {
+                    if instance
+                        .chars()
+                        .all(|character| character.is_ascii_alphanumeric() || character == '_')
+                    {
+                        qualified_accesses.extend(
+                            boolean_fields
+                                .iter()
+                                .map(|field| format!("{instance}.{field}")),
+                        );
+                    }
+                }
+                in_resource_block = false;
+                boolean_fields.clear();
+            }
+        }
+        adjusted.push_str(&line);
+    }
+    for access in qualified_accesses {
+        adjusted = wrap_qualified_boolean_access(adjusted, &access);
+    }
+    adjusted
 }
 
 fn widen_forward_half_arguments(source: String) -> String {
@@ -770,10 +853,31 @@ fn restore_specialization_constants(
     constants: &[SpecializationConstant],
 ) -> Result<String, String> {
     for constant in constants {
-        let name_marker = format!(" {} = ", constant.name);
         let Some(line) = source
             .lines()
-            .find(|line| line.starts_with("constant ") && line.contains(&name_marker))
+            .find(|line| {
+                if !line.starts_with("constant ") {
+                    return false;
+                }
+                let Some((declaration, _)) = line
+                    .strip_suffix(';')
+                    .and_then(|line| line.split_once(" = "))
+                else {
+                    return false;
+                };
+                let Some(emitted_name) = declaration.split_whitespace().last() else {
+                    return false;
+                };
+                emitted_name == constant.name
+                    || emitted_name
+                        .strip_prefix(&constant.name)
+                        .is_some_and(|suffix| {
+                            !suffix.is_empty()
+                                && suffix
+                                    .chars()
+                                    .all(|character| character == '_' || character.is_ascii_digit())
+                        })
+            })
             .map(str::to_owned)
         else {
             // Naga omits constants that are unused by this entry point. Metal permits
@@ -789,20 +893,21 @@ fn restore_specialization_constants(
                     constant.name
                 )
             })?;
-        let type_name = declaration
+        let (type_and_name, emitted_name) = declaration
             .strip_prefix("constant ")
-            .and_then(|declaration| declaration.strip_suffix(&format!(" {}", constant.name)))
+            .and_then(|declaration| declaration.rsplit_once(' '))
             .ok_or_else(|| {
                 format!(
                     "Naga MSL specialization constant '{}' has an invalid type",
                     constant.name
                 )
             })?;
-        let temporary = format!("{}_tmp", constant.name);
+        let type_name = type_and_name.trim();
+        let temporary = format!("{emitted_name}_tmp");
         let replacement = format!(
             "constant {type_name} {temporary} [[function_constant({})]];\n\
-             constant {type_name} {} = is_function_constant_defined({temporary}) ? {temporary} : {default};",
-            constant.id, constant.name
+             constant {type_name} {emitted_name} = is_function_constant_defined({temporary}) ? {temporary} : {default};",
+            constant.id
         );
         source = source.replacen(&line, &replacement, 1);
     }
@@ -1889,6 +1994,18 @@ void main() {
     }
 
     #[test]
+    fn restores_renamed_msl_specialization_constants() {
+        let source = "constant uint pso_sc_packed_0_ = 0u;\n".to_owned();
+        let constants = [SpecializationConstant {
+            id: 7,
+            name: "pso_sc_packed_0".to_owned(),
+        }];
+        let restored = restore_specialization_constants(source, &constants).unwrap();
+        assert!(restored.contains("pso_sc_packed_0__tmp [[function_constant(7)]]"));
+        assert!(restored.contains("constant uint pso_sc_packed_0_ = is_function_constant_defined"));
+    }
+
+    #[test]
     fn splits_forward_combined_samplers_and_uses_globals_in_ltc_helper() {
         const FRAGMENT: &str = r#"#version 450
 layout(location = 0) out vec4 color;
@@ -2075,16 +2192,25 @@ struct ReflectionData {
 layout(set = 0, binding = 6, std430) restrict readonly buffer ReflectionProbeData {
     ReflectionData data[];
 } reflections;
+layout(set = 1, binding = 0, std140) uniform MaterialUniforms {
+    bool enabled;
+    bool enabled_extra;
+} material;
 layout(location = 0) out vec4 color;
 void main() {
     uint ref_index = 0u;
-    color = reflections.data[ref_index].box_project ? vec4(1.0) : vec4(0.0);
+    color = reflections.data[ref_index].box_project && material.enabled && material.enabled_extra ? vec4(1.0) : vec4(0.0);
 }
 "#;
         unsafe {
             let adjusted = lower_forward_buffer_booleans(FRAGMENT.to_owned());
             assert!(adjusted.contains("uint box_project;"));
             assert!(adjusted.contains("bool(reflections.data[ref_index].box_project)"));
+            assert!(adjusted.contains("uint enabled;"));
+            assert!(adjusted.contains("bool(material.enabled)"));
+            assert!(adjusted.contains("uint enabled_extra;"));
+            assert!(adjusted.contains("bool(material.enabled_extra)"));
+            assert!(!adjusted.contains("bool(material.enabled)_extra"));
 
             let source = CString::new(FRAGMENT).unwrap();
             let mut error = ptr::null_mut();
@@ -2095,16 +2221,35 @@ void main() {
                 CStr::from_ptr(error).to_string_lossy()
             );
 
-            let binding = GodotNagaBinding {
-                group: 0,
-                binding: 6,
-                buffer: 0,
-                texture: -1,
-                sampler: -1,
-                writable: 0,
-            };
+            let bindings = [
+                GodotNagaBinding {
+                    group: 0,
+                    binding: 6,
+                    buffer: 0,
+                    texture: -1,
+                    sampler: -1,
+                    writable: 0,
+                },
+                GodotNagaBinding {
+                    group: 1,
+                    binding: 0,
+                    buffer: 1,
+                    texture: -1,
+                    sampler: -1,
+                    writable: 0,
+                },
+            ];
             let mut entry = ptr::null_mut();
-            let msl = godot_naga_write_msl(shader, 2, 4, &binding, 1, -1, &mut entry, &mut error);
+            let msl = godot_naga_write_msl(
+                shader,
+                2,
+                4,
+                bindings.as_ptr(),
+                bindings.len(),
+                -1,
+                &mut entry,
+                &mut error,
+            );
             assert!(
                 !msl.is_null(),
                 "{}",
@@ -2112,6 +2257,8 @@ void main() {
             );
             let source = CStr::from_ptr(msl).to_string_lossy();
             assert!(source.contains("uint box_project"));
+            assert!(source.contains("uint enabled"));
+            assert!(source.contains("uint enabled_extra"));
 
             godot_naga_string_free(msl);
             godot_naga_string_free(entry);
@@ -2130,7 +2277,8 @@ void main() {
     f16vec3 c = cross(a, b);
     float16_t amount = mix(float16_t(0.25), float16_t(0.75), float16_t(0.5));
     float16_t value = float16_t(min(abs(c.z), exp2(amount)));
-    color = vec4(vec3(c), float(value));
+    float16_t lod = float16_t(log(float16_t(2048.0) * amount) / log(float16_t(3.0)));
+    color = vec4(vec3(c), float(value + lod));
 }
 "#;
         unsafe {

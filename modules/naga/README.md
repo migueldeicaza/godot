@@ -1,9 +1,10 @@
 # Experimental Naga shader backend
 
-This optional module lets the Metal renderer attempt GLSL-to-MSL translation with
-[Naga](https://github.com/gfx-rs/wgpu/tree/trunk/naga) for Godot's built-in forward
-Uber Shaders. It is intentionally not a replacement for Godot's shader validation or
-the general GLSLang/SPIRV-Cross path.
+This optional module lets the Metal renderer attempt direct GLSL-to-MSL translation
+with [Naga](https://github.com/gfx-rs/wgpu/tree/trunk/naga) for Godot's built-in
+forward shaders, including generated specialized material shaders and Uber Shaders.
+It is intentionally not a replacement for Godot's shader validation or the general
+GLSLang/SPIRV-Cross path.
 
 Build on macOS with Rust 1.87 or newer:
 
@@ -11,14 +12,17 @@ Build on macOS with Rust 1.87 or newer:
 scons platform=macos naga_enabled=yes
 ```
 
-At runtime, enable `rendering/shader_compiler/metal/use_naga_for_ubershaders` in the
-project settings. Translation failures automatically use the existing compiler path.
-For one-off testing and benchmarks, `GODOT_NAGA_UBERSHADERS=1` enables the same path
-without changing a project file.
+At runtime, enable `rendering/shader_compiler/metal/use_naga_for_forward_shaders` to
+route all Forward+ and Mobile shader variants through Naga. The narrower
+`rendering/shader_compiler/metal/use_naga_for_ubershaders` option routes only Uber
+Shaders. Translation failures automatically use the existing compiler path. For
+one-off testing and benchmarks, `GODOT_NAGA_FORWARD_SHADERS=1` and
+`GODOT_NAGA_UBERSHADERS=1` enable the corresponding paths without changing a project
+file.
 `GODOT_NAGA_TEST_ALL_UBER_VARIANTS=1` enables every Forward+ or Mobile shader
 group and creates a real Metal render pipeline for every built-in Uber variant.
-`GODOT_NAGA_TEST_ALL_FORWARD_VARIANTS=1` additionally routes non-Uber forward
-variants through Naga, which is useful only for exercising the fallback boundary.
+`GODOT_NAGA_TEST_ALL_FORWARD_VARIANTS=1` is retained as a test-only alias for routing
+all forward variants through Naga.
 
 The bridge applies Godot's Vulkan-to-Metal vertex-Y convention before parsing and
 strips desktop-GLSL precision qualifiers that Naga does not accept in structure
@@ -40,8 +44,9 @@ FP16 groups). It also creates all 43 corresponding Metal render pipelines, with 
 GLSLang/SPIRV-Cross fallback. The bridge handles comparison samplers, ordinary depth
 reads, fixed resource-binding arrays, subgroup operations, multiview, storage-image
 atomics, tightly packed three-component buffer members, buffer boolean layouts, and
-explicit-fp16 Mobile lighting. The legacy compiler path remains mandatory for
-untested permutations and other shaders.
+explicit-fp16 Mobile lighting, and dynamically generated material-buffer booleans.
+The legacy compiler path remains the automatic fallback for unsupported permutations
+and other shaders.
 
 ## Benchmark
 
@@ -67,26 +72,57 @@ parity, as expected. Set `GODOT_NAGA_BENCHMARK_UBER_VARIANTS=1` alongside the
 exhaustive-test variables to print parse/validation, reflection, MSL, GLSLang,
 SPIRV-Cross/container, and pipeline timings for an individual run.
 
+### Real-project corpus
+
+`tests/benchmark_project_corpus.py` benchmarks the shader variants actually loaded by
+one or more projects. Each run uses an isolated copy-on-write clone, disables its
+shader cache, alternates direct Naga and legacy compilation, and rejects any Naga
+fallback or mixed-compiler result. The source projects are never modified.
+
+```sh
+python3 modules/naga/tests/benchmark_project_corpus.py --iterations 3 \
+  ~/Documents/TwinStickShooter \
+  ~/Documents/Starter-Kit-Racing \
+  ~/Documents/ThirdPersonShooterTpsDemo
+```
+
+On an Apple M3 Ultra, the three-run medians were:
+
+| Project | Renderer | Loaded variants (specialized) | Naga translation | Legacy translation | Speedup |
+|---|---|---:|---:|---:|---:|
+| TwinStickShooter | Forward+ | 64 (32) | 1.896 s | 1.973 s | 1.04x |
+| TwinStickShooter | Mobile | 80 (40) | 2.664 s | 2.845 s | 1.07x |
+| Starter-Kit-Racing | Forward+ | 56 (28) | 1.735 s | 1.975 s | 1.14x |
+| Starter-Kit-Racing | Mobile | 70 (35) | 2.579 s | 3.231 s | 1.25x |
+| ThirdPersonShooterTpsDemo | Forward+ | 168 (84) | 8.463 s | 14.561 s | 1.72x |
+| ThirdPersonShooterTpsDemo | Mobile | 60 (30) | 2.054 s | 2.406 s | 1.17x |
+
+All 498 observed compilation events, including 249 specialized variants, completed
+directly through Naga with no fallback. These translation sums isolate compiler work;
+whole-process time also includes project loading, game work, and Metal compilation and
+is therefore reported by the harness only as contextual data.
+
 ## Render equivalence
 
-`tests/compare_metal_rendering.py` renders a fixed PBR scene through forced Uber
-pipelines using the legacy and direct-Naga Metal paths. It captures raw RGBA8 pixels,
-requires a Naga compilation marker with no fallback, and compares maximum, mean, and
-RMS channel error. It runs both Forward+ and Mobile by default:
+`tests/compare_metal_rendering.py` renders a fixed PBR scene through independently
+forced Uber and specialized pipelines using the legacy and direct-Naga Metal paths.
+It captures raw RGBA8 pixels, requires the expected Naga compilation marker with no
+fallback, and compares maximum, mean, and RMS channel error. It runs both Forward+
+and Mobile pipelines by default:
 
 ```sh
 python3 modules/naga/tests/compare_metal_rendering.py
 ```
 
-Forward+ is bit-for-bit identical on the reference M3 Ultra. Mobile has a stable
-mean channel difference of 0.01/255 and RMS difference of 0.114/255, localized to
-shadow and triangle edges; the largest observed channel difference is 7/255 across
-9 channel values. The default tolerance admits this compiler-level floating-point
+Forward+ is bit-for-bit identical on the reference M3 Ultra for both pipelines.
+Mobile has a stable mean channel difference of about 0.01/255 and RMS difference of
+about 0.11/255, localized to shadow and triangle edges; the largest observed channel
+difference is 7/255. The default tolerance admits this compiler-level floating-point
 variation while rejecting broader or visibly meaningful divergence. PNG captures,
 logs, raw pixels, and an amplified difference image are retained in the printed
-temporary output directory. `GODOT_NAGA_FORCE_UBERSHADERS=1` is the test-only switch
-used by the harness to prevent specialized pipelines from replacing the code under
-test.
+temporary output directory. `GODOT_NAGA_FORCE_UBERSHADERS=1` and
+`GODOT_NAGA_FORCE_SPECIALIZED_SHADERS=1` are test-only switches used by the harness
+to hold the requested pipeline active until capture.
 
 Naga 29.0.3 is vendored under `modules/naga/vendor/naga` because the tested Godot
 shader surface needs small GLSL frontend and MSL binding-array fixes not yet present

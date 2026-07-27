@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import math
 import os
+import re
 import subprocess
 import tempfile
 from dataclasses import dataclass
@@ -17,18 +18,39 @@ class Capture:
     pixels: bytes
 
 
-def run_capture(binary: Path, project: Path, output_dir: Path, method: str, backend: str) -> Capture:
-    capture_path = output_dir / f"{method}-{backend}"
+NAGA_VARIANT_RE = re.compile(r"Compiled Metal forward shader variant \S+:(\d+) with Naga\.")
+
+
+def is_specialized_variant(method: str, variant: int) -> bool:
+    if method == "forward_plus":
+        return variant < 9 or (variant >= 18 and variant % 2 == 0)
+    return variant < 9 or 18 <= variant < 27
+
+
+def run_capture(binary: Path, project: Path, output_dir: Path, method: str, backend: str, pipeline: str) -> Capture:
+    capture_path = output_dir / f"{method}-{pipeline}-{backend}"
     environment = os.environ.copy()
-    environment["GODOT_NAGA_FORCE_UBERSHADERS"] = "1"
     environment["GODOT_NAGA_RENDER_CAPTURE"] = str(capture_path)
+    environment["GODOT_NAGA_RENDER_CAPTURE_FRAMES"] = "8"
     environment.pop("GODOT_NAGA_TEST_ALL_UBER_VARIANTS", None)
     environment.pop("GODOT_NAGA_BENCHMARK_UBER_VARIANTS", None)
     environment.pop("GODOT_NAGA_BENCHMARK_NONCE", None)
+    if pipeline == "uber":
+        environment["GODOT_NAGA_FORCE_UBERSHADERS"] = "1"
+        environment.pop("GODOT_NAGA_FORCE_SPECIALIZED_SHADERS", None)
+    else:
+        environment.pop("GODOT_NAGA_FORCE_UBERSHADERS", None)
+        environment["GODOT_NAGA_FORCE_SPECIALIZED_SHADERS"] = "1"
     if backend == "naga":
-        environment["GODOT_NAGA_UBERSHADERS"] = "1"
+        if pipeline == "uber":
+            environment["GODOT_NAGA_UBERSHADERS"] = "1"
+            environment.pop("GODOT_NAGA_FORWARD_SHADERS", None)
+        else:
+            environment["GODOT_NAGA_FORWARD_SHADERS"] = "1"
+            environment.pop("GODOT_NAGA_UBERSHADERS", None)
     else:
         environment.pop("GODOT_NAGA_UBERSHADERS", None)
+        environment.pop("GODOT_NAGA_FORWARD_SHADERS", None)
 
     command = [
         str(binary),
@@ -54,13 +76,21 @@ def run_capture(binary: Path, project: Path, output_dir: Path, method: str, back
         raise RuntimeError(f"Godot {method}/{backend} failed; see {log_path}\n{result.stdout[-4000:]}")
     if "Naga render capture:" not in result.stdout:
         raise RuntimeError(f"Godot {method}/{backend} emitted no completed capture; see {log_path}")
-    if "Ubershaders: Forced by GODOT_NAGA_FORCE_UBERSHADERS" not in result.stdout:
+    if pipeline == "uber" and "Ubershaders: Forced by GODOT_NAGA_FORCE_UBERSHADERS" not in result.stdout:
         raise RuntimeError(f"Godot {method}/{backend} did not confirm the forced Uber path; see {log_path}")
+    if (
+        pipeline == "specialized"
+        and "Specialized shaders: Forced by GODOT_NAGA_FORCE_SPECIALIZED_SHADERS" not in result.stdout
+    ):
+        raise RuntimeError(f"Godot {method}/{backend} did not confirm the forced specialized path; see {log_path}")
     if backend == "naga":
         if "Compiled Metal forward shader variant" not in result.stdout or " with Naga." not in result.stdout:
             raise RuntimeError(f"Godot {method}/naga did not report a Naga-compiled forward shader; see {log_path}")
         if "falling back to GLSLang/SPIRV-Cross" in result.stdout:
             raise RuntimeError(f"Godot {method}/naga used the legacy fallback; see {log_path}")
+        variants = [int(match.group(1)) for match in NAGA_VARIANT_RE.finditer(result.stdout)]
+        if pipeline == "specialized" and not any(is_specialized_variant(method, variant) for variant in variants):
+            raise RuntimeError(f"Godot {method}/naga did not report a specialized Naga variant; see {log_path}")
     elif " with Naga." in result.stdout:
         raise RuntimeError(f"Godot {method}/legacy unexpectedly used Naga; see {log_path}")
 
@@ -113,9 +143,10 @@ def compare(expected: Capture, actual: Capture) -> tuple[int, float, float, int,
 
 def main() -> None:
     repository = Path(__file__).resolve().parents[3]
-    parser = argparse.ArgumentParser(description="Compare legacy and direct-Naga Metal Uber-shader rendering.")
+    parser = argparse.ArgumentParser(description="Compare legacy and direct-Naga Metal forward-shader rendering.")
     parser.add_argument("--binary", type=Path, default=repository / "bin/godot.macos.editor.arm64")
     parser.add_argument("--method", choices=("forward_plus", "mobile", "all"), default="all")
+    parser.add_argument("--pipeline", choices=("uber", "specialized", "all"), default="all")
     parser.add_argument("--output-dir", type=Path)
     parser.add_argument("--max-channel-difference", type=int, default=8)
     parser.add_argument("--max-mean-difference", type=float, default=0.02)
@@ -128,29 +159,31 @@ def main() -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
     project = repository / "modules/naga/tests/metal_smoke"
     methods = ("forward_plus", "mobile") if arguments.method == "all" else (arguments.method,)
+    pipelines = ("uber", "specialized") if arguments.pipeline == "all" else (arguments.pipeline,)
 
     failed = False
     for method in methods:
-        # Run legacy first so asynchronous pipeline compilation has the same cold-process
-        # setup while Naga remains the image treated as the candidate implementation.
-        legacy = run_capture(arguments.binary, project, output_dir, method, "legacy")
-        naga = run_capture(arguments.binary, project, output_dir, method, "naga")
-        maximum, mean, rms, differing_pixels, differing_percent = compare(legacy, naga)
-        diff_path = output_dir / f"{method}-diff.ppm"
-        write_diff(diff_path, legacy, naga)
-        print(
-            f"{method}: max={maximum}, mean={mean:.6f}, rms={rms:.6f}, "
-            f"differing_pixels={differing_pixels}/{legacy.width * legacy.height} ({differing_percent:.3f}%)"
-        )
-        if (
-            maximum > arguments.max_channel_difference
-            or mean > arguments.max_mean_difference
-            or rms > arguments.max_rms_difference
-        ):
-            failed = True
-            print(f"{method}: FAILED tolerance; amplified RGB difference image: {diff_path}")
-        else:
-            print(f"{method}: PASS")
+        for pipeline in pipelines:
+            # Run legacy first so asynchronous pipeline compilation has the same cold-process
+            # setup while Naga remains the image treated as the candidate implementation.
+            legacy = run_capture(arguments.binary, project, output_dir, method, "legacy", pipeline)
+            naga = run_capture(arguments.binary, project, output_dir, method, "naga", pipeline)
+            maximum, mean, rms, differing_pixels, differing_percent = compare(legacy, naga)
+            diff_path = output_dir / f"{method}-{pipeline}-diff.ppm"
+            write_diff(diff_path, legacy, naga)
+            print(
+                f"{method}/{pipeline}: max={maximum}, mean={mean:.6f}, rms={rms:.6f}, "
+                f"differing_pixels={differing_pixels}/{legacy.width * legacy.height} ({differing_percent:.3f}%)"
+            )
+            if (
+                maximum > arguments.max_channel_difference
+                or mean > arguments.max_mean_difference
+                or rms > arguments.max_rms_difference
+            ):
+                failed = True
+                print(f"{method}/{pipeline}: FAILED tolerance; amplified RGB difference image: {diff_path}")
+            else:
+                print(f"{method}/{pipeline}: PASS")
 
     print(f"Capture artifacts: {output_dir}")
     if failed:

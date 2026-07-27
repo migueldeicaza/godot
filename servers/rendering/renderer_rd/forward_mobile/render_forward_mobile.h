@@ -75,6 +75,7 @@ private:
 	SceneShaderForwardMobile scene_shader;
 	bool disable_ubershaders = false;
 	bool force_ubershaders = false;
+	bool force_specialized_shaders = false;
 
 	/* Render Buffer */
 
