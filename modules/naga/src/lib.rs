@@ -5,7 +5,7 @@ use naga::{
     ResourceBinding, ShaderStage,
 };
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     ffi::{c_char, c_void, CStr, CString},
     panic::{catch_unwind, AssertUnwindSafe},
     ptr, slice,
@@ -34,6 +34,14 @@ struct CombinedSampler {
 }
 
 const SYNTHETIC_SAMPLER_BINDING_OFFSET: u32 = 1_000;
+const DONT_UNROLL_MARKER: &str = "_godot_naga_dont_unroll";
+
+const MODF_POLYFILL: &str = r#"
+float _godot_naga_modf(float value, out float whole) {
+    whole = trunc(value);
+    return value - whole;
+}
+"#;
 
 const INVERSE_POLYFILLS: &str = r#"
 mat2 _godot_naga_inverse(mat2 m) {
@@ -183,6 +191,291 @@ fn strip_precision_qualifiers(source: &str) -> String {
     adjusted
 }
 
+fn mark_comparison_samplers(source: String) -> Result<String, String> {
+    const CONSTRUCTORS: [&str; 6] = [
+        "sampler1DShadow(",
+        "sampler1DArrayShadow(",
+        "sampler2DShadow(",
+        "sampler2DArrayShadow(",
+        "samplerCubeShadow(",
+        "samplerCubeArrayShadow(",
+    ];
+
+    let mut comparison_samplers = BTreeSet::new();
+    let mut comparison_textures = BTreeSet::new();
+    for constructor in CONSTRUCTORS {
+        let mut position = 0;
+        while let Some(relative) = source[position..].find(constructor) {
+            let arguments_start = position + relative + constructor.len();
+            let mut depth = 0;
+            let mut comma = None;
+            let mut arguments_end = None;
+            for (relative, ch) in source[arguments_start..].char_indices() {
+                match ch {
+                    '(' => depth += 1,
+                    ')' if depth == 0 => {
+                        arguments_end = Some(arguments_start + relative);
+                        break;
+                    }
+                    ')' => depth -= 1,
+                    ',' if depth == 0 && comma.is_none() => {
+                        comma = Some(arguments_start + relative)
+                    }
+                    _ => {}
+                }
+            }
+            let arguments_end = arguments_end.ok_or_else(|| {
+                format!("Unterminated comparison sampler constructor '{constructor}'")
+            })?;
+            let comma = comma.ok_or_else(|| {
+                format!("Comparison sampler constructor '{constructor}' has no sampler argument")
+            })?;
+            let texture = source[arguments_start..comma].trim();
+            let sampler = source[comma + 1..arguments_end].trim();
+            for (kind, expression) in [("texture", texture), ("sampler", sampler)] {
+                if expression.is_empty()
+                    || !expression
+                        .chars()
+                        .all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
+                    || !expression
+                        .chars()
+                        .next()
+                        .is_some_and(|ch| ch.is_ascii_alphabetic() || ch == '_')
+                {
+                    return Err(format!(
+                        "Comparison sampler constructor '{constructor}' has unsupported {kind} expression '{expression}'"
+                    ));
+                }
+            }
+            comparison_textures.insert(texture.to_owned());
+            comparison_samplers.insert(sampler.to_owned());
+            position = arguments_end + 1;
+        }
+    }
+
+    let mut adjusted = source;
+    for sampler in comparison_samplers {
+        let declaration = format!("uniform sampler {sampler}");
+        if !adjusted.contains(&declaration) {
+            return Err(format!(
+                "Comparison sampler '{sampler}' has no separate sampler declaration"
+            ));
+        }
+        adjusted = adjusted.replace(&declaration, &format!("uniform samplerShadow {sampler}"));
+    }
+    Ok(remove_scalar_depth_sample_swizzles(
+        adjusted,
+        &comparison_textures,
+    ))
+}
+
+fn remove_scalar_depth_sample_swizzles(
+    mut source: String,
+    comparison_textures: &BTreeSet<String>,
+) -> String {
+    const CONSTRUCTORS: [&str; 6] = [
+        "sampler1D(",
+        "sampler1DArray(",
+        "sampler2D(",
+        "sampler2DArray(",
+        "samplerCube(",
+        "samplerCubeArray(",
+    ];
+    let mut removals = Vec::new();
+    for texture in comparison_textures {
+        for constructor in CONSTRUCTORS {
+            let pattern = format!("{constructor}{texture},");
+            let mut position = 0;
+            while let Some(relative) = source[position..].find(&pattern) {
+                let sampler_start = position + relative;
+                let Some(call_start) = source[..sampler_start].rfind('(') else {
+                    break;
+                };
+                let function_start = source[..call_start]
+                    .char_indices()
+                    .rev()
+                    .take_while(|(_, ch)| ch.is_ascii_alphanumeric() || *ch == '_')
+                    .last()
+                    .map(|(index, _)| index)
+                    .unwrap_or(call_start);
+                if !source[function_start..call_start].starts_with("texture") {
+                    position = sampler_start + pattern.len();
+                    continue;
+                }
+
+                let mut depth = 0;
+                let mut call_end = None;
+                for (relative, ch) in source[call_start + 1..].char_indices() {
+                    match ch {
+                        '(' => depth += 1,
+                        ')' if depth == 0 => {
+                            call_end = Some(call_start + 1 + relative);
+                            break;
+                        }
+                        ')' => depth -= 1,
+                        _ => {}
+                    }
+                }
+                let Some(call_end) = call_end else {
+                    break;
+                };
+                if source[call_end + 1..].starts_with(".r")
+                    || source[call_end + 1..].starts_with(".x")
+                {
+                    removals.push(call_end + 1..call_end + 3);
+                }
+                position = call_end + 1;
+            }
+        }
+    }
+    removals.sort_by_key(|range| range.start);
+    removals.dedup_by_key(|range| range.start);
+    for range in removals.into_iter().rev() {
+        source.replace_range(range, "");
+    }
+    source
+}
+
+fn preserve_dont_unroll_annotations(mut source: String) -> Result<String, String> {
+    const DEFINITION: &str = "#define SPEC_CONSTANT_LOOP_ANNOTATION [[dont_unroll]]";
+    if !source.contains(DEFINITION) {
+        return Ok(source);
+    }
+
+    source = source.replace(
+        DEFINITION,
+        "#define SPEC_CONSTANT_LOOP_ANNOTATION _godot_naga_dont_unroll();",
+    );
+    let version_start = source
+        .find("#version")
+        .ok_or_else(|| "Godot shader has no version directive".to_owned())?;
+    let header_end = version_start
+        + source[version_start..]
+            .find('\n')
+            .ok_or_else(|| "Godot shader has an unterminated version directive".to_owned())?
+        + 1;
+    source.insert_str(header_end, "void _godot_naga_dont_unroll() {}\n");
+    Ok(source)
+}
+
+fn add_modf_polyfill(mut source: String) -> Result<String, String> {
+    if !source.contains("modf(") {
+        return Ok(source);
+    }
+    source = source.replace("modf(", "_godot_naga_modf(");
+    let version_start = source
+        .find("#version")
+        .ok_or_else(|| "Godot shader has no version directive".to_owned())?;
+    let header_end = version_start
+        + source[version_start..]
+            .find('\n')
+            .ok_or_else(|| "Godot shader has an unterminated version directive".to_owned())?
+        + 1;
+    source.insert_str(header_end, MODF_POLYFILL);
+    Ok(source)
+}
+
+fn lower_forward_buffer_booleans(mut source: String) -> String {
+    // GLSL buffer booleans occupy a 32-bit slot in Godot's CPU-side layouts,
+    // while Naga deliberately rejects `bool` as a host-shareable IR type. Keep
+    // the ABI intact by exposing those slots to Naga as uints and converting
+    // their reads back to booleans. This is intentionally limited to fields in
+    // the built-in forward Uber-shader layouts exercised by this bridge.
+    for field in [
+        "exterior",
+        "box_project",
+        "blend_splits",
+        "use_occlusion",
+        "gi_upscale_for_msaa",
+        "volumetric_fog_enabled",
+        "blend_ambient",
+    ] {
+        source = source.replace(&format!("bool {field};"), &format!("uint {field};"));
+    }
+
+    for access in [
+        "reflections.data[ref_index].box_project",
+        "directional_lights.data[i].blend_splits",
+        "sdfgi.use_occlusion",
+        "implementation_data.gi_upscale_for_msaa",
+        "implementation_data.volumetric_fog_enabled",
+        "voxel_gi_instances.data[index].blend_ambient",
+    ] {
+        source = source.replace(access, &format!("bool({access})"));
+    }
+    source
+}
+
+fn widen_forward_half_arguments(source: String) -> String {
+    // Make the intended precision explicit at the two boundaries where Naga's
+    // GLSL overload inference otherwise differs from GLSLang.
+    source
+        .replace(
+            "vec3(eye_vec), roughness, points,",
+            "vec3(eye_vec), float(roughness), points,",
+        )
+        .replace(
+            "half a004 = min(r.x * r.x, exp2(half(-9.28) * ndotv)) * r.x + r.y;",
+            "half a004 = half(min(r.x * r.x, exp2(half(-9.28) * ndotv)) * r.x + r.y);",
+        )
+}
+
+fn type_mobile_uint_returns(source: String) -> String {
+    source
+        .replace(
+            "case SHADER_COUNT_NONE:\n\t\t\treturn 0;",
+            "case SHADER_COUNT_NONE:\n\t\t\treturn 0u;",
+        )
+        .replace(
+            "case SHADER_COUNT_SINGLE:\n\t\t\treturn 1;",
+            "case SHADER_COUNT_SINGLE:\n\t\t\treturn 1u;",
+        )
+        .replace(
+            "case SHADER_COUNT_MULTIPLE:\n\t\t\treturn bound;\n\t}\n}",
+            "case SHADER_COUNT_MULTIPLE:\n\t\t\treturn bound;\n\t}\n\treturn 0u;\n}",
+        )
+        .replace(
+            "uint sc_decals(uint bound) {\n\tif (((sc_packed_1() >> 22) & 1U) != 0) {\n\t\treturn bound;\n\t} else {\n\t\treturn 0;",
+            "uint sc_decals(uint bound) {\n\tif (((sc_packed_1() >> 22) & 1U) != 0) {\n\t\treturn bound;\n\t} else {\n\t\treturn 0u;",
+        )
+}
+
+fn unpack_forward_packed_int3(source: String) -> String {
+    const MEMBER: &str = "sdfgi.cascades[cascade].probe_world_offset";
+    source.replace(
+        &format!("{MEMBER} + probe_posi"),
+        &format!("ivec3({MEMBER}.x, {MEMBER}.y, {MEMBER}.z) + probe_posi"),
+    )
+}
+
+fn inline_forward_depth_texture_parameter(source: String) -> String {
+    // Every call passes the same directional depth atlas. Referencing it
+    // directly avoids a Naga GLSL type-inference cycle where an ordinary
+    // texture function parameter becomes a depth texture only after its
+    // textureLod expression has already been lowered as a color sample.
+    const DEPTH_HINT: &str = r#"float _godot_naga_directional_depth_hint() {
+    return textureProj(sampler2DShadow(directional_shadow_atlas, shadow_sampler), vec4(0.5));
+}
+
+float _godot_naga_shadow_atlas_depth_hint() {
+    return textureProj(sampler2DShadow(shadow_atlas, shadow_sampler), vec4(0.5));
+}
+
+"#;
+    let mut source = source;
+    for return_type in ["float", "half"] {
+        let signature = format!("{return_type} sample_directional_soft_shadow(texture2D shadow, ");
+        if source.contains(&signature) {
+            source = source.replacen(&signature, &format!("{DEPTH_HINT}{signature}"), 1);
+            break;
+        }
+    }
+    source.replace(
+        "sampler2D(shadow, SAMPLER_LINEAR_CLAMP)",
+        "sampler2D(directional_shadow_atlas, SAMPLER_LINEAR_CLAMP)",
+    )
+}
+
 fn layout_value(line: &str, name: &str) -> Result<u32, String> {
     let start = line
         .find(name)
@@ -308,7 +601,14 @@ fn godot_source(
     stage: ShaderStage,
     source: &str,
 ) -> Result<(String, Vec<SpecializationConstant>, Vec<CombinedSampler>), String> {
-    let mut adjusted = strip_precision_qualifiers(source);
+    let adjusted = inline_forward_depth_texture_parameter(strip_precision_qualifiers(source));
+    let mut adjusted = mark_comparison_samplers(adjusted)?;
+    adjusted = preserve_dont_unroll_annotations(adjusted)?;
+    adjusted = add_modf_polyfill(adjusted)?;
+    adjusted = lower_forward_buffer_booleans(adjusted);
+    adjusted = widen_forward_half_arguments(adjusted);
+    adjusted = type_mobile_uint_returns(adjusted);
+    adjusted = unpack_forward_packed_int3(adjusted);
     let (source, combined_samplers) = split_known_combined_samplers(adjusted)?;
     adjusted = source;
     let (source, specialization_constants) = lower_specialization_constants(&adjusted)?;
@@ -1035,6 +1335,13 @@ pub unsafe extern "C" fn godot_naga_parse(
             .to_str()
             .map_err(|err| format!("GLSL source is not UTF-8: {err}"))?;
         let (source, specialization_constants, combined_samplers) = godot_source(stage, source)?;
+        if let Ok(directory) = std::env::var("GODOT_NAGA_DUMP_GLSL_DIR") {
+            std::fs::create_dir_all(&directory)
+                .map_err(|err| format!("Could not create Naga GLSL dump directory: {err}"))?;
+            let index = DUMP_INDEX.fetch_add(1, Ordering::Relaxed);
+            std::fs::write(format!("{directory}/naga_{index}_{stage:?}.glsl"), &source)
+                .map_err(|err| format!("Could not write Naga GLSL dump: {err}"))?;
+        }
         let mut frontend = glsl::Frontend::default();
         let module = frontend
             .parse(&glsl::Options::from(stage), &source)
@@ -1045,9 +1352,35 @@ pub unsafe extern "C" fn godot_naga_parse(
                     combined_sampler_context(&source)
                 )
             })?;
+        // The GLSL frontend drops constants that are unused by this entry point.
+        // Keep only the declarations that survived so reflection and backend
+        // restoration do not require an inactive constant in every shader stage.
+        let specialization_constants = specialization_constants
+            .into_iter()
+            .filter(|constant| {
+                module
+                    .constants
+                    .iter()
+                    .any(|(_, value)| value.name.as_deref() == Some(&constant.name))
+            })
+            .collect();
         let info = Validator::new(ValidationFlags::all(), msl::supported_capabilities())
             .validate(&module)
-            .map_err(|err| format!("Naga validation failed: {err}"))?;
+            .map_err(|err| {
+                let spans = err
+                    .spans()
+                    .filter_map(|(span, description)| {
+                        span.to_range()
+                            .map(|range| format!("{description}: {}", source[range].trim()))
+                    })
+                    .collect::<Vec<_>>();
+                let context = if spans.is_empty() {
+                    String::new()
+                } else {
+                    format!("\nSource spans:\n{}", spans.join("\n"))
+                };
+                format!("Naga validation failed: {err:#?}{context}")
+            })?;
         Ok(ParsedShader {
             module,
             info,
@@ -1357,6 +1690,9 @@ pub unsafe extern "C" fn godot_naga_write_msl(
         let (source, info) = msl::write_string(&shader.module, &shader.info, &options, &pipeline)
             .map_err(|err| format!("Naga MSL generation failed: {err}"))?;
         let source = restore_specialization_constants(source, &shader.specialization_constants)?;
+        // Metal has no portable spelling for GLSL's dont_unroll annotation.
+        // The marker keeps Naga's GLSL parser happy and is removed here.
+        let source = source.replace(&format!("{DONT_UNROLL_MARKER}();"), "");
         if let Ok(directory) = std::env::var("GODOT_NAGA_DUMP_MSL_DIR") {
             std::fs::create_dir_all(&directory)
                 .map_err(|err| format!("Could not create Naga MSL dump directory: {err}"))?;
@@ -1552,6 +1888,216 @@ void main() {
             let source = CStr::from_ptr(msl).to_string_lossy();
             assert!(source.contains("[[texture(2)]]"));
             assert!(source.contains("[[sampler(3)]]"));
+
+            godot_naga_string_free(msl);
+            godot_naga_string_free(entry);
+            godot_naga_module_free(shader);
+        }
+    }
+
+    #[test]
+    fn marks_separate_shadow_samplers_as_comparison_samplers() {
+        const FRAGMENT: &str = r#"#version 450
+#define SPEC_CONSTANT_LOOP_ANNOTATION [[dont_unroll]]
+#define SAMPLER_LINEAR_CLAMP linear_sampler
+#define shadow_atlas directional_shadow_atlas
+layout(set = 0, binding = 2) uniform sampler shadow_sampler;
+layout(set = 0, binding = 3) uniform sampler linear_sampler;
+layout(set = 1, binding = 5) uniform texture2D directional_shadow_atlas;
+layout(set = 1, binding = 6) uniform texture2D lightmaps[2];
+layout(location = 0) out float color;
+float sample_directional_soft_shadow(texture2D shadow, vec2 suv) {
+    float blocker = textureLod(sampler2D(shadow, SAMPLER_LINEAR_CLAMP), suv, 0.0).r;
+    return blocker + textureProj(sampler2DShadow(shadow, shadow_sampler), vec4(suv, 0.5, 1.0));
+}
+void main() {
+    color = 0.0;
+    float whole;
+    color += modf(0.5, whole) + whole;
+    uint reduced = subgroupBroadcastFirst(subgroupMin(uint(1)));
+    color += float(reduced);
+    color += texture(sampler2D(lightmaps[reduced & 1u], linear_sampler), vec2(0.5)).r;
+    SPEC_CONSTANT_LOOP_ANNOTATION
+    for (int i = 0; i < 1; i++) {
+        color += textureProj(sampler2DShadow(directional_shadow_atlas, shadow_sampler), vec4(0.5, 0.5, 0.25, 1.0));
+    }
+    color += textureLod(sampler2D(directional_shadow_atlas, linear_sampler), vec2(0.5), 0.0).r;
+    color += sample_directional_soft_shadow(directional_shadow_atlas, vec2(0.5));
+}
+"#;
+        unsafe {
+            let adjusted = mark_comparison_samplers(inline_forward_depth_texture_parameter(
+                FRAGMENT.to_owned(),
+            ))
+            .unwrap();
+            assert!(
+                !adjusted.contains("0.0).r"),
+                "ordinary depth sample was not scalarized:\n{adjusted}"
+            );
+            assert!(adjusted.contains("_godot_naga_directional_depth_hint"));
+            assert!(adjusted.contains("sampler2D(directional_shadow_atlas, SAMPLER_LINEAR_CLAMP)"));
+            let source = CString::new(FRAGMENT).unwrap();
+            let mut error = ptr::null_mut();
+            let shader = godot_naga_parse(1, source.as_ptr(), &mut error);
+            assert!(
+                !shader.is_null(),
+                "{}",
+                CStr::from_ptr(error).to_string_lossy()
+            );
+
+            let bindings = [
+                GodotNagaBinding {
+                    group: 0,
+                    binding: 2,
+                    buffer: -1,
+                    texture: -1,
+                    sampler: 0,
+                    writable: 0,
+                },
+                GodotNagaBinding {
+                    group: 0,
+                    binding: 3,
+                    buffer: -1,
+                    texture: -1,
+                    sampler: 1,
+                    writable: 0,
+                },
+                GodotNagaBinding {
+                    group: 1,
+                    binding: 5,
+                    buffer: -1,
+                    texture: 0,
+                    sampler: -1,
+                    writable: 0,
+                },
+                GodotNagaBinding {
+                    group: 1,
+                    binding: 6,
+                    buffer: -1,
+                    texture: 1,
+                    sampler: -1,
+                    writable: 0,
+                },
+            ];
+            let mut entry = ptr::null_mut();
+            let msl = godot_naga_write_msl(
+                shader,
+                2,
+                4,
+                bindings.as_ptr(),
+                bindings.len(),
+                -1,
+                &mut entry,
+                &mut error,
+            );
+            assert!(
+                !msl.is_null(),
+                "{}",
+                CStr::from_ptr(error).to_string_lossy()
+            );
+            let source = CStr::from_ptr(msl).to_string_lossy();
+            assert!(source.contains("depth2d<float"));
+            assert!(source.contains("sample_compare"));
+            assert!(source.contains("metal::array<metal::texture2d<float"));
+            assert!(source.contains("[[texture(1)]]"));
+            assert!(!source.contains("[[dont_unroll]]"));
+            assert!(!source.contains("_godot_naga_dont_unroll();"));
+
+            godot_naga_string_free(msl);
+            godot_naga_string_free(entry);
+            godot_naga_module_free(shader);
+        }
+    }
+
+    #[test]
+    fn preserves_forward_buffer_boolean_abi() {
+        const FRAGMENT: &str = r#"#version 450
+struct ReflectionData {
+    float intensity;
+    bool exterior;
+    bool box_project;
+};
+layout(set = 0, binding = 6, std430) restrict readonly buffer ReflectionProbeData {
+    ReflectionData data[];
+} reflections;
+layout(location = 0) out vec4 color;
+void main() {
+    uint ref_index = 0u;
+    color = reflections.data[ref_index].box_project ? vec4(1.0) : vec4(0.0);
+}
+"#;
+        unsafe {
+            let adjusted = lower_forward_buffer_booleans(FRAGMENT.to_owned());
+            assert!(adjusted.contains("uint box_project;"));
+            assert!(adjusted.contains("bool(reflections.data[ref_index].box_project)"));
+
+            let source = CString::new(FRAGMENT).unwrap();
+            let mut error = ptr::null_mut();
+            let shader = godot_naga_parse(1, source.as_ptr(), &mut error);
+            assert!(
+                !shader.is_null(),
+                "{}",
+                CStr::from_ptr(error).to_string_lossy()
+            );
+
+            let binding = GodotNagaBinding {
+                group: 0,
+                binding: 6,
+                buffer: 0,
+                texture: -1,
+                sampler: -1,
+                writable: 0,
+            };
+            let mut entry = ptr::null_mut();
+            let msl = godot_naga_write_msl(shader, 2, 4, &binding, 1, -1, &mut entry, &mut error);
+            assert!(
+                !msl.is_null(),
+                "{}",
+                CStr::from_ptr(error).to_string_lossy()
+            );
+            let source = CStr::from_ptr(msl).to_string_lossy();
+            assert!(source.contains("uint box_project"));
+
+            godot_naga_string_free(msl);
+            godot_naga_string_free(entry);
+            godot_naga_module_free(shader);
+        }
+    }
+
+    #[test]
+    fn translates_mobile_fp16_math() {
+        const FRAGMENT: &str = r#"#version 450
+#extension GL_EXT_shader_explicit_arithmetic_types_float16 : require
+layout(location = 0) out vec4 color;
+void main() {
+    f16vec3 a = f16vec3(1.0, 0.0, 0.0);
+    f16vec3 b = f16vec3(0.0, 1.0, 0.0);
+    f16vec3 c = cross(a, b);
+    float16_t amount = mix(float16_t(0.25), float16_t(0.75), float16_t(0.5));
+    float16_t value = float16_t(min(abs(c.z), exp2(amount)));
+    color = vec4(vec3(c), float(value));
+}
+"#;
+        unsafe {
+            let source = CString::new(FRAGMENT).unwrap();
+            let mut error = ptr::null_mut();
+            let shader = godot_naga_parse(1, source.as_ptr(), &mut error);
+            assert!(
+                !shader.is_null(),
+                "{}",
+                CStr::from_ptr(error).to_string_lossy()
+            );
+
+            let mut entry = ptr::null_mut();
+            let msl =
+                godot_naga_write_msl(shader, 2, 4, ptr::null(), 0, -1, &mut entry, &mut error);
+            assert!(
+                !msl.is_null(),
+                "{}",
+                CStr::from_ptr(error).to_string_lossy()
+            );
+            let source = CStr::from_ptr(msl).to_string_lossy();
+            assert!(source.contains("metal::half3"));
 
             godot_naga_string_free(msl);
             godot_naga_string_free(entry);

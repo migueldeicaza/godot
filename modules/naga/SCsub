@@ -31,7 +31,14 @@ def build_naga(target, source, env):
     return 0
 
 
-naga_library = env.Command(output_library, [manifest, os.path.join(module_dir, "Cargo.lock"), os.path.join(module_dir, "src", "lib.rs")], build_naga)
+rust_sources = [manifest, os.path.join(module_dir, "Cargo.lock"), os.path.join(module_dir, "src", "lib.rs")]
+vendor_dir = os.path.join(module_dir, "vendor", "naga")
+for root, _, files in os.walk(vendor_dir):
+    for filename in files:
+        if filename.endswith((".rs", ".toml")):
+            rust_sources.append(os.path.join(root, filename))
+
+naga_library = env.Command(output_library, rust_sources, build_naga)
 
 module_obj = []
 env_naga.add_source_files(module_obj, "*.cpp")

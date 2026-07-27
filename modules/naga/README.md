@@ -32,11 +32,16 @@ surface. GLSLang also remains available as a transformed SPIR-V fallback for GLS
 constructs Naga cannot yet parse; successful output is never passed through
 SPIRV-Cross.
 
-The clustered depth Uber variants and most tested clustered and mobile color/depth
-permutations now compile to MSL through Naga. Some color material permutations still
-fall back because Naga's GLSL frontend cannot consistently infer comparison samplers,
-and its SPIR-V frontend rejects some dynamically indexed resource arrays. Those
-fallback permutations still pay the existing compiler costs.
+The clean-cache Metal smoke matrix currently compiles all 27 active Uber-shader
+attempts directly through Naga: 12 Forward+ and 15 Mobile, with no observed
+GLSLang/SPIRV-Cross fallback. The bridge handles the tested comparison samplers,
+ordinary depth reads, fixed resource-binding arrays, subgroup operations, buffer
+boolean layouts, and explicit-fp16 Mobile lighting. The legacy compiler path remains
+mandatory for untested permutations and other shaders.
+
+Naga 29.0.3 is vendored under `modules/naga/vendor/naga` because the tested Godot
+shader surface needs small GLSL frontend and MSL binding-array fixes not yet present
+upstream. `vendor/naga/GODOT_PATCHES.md` records their scope.
 
 Run the included Metal smoke test with verbose compiler selection logging:
 
@@ -46,5 +51,5 @@ GODOT_NAGA_UBERSHADERS=1 bin/godot.macos.editor.dev.arm64 \
   --rendering-driver metal --quit-after 2 --verbose
 ```
 
-Set `GODOT_NAGA_DUMP_MSL_DIR` to a directory to retain the generated MSL while
-diagnosing a shader permutation.
+Set `GODOT_NAGA_DUMP_GLSL_DIR` or `GODOT_NAGA_DUMP_MSL_DIR` to a directory to retain
+the preprocessed GLSL or generated MSL while diagnosing a shader permutation.
