@@ -31,8 +31,9 @@ The bridge applies Godot's Vulkan-to-Metal vertex-Y convention before parsing an
 strips desktop-GLSL precision qualifiers that Naga does not accept in structure
 members. It preserves Godot's specialization constants as Metal function constants,
 lowers matrix inverse operations using Naga's own WGSL inverse formulas, and splits
-GLSL combined samplers into Naga's separate texture and sampler resources. It uses
-flat Metal resource slots. For successful direct translations, Godot reflects
+GLSL combined samplers into Naga's separate texture and sampler resources. It also
+prunes the generated LTC helper from compute shaders that never call it. It
+uses flat Metal resource slots. For successful direct translations, Godot reflects
 descriptor layouts, stage interfaces, push constants, and specialization defaults
 directly from Naga IR. The
 direct path therefore performs no SPIR-V serialization and invokes neither GLSLang,

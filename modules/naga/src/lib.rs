@@ -706,6 +706,48 @@ fn replace_identifier(source: &str, identifier: &str, replacement: &str) -> Stri
     adjusted
 }
 
+fn strip_unused_ltc_helper(mut source: String) -> Result<String, String> {
+    const CALL: &str = "ltc_evaluate_specular(";
+    const DEFINITION: &str = "void ltc_evaluate_specular(";
+
+    // Several generated compute shaders include the shared area-light helper even
+    // though they never call it. Naga's GLSL frontend rejects its combined-sampler
+    // parameters before dead-code elimination can remove the function.
+    if source.match_indices(CALL).count() != 1 {
+        return Ok(source);
+    }
+    let Some(start) = source.find(DEFINITION) else {
+        return Ok(source);
+    };
+    let opening_brace = start
+        + source[start..]
+            .find('{')
+            .ok_or_else(|| "LTC helper has no opening brace".to_owned())?;
+    let mut depth = 0_u32;
+    let mut end = None;
+    for (relative, character) in source[opening_brace..].char_indices() {
+        match character {
+            '{' => depth += 1,
+            '}' => {
+                depth = depth
+                    .checked_sub(1)
+                    .ok_or_else(|| "LTC helper has an unmatched closing brace".to_owned())?;
+                if depth == 0 {
+                    end = Some(opening_brace + relative + character.len_utf8());
+                    break;
+                }
+            }
+            _ => {}
+        }
+    }
+    let mut end = end.ok_or_else(|| "LTC helper has no closing brace".to_owned())?;
+    if source[end..].starts_with('\n') {
+        end += 1;
+    }
+    source.replace_range(start..end, "");
+    Ok(source)
+}
+
 fn split_combined_samplers(source: String) -> Result<(String, Vec<CombinedSampler>), String> {
     struct SourceCombinedSampler {
         name: String,
@@ -895,6 +937,7 @@ fn godot_source(
     adjusted = widen_forward_half_arguments(adjusted);
     adjusted = type_mobile_uint_returns(adjusted);
     adjusted = unpack_forward_packed_int3(adjusted);
+    adjusted = strip_unused_ltc_helper(adjusted)?;
     let (source, combined_samplers) = split_combined_samplers(adjusted)?;
     adjusted = source;
     let (source, specialization_constants) = lower_specialization_constants(&adjusted)?;
@@ -2232,6 +2275,39 @@ void main() {
         let restored = restore_specialization_constants(source, &constants).unwrap();
         assert!(restored.contains("pso_sc_packed_0__tmp [[function_constant(7)]]"));
         assert!(restored.contains("constant uint pso_sc_packed_0_ = is_function_constant_defined"));
+    }
+
+    #[test]
+    fn strips_only_an_unused_ltc_helper() {
+        const UNUSED: &str = r#"#version 450
+layout(location = 0) out vec4 color;
+void ltc_evaluate_specular(sampler2D ltc_lut1, sampler2D ltc_lut2, out vec4 result) {
+    result = texture(ltc_lut1, vec2(0.5)) + texture(ltc_lut2, vec2(0.5));
+}
+void main() {
+    color = vec4(1.0);
+}
+"#;
+        let stripped = strip_unused_ltc_helper(UNUSED.to_owned()).unwrap();
+        assert!(!stripped.contains("ltc_evaluate_specular"));
+
+        let used = UNUSED.replace(
+            "color = vec4(1.0);",
+            "ltc_evaluate_specular(ltc_lut1, ltc_lut2, color);",
+        );
+        assert_eq!(strip_unused_ltc_helper(used.clone()).unwrap(), used);
+
+        unsafe {
+            let source = CString::new(UNUSED).unwrap();
+            let mut error = ptr::null_mut();
+            let shader = godot_naga_parse(1, source.as_ptr(), &mut error);
+            assert!(
+                !shader.is_null(),
+                "{}",
+                CStr::from_ptr(error).to_string_lossy()
+            );
+            godot_naga_module_free(shader);
+        }
     }
 
     #[test]
