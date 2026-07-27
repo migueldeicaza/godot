@@ -17,6 +17,9 @@ The GLSL frontend patch also lowers the unsigned-scalar subgroup reductions and
 Naga's existing subgroup IR statements. Common GLSL math builtins also receive
 explicit 16-bit floating-point overloads for Godot's mobile forward lighting,
 and overload ranking permits the standard f16-to-f32 widening conversion.
+It accepts the two-argument, non-shadow `textureGather` overloads used by
+Godot's Canvas shaders and lowers their implicit LOD to Naga's zero-level gather
+operation.
 
 Uniform arrays whose elements are textures or samplers are lowered to Naga
 `BindingArray` types instead of ordinary data arrays, enabling Godot's

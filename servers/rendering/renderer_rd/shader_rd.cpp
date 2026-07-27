@@ -55,8 +55,17 @@ static Mutex naga_test_coverage_mutex;
 static HashMap<String, HashSet<uint32_t>> naga_test_successes;
 static HashMap<String, HashSet<uint32_t>> naga_test_failures;
 
+static bool use_naga_metal_all_shader_rd() {
+	return OS::get_singleton()->get_environment("GODOT_NAGA_TEST_ALL_SHADER_RD") == "1";
+}
+
+static bool use_naga_metal_builtin_shaders() {
+	return bool(GLOBAL_GET("rendering/shader_compiler/metal/use_naga_for_builtin_shaders")) ||
+			OS::get_singleton()->get_environment("GODOT_NAGA_BUILTIN_SHADERS") == "1";
+}
+
 static bool use_naga_metal_forward_shaders() {
-	return bool(GLOBAL_GET("rendering/shader_compiler/metal/use_naga_for_forward_shaders")) ||
+	return use_naga_metal_builtin_shaders() || bool(GLOBAL_GET("rendering/shader_compiler/metal/use_naga_for_forward_shaders")) ||
 			OS::get_singleton()->get_environment("GODOT_NAGA_FORWARD_SHADERS") == "1" ||
 			OS::get_singleton()->get_environment("GODOT_NAGA_TEST_ALL_FORWARD_VARIANTS") == "1";
 }
@@ -207,6 +216,10 @@ void ShaderRD::setup(const char *p_vertex_code, const char *p_fragment_code, con
 	tohash.append(use_naga_metal_ubershaders() ? "1" : "0");
 	tohash.append("[NagaMetalForwardShaders]");
 	tohash.append(use_naga_metal_forward_shaders() ? "1" : "0");
+	tohash.append("[NagaMetalAllShaderRD]");
+	tohash.append(use_naga_metal_all_shader_rd() ? "1" : "0");
+	tohash.append("[NagaMetalBuiltinShaders]");
+	tohash.append(use_naga_metal_builtin_shaders() ? "1" : "0");
 #endif
 
 	base_sha256 = tohash.as_string().sha256_text();
@@ -448,12 +461,17 @@ void ShaderRD::_compile_variant(uint32_t p_variant, CompileData p_data) {
 	const bool benchmark_ubershader = OS::get_singleton()->get_environment("GODOT_NAGA_BENCHMARK_UBER_VARIANTS") == "1" &&
 			is_forward_shader && is_ubershader;
 	const bool benchmark_forward_shader = OS::get_singleton()->get_environment("GODOT_NAGA_BENCHMARK_FORWARD_VARIANTS") == "1" && is_forward_shader;
-	const bool benchmark_variant = benchmark_ubershader || benchmark_forward_shader;
+	const bool benchmark_shader_rd = OS::get_singleton()->get_environment("GODOT_NAGA_BENCHMARK_SHADER_RD") == "1";
+	const bool benchmark_variant = benchmark_ubershader || benchmark_forward_shader || benchmark_shader_rd;
 
 #ifdef MODULE_NAGA_ENABLED
+	const bool is_validated_builtin_shader = is_forward_shader ||
+			name == "CanvasShaderRD" || name == "CanvasSdfShaderRD" || name == "CanvasOcclusionShaderRD" ||
+			name == "SkyShaderRD" || name == "ParticlesCopyShaderRD" || name == "SkeletonShaderRD";
 	const bool use_naga = OS::get_singleton()->get_current_rendering_driver_name() == "metal" &&
-			is_forward_shader &&
-			(is_ubershader ? use_naga_metal_ubershaders() : use_naga_metal_forward_shaders());
+			(use_naga_metal_all_shader_rd() ||
+					(use_naga_metal_builtin_shaders() && is_validated_builtin_shader) ||
+					(is_forward_shader && (is_ubershader ? use_naga_metal_ubershaders() : use_naga_metal_forward_shaders())));
 	if (use_naga) {
 		Vector<RD::ShaderStageSourceData> source_stages;
 		for (uint32_t i = 0; i < variant_stage_sources.size(); i++) {
@@ -489,6 +507,9 @@ void ShaderRD::_compile_variant(uint32_t p_variant, CompileData p_data) {
 			stats.naga_fallback_count += timing.fallback_count;
 		}
 		if (!shader_data.is_empty()) {
+			if (benchmark_shader_rd) {
+				print_line(vformat("Naga ShaderRD benchmark: backend=naga shader=%s variant=%d translation_us=%d parse_us=%d reflect_us=%d msl_us=%d fallback_us=%d fallback_stages=%d", name, variant, translation_usec, timing.parse_usec, timing.reflect_usec, timing.write_msl_usec, timing.fallback_usec, timing.fallback_count));
+			}
 			if (benchmark_forward_shader) {
 				print_line(vformat("Naga forward benchmark: backend=naga shader=%s variant=%d translation_us=%d parse_us=%d reflect_us=%d msl_us=%d fallback_us=%d fallback_stages=%d", name, variant, translation_usec, timing.parse_usec, timing.reflect_usec, timing.write_msl_usec, timing.fallback_usec, timing.fallback_count));
 			}
@@ -497,7 +518,11 @@ void ShaderRD::_compile_variant(uint32_t p_variant, CompileData p_data) {
 				naga_test_successes[name].insert(variant);
 				naga_test_failures[name].erase(variant);
 			}
-			print_verbose(vformat("Compiled Metal forward shader variant %s:%d with Naga.", name, variant));
+			if (is_forward_shader) {
+				print_verbose(vformat("Compiled Metal forward shader variant %s:%d with Naga.", name, variant));
+			} else {
+				print_verbose(vformat("Compiled Metal ShaderRD variant %s:%d with Naga.", name, variant));
+			}
 			p_data.version->variants.write[variant] = RD::get_singleton()->shader_create_from_bytecode_with_samplers(shader_data, p_data.version->variants[variant], immutable_samplers);
 			p_data.version->variant_data.write[variant] = shader_data;
 			return;
@@ -508,7 +533,7 @@ void ShaderRD::_compile_variant(uint32_t p_variant, CompileData p_data) {
 				naga_test_failures[name].insert(variant);
 			}
 		}
-		print_verbose(vformat("Naga could not compile Metal forward shader variant %s:%d; falling back to GLSLang/SPIRV-Cross.\n%s", name, variant, naga_error));
+		print_verbose(vformat("Naga could not compile Metal %s variant %s:%d; falling back to GLSLang/SPIRV-Cross.\n%s", is_forward_shader ? "forward shader" : "ShaderRD", name, variant, naga_error));
 	}
 #endif
 
@@ -534,6 +559,9 @@ void ShaderRD::_compile_variant(uint32_t p_variant, CompileData p_data) {
 		naga_benchmark_stats[reinterpret_cast<uintptr_t>(p_data.version)].legacy_container_usec += legacy_container_usec;
 	}
 	ERR_FAIL_COND(shader_data.is_empty());
+	if (benchmark_shader_rd) {
+		print_line(vformat("Naga ShaderRD benchmark: backend=legacy shader=%s variant=%d translation_us=%d glslang_us=%d container_us=%d", name, variant, legacy_glslang_usec + legacy_container_usec, legacy_glslang_usec, legacy_container_usec));
+	}
 	if (benchmark_forward_shader) {
 		print_line(vformat("Naga forward benchmark: backend=legacy shader=%s variant=%d translation_us=%d glslang_us=%d container_us=%d", name, variant, legacy_glslang_usec + legacy_container_usec, legacy_glslang_usec, legacy_container_usec));
 	}

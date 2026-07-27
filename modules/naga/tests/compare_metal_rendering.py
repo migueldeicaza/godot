@@ -35,6 +35,7 @@ def run_capture(binary: Path, project: Path, output_dir: Path, method: str, back
     environment.pop("GODOT_NAGA_TEST_ALL_UBER_VARIANTS", None)
     environment.pop("GODOT_NAGA_BENCHMARK_UBER_VARIANTS", None)
     environment.pop("GODOT_NAGA_BENCHMARK_NONCE", None)
+    environment.pop("GODOT_NAGA_BUILTIN_SHADERS", None)
     if pipeline == "uber":
         environment["GODOT_NAGA_FORCE_UBERSHADERS"] = "1"
         environment.pop("GODOT_NAGA_FORCE_SPECIALIZED_SHADERS", None)
@@ -45,8 +46,12 @@ def run_capture(binary: Path, project: Path, output_dir: Path, method: str, back
         if pipeline == "uber":
             environment["GODOT_NAGA_UBERSHADERS"] = "1"
             environment.pop("GODOT_NAGA_FORWARD_SHADERS", None)
-        else:
+        elif pipeline == "specialized":
             environment["GODOT_NAGA_FORWARD_SHADERS"] = "1"
+            environment.pop("GODOT_NAGA_UBERSHADERS", None)
+        else:
+            environment["GODOT_NAGA_BUILTIN_SHADERS"] = "1"
+            environment.pop("GODOT_NAGA_FORWARD_SHADERS", None)
             environment.pop("GODOT_NAGA_UBERSHADERS", None)
     else:
         environment.pop("GODOT_NAGA_UBERSHADERS", None)
@@ -60,6 +65,8 @@ def run_capture(binary: Path, project: Path, output_dir: Path, method: str, back
         "metal",
         "--rendering-method",
         method,
+        "--quit-after",
+        "120",
         "--verbose",
     ]
     result = subprocess.run(
@@ -79,7 +86,7 @@ def run_capture(binary: Path, project: Path, output_dir: Path, method: str, back
     if pipeline == "uber" and "Ubershaders: Forced by GODOT_NAGA_FORCE_UBERSHADERS" not in result.stdout:
         raise RuntimeError(f"Godot {method}/{backend} did not confirm the forced Uber path; see {log_path}")
     if (
-        pipeline == "specialized"
+        pipeline in ("specialized", "builtin")
         and "Specialized shaders: Forced by GODOT_NAGA_FORCE_SPECIALIZED_SHADERS" not in result.stdout
     ):
         raise RuntimeError(f"Godot {method}/{backend} did not confirm the forced specialized path; see {log_path}")
@@ -89,8 +96,14 @@ def run_capture(binary: Path, project: Path, output_dir: Path, method: str, back
         if "falling back to GLSLang/SPIRV-Cross" in result.stdout:
             raise RuntimeError(f"Godot {method}/naga used the legacy fallback; see {log_path}")
         variants = [int(match.group(1)) for match in NAGA_VARIANT_RE.finditer(result.stdout)]
-        if pipeline == "specialized" and not any(is_specialized_variant(method, variant) for variant in variants):
+        if pipeline in ("specialized", "builtin") and not any(
+            is_specialized_variant(method, variant) for variant in variants
+        ):
             raise RuntimeError(f"Godot {method}/naga did not report a specialized Naga variant; see {log_path}")
+        if pipeline == "builtin":
+            for shader in ("CanvasShaderRD", "SkyShaderRD", "ParticlesCopyShaderRD"):
+                if f"Compiled Metal ShaderRD variant {shader}:" not in result.stdout:
+                    raise RuntimeError(f"Godot {method}/naga did not report a Naga-compiled {shader}; see {log_path}")
     elif " with Naga." in result.stdout:
         raise RuntimeError(f"Godot {method}/legacy unexpectedly used Naga; see {log_path}")
 
@@ -146,7 +159,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Compare legacy and direct-Naga Metal forward-shader rendering.")
     parser.add_argument("--binary", type=Path, default=repository / "bin/godot.macos.editor.arm64")
     parser.add_argument("--method", choices=("forward_plus", "mobile", "all"), default="all")
-    parser.add_argument("--pipeline", choices=("uber", "specialized", "all"), default="all")
+    parser.add_argument("--pipeline", choices=("uber", "specialized", "builtin", "all"), default="all")
     parser.add_argument("--output-dir", type=Path)
     parser.add_argument("--max-channel-difference", type=int, default=8)
     parser.add_argument("--max-mean-difference", type=float, default=0.02)
@@ -159,7 +172,7 @@ def main() -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
     project = repository / "modules/naga/tests/metal_smoke"
     methods = ("forward_plus", "mobile") if arguments.method == "all" else (arguments.method,)
-    pipelines = ("uber", "specialized") if arguments.pipeline == "all" else (arguments.pipeline,)
+    pipelines = ("uber", "specialized", "builtin") if arguments.pipeline == "all" else (arguments.pipeline,)
 
     failed = False
     for method in methods:

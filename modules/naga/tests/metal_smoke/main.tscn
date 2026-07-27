@@ -1,10 +1,19 @@
-[gd_scene load_steps=12 format=3]
+[gd_scene load_steps=17 format=3]
 
 [ext_resource type="Script" path="res://capture.gd" id="1_capture"]
 
+[sub_resource type="Shader" id="Shader_sky"]
+code = "shader_type sky;\n\nvoid sky() {\n\tfloat horizon = pow(clamp(1.0 - abs(EYEDIR.y), 0.0, 1.0), 3.0);\n\tCOLOR = mix(vec3(0.015, 0.025, 0.07), vec3(0.12, 0.31, 0.52), horizon);\n}\n"
+
+[sub_resource type="ShaderMaterial" id="Material_sky"]
+shader = SubResource("Shader_sky")
+
+[sub_resource type="Sky" id="Sky_capture"]
+sky_material = SubResource("Material_sky")
+
 [sub_resource type="Environment" id="Environment_capture"]
-background_mode = 1
-background_color = Color(0.025, 0.04, 0.07, 1)
+background_mode = 2
+sky = SubResource("Sky_capture")
 ambient_light_source = 2
 ambient_light_color = Color(0.31, 0.39, 0.56, 1)
 ambient_light_energy = 0.7
@@ -56,6 +65,12 @@ height = 1.75
 radial_segments = 32
 rings = 4
 
+[sub_resource type="Shader" id="Shader_canvas"]
+code = "shader_type canvas_item;\n\nvoid fragment() {\n\tvec2 cell = floor(UV * vec2(12.0, 4.0));\n\tfloat checker = mod(cell.x + cell.y, 2.0);\n\tCOLOR = mix(vec4(0.95, 0.28, 0.08, 0.92), vec4(0.08, 0.72, 0.9, 0.92), checker);\n}\n"
+
+[sub_resource type="ShaderMaterial" id="Material_canvas"]
+shader = SubResource("Shader_canvas")
+
 [node name="NagaMetalCapture" type="Node3D"]
 script = ExtResource("1_capture")
 
@@ -95,3 +110,13 @@ light_color = Color(0.28, 0.52, 1, 1)
 light_energy = 7.0
 omni_range = 7.0
 shadow_enabled = true
+
+[node name="CanvasLayer" type="CanvasLayer" parent="."]
+
+[node name="ShaderSwatch" type="ColorRect" parent="CanvasLayer"]
+material = SubResource("Material_canvas")
+offset_left = 8.0
+offset_top = 8.0
+offset_right = 112.0
+offset_bottom = 48.0
+mouse_filter = 2

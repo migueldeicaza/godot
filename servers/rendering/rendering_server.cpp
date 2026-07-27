@@ -3697,6 +3697,7 @@ void RenderingServer::init() {
 #ifdef MODULE_NAGA_ENABLED
 	GLOBAL_DEF("rendering/shader_compiler/metal/use_naga_for_ubershaders", false);
 	GLOBAL_DEF("rendering/shader_compiler/metal/use_naga_for_forward_shaders", false);
+	GLOBAL_DEF("rendering/shader_compiler/metal/use_naga_for_builtin_shaders", false);
 #endif
 
 	GLOBAL_DEF_RST(PropertyInfo(Variant::INT, "rendering/reflections/sky_reflections/roughness_layers", PROPERTY_HINT_RANGE, "1,32,1"), 8);

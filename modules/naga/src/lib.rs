@@ -428,6 +428,10 @@ fn lower_forward_buffer_booleans(mut source: String) -> String {
         "implementation_data.gi_upscale_for_msaa",
         "implementation_data.volumetric_fog_enabled",
         "voxel_gi_instances.data[index].blend_ambient",
+        "canvas_data.use_pixel_snap",
+        "sky_scene_data.fog_enabled",
+        "sky_scene_data.volumetric_fog_enabled",
+        "sky_scene_data.fog_use_legacy_blending",
     ] {
         source = wrap_qualified_boolean_access(source, access);
     }
@@ -439,10 +443,34 @@ fn lower_forward_buffer_booleans(mut source: String) -> String {
     let mut adjusted = String::with_capacity(source.len());
     let mut in_resource_block = false;
     let mut boolean_fields = Vec::new();
+    let mut pending_boolean_fields = Vec::new();
     let mut qualified_accesses = Vec::new();
     for source_line in source.split_inclusive('\n') {
         let mut line = source_line.to_owned();
         let trimmed = line.trim_start().to_owned();
+        if !in_resource_block && !pending_boolean_fields.is_empty() {
+            let declaration = trimmed.trim();
+            if declaration.is_empty()
+                || declaration.starts_with("//")
+                || declaration.starts_with("/*")
+            {
+                adjusted.push_str(&line);
+                continue;
+            }
+            if let Some(instance) = declaration.strip_suffix(';') {
+                if instance
+                    .chars()
+                    .all(|character| character.is_ascii_alphanumeric() || character == '_')
+                {
+                    qualified_accesses.extend(
+                        pending_boolean_fields
+                            .iter()
+                            .map(|field| format!("{instance}.{field}")),
+                    );
+                }
+            }
+            pending_boolean_fields.clear();
+        }
         if !in_resource_block
             && trimmed.contains("layout(")
             && (trimmed.contains(" uniform ") || trimmed.contains(" buffer "))
@@ -476,6 +504,8 @@ fn lower_forward_buffer_booleans(mut source: String) -> String {
                                 .map(|field| format!("{instance}.{field}")),
                         );
                     }
+                } else {
+                    pending_boolean_fields.clone_from(&boolean_fields);
                 }
                 in_resource_block = false;
                 boolean_fields.clear();
@@ -487,6 +517,76 @@ fn lower_forward_buffer_booleans(mut source: String) -> String {
         adjusted = wrap_qualified_boolean_access(adjusted, &access);
     }
     adjusted
+}
+
+fn rewrite_matrix_column_xyz_assignments(source: String) -> String {
+    let mut adjusted = String::with_capacity(source.len());
+    for source_line in source.split_inclusive('\n') {
+        let trimmed = source_line.trim_start();
+        let indentation = &source_line[..source_line.len() - trimmed.len()];
+        let mut replacement = None;
+        for column in 0..4 {
+            let target = format!("txform[{column}].xyz");
+            let Some(assignment) = trimmed.strip_prefix(&target) else {
+                continue;
+            };
+            let Some((operator, right)) =
+                [" += ", " -= ", " *= ", " = "]
+                    .into_iter()
+                    .find_map(|operator| {
+                        assignment
+                            .strip_prefix(operator)
+                            .map(|right| (operator, right))
+                    })
+            else {
+                continue;
+            };
+            let Some(right) = right.trim_end().strip_suffix(';') else {
+                continue;
+            };
+            let value = match operator {
+                " = " => right.to_owned(),
+                " += " => format!("{target} + {right}"),
+                " -= " => format!("{target} - {right}"),
+                " *= " => format!("{target} * {right}"),
+                _ => unreachable!(),
+            };
+            let newline = source_line.ends_with('\n').then_some("\n").unwrap_or("");
+            replacement = Some(format!(
+                "{indentation}txform[{column}] = vec4({value}, txform[{column}].w);{newline}"
+            ));
+            break;
+        }
+        adjusted.push_str(replacement.as_deref().unwrap_or(source_line));
+    }
+    adjusted
+}
+
+fn adjust_builtin_shader_syntax(source: String) -> String {
+    // Naga requires storage buffers to be readable even when the shader only
+    // writes them. Metal assigns the same resource slot and Godot already
+    // reflects these buffers as writable, so widening access preserves the ABI.
+    let source = if source.contains("struct DirectionalLightData") {
+        let mut source = source.replace("bool enabled;", "uint enabled;");
+        source = wrap_qualified_boolean_access(source, "directional_lights.data[i].enabled");
+        for index in 0..4 {
+            source = wrap_qualified_boolean_access(
+                source,
+                &format!("directional_lights.data[{index}].enabled"),
+            );
+        }
+        source
+    } else {
+        source
+    };
+    let source = source
+        .replace("restrict writeonly buffer", "restrict buffer")
+        .replace("restrict buffer writeonly", "restrict buffer")
+        .replace("buffer restrict writeonly", "buffer restrict")
+        .replace("-1.0 / 0.0", "uintBitsToFloat(0xff800000u)");
+    // Naga's GLSL frontend does not lower assignment through a matrix-column
+    // swizzle. Preserve the untouched W component explicitly.
+    rewrite_matrix_column_xyz_assignments(source)
 }
 
 fn widen_forward_half_arguments(source: String) -> String {
@@ -689,6 +789,7 @@ fn godot_source(
     adjusted = preserve_dont_unroll_annotations(adjusted)?;
     adjusted = add_modf_polyfill(adjusted)?;
     adjusted = lower_forward_buffer_booleans(adjusted);
+    adjusted = adjust_builtin_shader_syntax(adjusted);
     adjusted = widen_forward_half_arguments(adjusted);
     adjusted = type_mobile_uint_returns(adjusted);
     adjusted = unpack_forward_packed_int3(adjusted);
@@ -2195,7 +2296,8 @@ layout(set = 0, binding = 6, std430) restrict readonly buffer ReflectionProbeDat
 layout(set = 1, binding = 0, std140) uniform MaterialUniforms {
     bool enabled;
     bool enabled_extra;
-} material;
+}
+material;
 layout(location = 0) out vec4 color;
 void main() {
     uint ref_index = 0u;
@@ -2259,6 +2361,160 @@ void main() {
             assert!(source.contains("uint box_project"));
             assert!(source.contains("uint enabled"));
             assert!(source.contains("uint enabled_extra"));
+
+            godot_naga_string_free(msl);
+            godot_naga_string_free(entry);
+            godot_naga_module_free(shader);
+        }
+    }
+
+    #[test]
+    fn translates_canvas_gather_and_sky_boolean_layout() {
+        const FRAGMENT: &str = r#"#version 450
+layout(set = 0, binding = 0) uniform texture2D atlas;
+layout(set = 0, binding = 1) uniform sampler atlas_sampler;
+layout(set = 0, binding = 2, std140) uniform SkyData {
+    uint fog_enabled;
+}
+sky_scene_data;
+struct DirectionalLightData {
+    vec4 direction_energy;
+    bool enabled;
+};
+layout(set = 0, binding = 3, std140) uniform DirectionalLights {
+    DirectionalLightData data[4];
+}
+directional_lights;
+layout(location = 0) out vec4 color;
+void main() {
+    vec4 taps = textureGather(sampler2D(atlas, atlas_sampler), vec2(0.5));
+    color = sky_scene_data.fog_enabled && directional_lights.data[0].enabled ? taps : vec4(0.0);
+}
+"#;
+        unsafe {
+            let source = CString::new(FRAGMENT).unwrap();
+            let mut error = ptr::null_mut();
+            let shader = godot_naga_parse(1, source.as_ptr(), &mut error);
+            assert!(
+                !shader.is_null(),
+                "{}",
+                CStr::from_ptr(error).to_string_lossy()
+            );
+
+            let bindings = [
+                GodotNagaBinding {
+                    group: 0,
+                    binding: 0,
+                    buffer: -1,
+                    texture: 0,
+                    sampler: -1,
+                    writable: 0,
+                },
+                GodotNagaBinding {
+                    group: 0,
+                    binding: 1,
+                    buffer: -1,
+                    texture: -1,
+                    sampler: 0,
+                    writable: 0,
+                },
+                GodotNagaBinding {
+                    group: 0,
+                    binding: 2,
+                    buffer: 0,
+                    texture: -1,
+                    sampler: -1,
+                    writable: 0,
+                },
+                GodotNagaBinding {
+                    group: 0,
+                    binding: 3,
+                    buffer: 1,
+                    texture: -1,
+                    sampler: -1,
+                    writable: 0,
+                },
+            ];
+            let mut entry = ptr::null_mut();
+            let msl = godot_naga_write_msl(
+                shader,
+                2,
+                4,
+                bindings.as_ptr(),
+                bindings.len(),
+                -1,
+                &mut entry,
+                &mut error,
+            );
+            assert!(
+                !msl.is_null(),
+                "{}",
+                CStr::from_ptr(error).to_string_lossy()
+            );
+            let source = CStr::from_ptr(msl).to_string_lossy();
+            assert!(source.contains(".gather("));
+
+            godot_naga_string_free(msl);
+            godot_naga_string_free(entry);
+            godot_naga_module_free(shader);
+        }
+    }
+
+    #[test]
+    fn translates_particle_copy_buffer_syntax() {
+        const COMPUTE: &str = r#"#version 450
+layout(local_size_x = 1) in;
+layout(set = 0, binding = 0, std430) buffer restrict writeonly OutputData {
+    mat4 data[];
+}
+output_data;
+layout(push_constant, std430) uniform Params {
+    bool lifetime_reverse;
+}
+params;
+void main() {
+    mat4 txform = mat4(1.0);
+    txform[0].xyz = vec3(2.0);
+    txform[1].xyz *= 3.0;
+    if (params.lifetime_reverse) {
+        txform[3] = vec4(-1.0 / 0.0, -1.0 / 0.0, -1.0 / 0.0, 0.0);
+    }
+    output_data.data[0] = txform;
+}
+"#;
+        let adjusted =
+            adjust_builtin_shader_syntax(lower_forward_buffer_booleans(COMPUTE.to_owned()));
+        assert!(!adjusted.contains("writeonly"));
+        assert!(!adjusted.contains("txform[0].xyz ="));
+        assert!(!adjusted.contains("txform[1].xyz *="));
+        assert!(adjusted.contains("bool(params.lifetime_reverse)"));
+        assert!(adjusted.contains("uintBitsToFloat(0xff800000u)"));
+
+        unsafe {
+            let source = CString::new(COMPUTE).unwrap();
+            let mut error = ptr::null_mut();
+            let shader = godot_naga_parse(4, source.as_ptr(), &mut error);
+            assert!(
+                !shader.is_null(),
+                "{}",
+                CStr::from_ptr(error).to_string_lossy()
+            );
+
+            let binding = GodotNagaBinding {
+                group: 0,
+                binding: 0,
+                buffer: 0,
+                texture: -1,
+                sampler: -1,
+                writable: 1,
+            };
+            let mut entry = ptr::null_mut();
+            let msl = godot_naga_write_msl(shader, 2, 4, &binding, 1, 1, &mut entry, &mut error);
+            assert!(
+                !msl.is_null(),
+                "{}",
+                CStr::from_ptr(error).to_string_lossy()
+            );
 
             godot_naga_string_free(msl);
             godot_naga_string_free(entry);

@@ -2,7 +2,7 @@
 
 This optional module lets the Metal renderer attempt direct GLSL-to-MSL translation
 with [Naga](https://github.com/gfx-rs/wgpu/tree/trunk/naga) for Godot's built-in
-forward shaders, including generated specialized material shaders and Uber Shaders.
+forward shaders and a validated set of generated built-in shader families.
 It is intentionally not a replacement for Godot's shader validation or the general
 GLSLang/SPIRV-Cross path.
 
@@ -12,13 +12,16 @@ Build on macOS with Rust 1.87 or newer:
 scons platform=macos naga_enabled=yes
 ```
 
-At runtime, enable `rendering/shader_compiler/metal/use_naga_for_forward_shaders` to
-route all Forward+ and Mobile shader variants through Naga. The narrower
+At runtime, enable `rendering/shader_compiler/metal/use_naga_for_builtin_shaders` to
+route the validated Forward+, Mobile, Canvas, Canvas SDF, Canvas occlusion, Sky,
+particle-copy, and skeleton shader families through Naga. Enable
+`rendering/shader_compiler/metal/use_naga_for_forward_shaders` to route only all
+Forward+ and Mobile shader variants. The narrower
 `rendering/shader_compiler/metal/use_naga_for_ubershaders` option routes only Uber
 Shaders. Translation failures automatically use the existing compiler path. For
-one-off testing and benchmarks, `GODOT_NAGA_FORWARD_SHADERS=1` and
-`GODOT_NAGA_UBERSHADERS=1` enable the corresponding paths without changing a project
-file.
+one-off testing and benchmarks, `GODOT_NAGA_BUILTIN_SHADERS=1`,
+`GODOT_NAGA_FORWARD_SHADERS=1`, and `GODOT_NAGA_UBERSHADERS=1` enable the
+corresponding paths without changing a project file.
 `GODOT_NAGA_TEST_ALL_UBER_VARIANTS=1` enables every Forward+ or Mobile shader
 group and creates a real Metal render pipeline for every built-in Uber variant.
 `GODOT_NAGA_TEST_ALL_FORWARD_VARIANTS=1` is retained as a test-only alias for routing
@@ -45,8 +48,12 @@ GLSLang/SPIRV-Cross fallback. The bridge handles comparison samplers, ordinary d
 reads, fixed resource-binding arrays, subgroup operations, multiview, storage-image
 atomics, tightly packed three-component buffer members, buffer boolean layouts, and
 explicit-fp16 Mobile lighting, and dynamically generated material-buffer booleans.
-The legacy compiler path remains the automatic fallback for unsupported permutations
-and other shaders.
+The expanded built-in smoke matrix additionally compiles 108 Forward+ and 118 Mobile
+ShaderRD events without a parser or legacy fallback. This covers two-argument Canvas
+texture gathers, constant Canvas SDF arrays, Sky light and fog booleans, write-only
+particle-copy buffers, matrix-column writes, and particle lifetime sentinels. The
+legacy compiler path remains the automatic fallback for unsupported permutations and
+other shaders.
 
 ## Benchmark
 
@@ -86,6 +93,14 @@ python3 modules/naga/tests/benchmark_project_corpus.py --iterations 3 \
   ~/Documents/ThirdPersonShooterTpsDemo
 ```
 
+Use `--scope builtin` to benchmark the expanded production allowlist. Use
+`--scope all` for a diagnostic census of every generated ShaderRD family; that mode
+permits safe parser and legacy fallbacks and prints direct, parser-bridge, and legacy
+counts per family, ordered by legacy translation cost. On TwinStickShooter, the
+production built-in scope compiled 138/138 Forward+ and 154/154 Mobile events
+directly through Naga. A single alternating run measured 1.18x and 1.27x translation
+speedups respectively.
+
 On an Apple M3 Ultra, the three-run medians were:
 
 | Project | Renderer | Loaded variants (specialized) | Naga translation | Legacy translation | Speedup |
@@ -105,7 +120,9 @@ is therefore reported by the harness only as contextual data.
 ## Render equivalence
 
 `tests/compare_metal_rendering.py` renders a fixed PBR scene through independently
-forced Uber and specialized pipelines using the legacy and direct-Naga Metal paths.
+forced Uber, specialized, and expanded built-in pipelines using the legacy and
+direct-Naga Metal paths. The built-in scene includes visible custom Canvas and Sky
+shaders.
 It captures raw RGBA8 pixels, requires the expected Naga compilation marker with no
 fallback, and compares maximum, mean, and RMS channel error. It runs both Forward+
 and Mobile pipelines by default:
@@ -114,7 +131,7 @@ and Mobile pipelines by default:
 python3 modules/naga/tests/compare_metal_rendering.py
 ```
 
-Forward+ is bit-for-bit identical on the reference M3 Ultra for both pipelines.
+Forward+ is bit-for-bit identical on the reference M3 Ultra for all three pipelines.
 Mobile has a stable mean channel difference of about 0.01/255 and RMS difference of
 about 0.11/255, localized to shadow and triangle edges; the largest observed channel
 difference is 7/255. The default tolerance admits this compiler-level floating-point

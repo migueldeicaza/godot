@@ -12,8 +12,31 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
-TIMING_RE = re.compile(r"^Naga forward benchmark: (?P<fields>.+)$", re.MULTILINE)
+TIMING_PATTERNS = {
+    "forward": re.compile(r"^Naga forward benchmark: (?P<fields>.+)$", re.MULTILINE),
+    "all": re.compile(r"^Naga ShaderRD benchmark: (?P<fields>.+)$", re.MULTILINE),
+    "builtin": re.compile(r"^Naga ShaderRD benchmark: (?P<fields>.+)$", re.MULTILINE),
+}
 SAFE_NAME_RE = re.compile(r"[^A-Za-z0-9_.-]+")
+VALIDATED_BUILTIN_FAMILIES = {
+    "CanvasOcclusionShaderRD",
+    "CanvasSdfShaderRD",
+    "CanvasShaderRD",
+    "ParticlesCopyShaderRD",
+    "SceneForwardClusteredShaderRD",
+    "SceneForwardMobileShaderRD",
+    "SkeletonShaderRD",
+    "SkyShaderRD",
+}
+
+
+@dataclass(frozen=True)
+class ShaderTiming:
+    shader: str
+    variant: int
+    backend: str
+    translation_us: int
+    fallback_stages: int = 0
 
 
 @dataclass(frozen=True)
@@ -23,6 +46,7 @@ class RunResult:
     translation_us: int
     wall_seconds: float
     project_errors: int
+    timings: tuple[ShaderTiming, ...]
 
 
 def parse_fields(text: str) -> dict[str, str | int]:
@@ -64,6 +88,7 @@ def run_once(
     backend: str,
     iteration: int,
     frames: int,
+    scope: str,
 ) -> RunResult:
     work_root = Path(tempfile.mkdtemp(prefix="work-", dir=output_dir))
     project = work_root / source_project.name
@@ -72,14 +97,28 @@ def run_once(
         disable_shader_cache(project / "project.godot")
 
         environment = os.environ.copy()
-        environment["GODOT_NAGA_BENCHMARK_FORWARD_VARIANTS"] = "1"
+        environment.pop("GODOT_NAGA_BENCHMARK_FORWARD_VARIANTS", None)
+        environment.pop("GODOT_NAGA_BENCHMARK_SHADER_RD", None)
+        environment.pop("GODOT_NAGA_BUILTIN_SHADERS", None)
+        environment.pop("GODOT_NAGA_TEST_ALL_SHADER_RD", None)
+        if scope in ("all", "builtin"):
+            environment["GODOT_NAGA_BENCHMARK_SHADER_RD"] = "1"
+        else:
+            environment["GODOT_NAGA_BENCHMARK_FORWARD_VARIANTS"] = "1"
         environment["GODOT_NAGA_BENCHMARK_NONCE"] = (
             f"{source_project.name}-{method}-{backend}-{iteration}-{time.time_ns()}"
         )
         environment.pop("GODOT_NAGA_UBERSHADERS", None)
         environment.pop("GODOT_NAGA_TEST_ALL_FORWARD_VARIANTS", None)
         if backend == "naga":
-            environment["GODOT_NAGA_FORWARD_SHADERS"] = "1"
+            if scope == "all":
+                environment["GODOT_NAGA_TEST_ALL_SHADER_RD"] = "1"
+                environment.pop("GODOT_NAGA_FORWARD_SHADERS", None)
+            elif scope == "builtin":
+                environment["GODOT_NAGA_BUILTIN_SHADERS"] = "1"
+                environment.pop("GODOT_NAGA_FORWARD_SHADERS", None)
+            else:
+                environment["GODOT_NAGA_FORWARD_SHADERS"] = "1"
         else:
             environment.pop("GODOT_NAGA_FORWARD_SHADERS", None)
 
@@ -113,22 +152,42 @@ def run_once(
                 f"Godot {source_project.name} {method}/{backend} failed; see {log_path}\n{result.stdout[-4000:]}"
             )
 
-        timings = [parse_fields(match.group("fields")) for match in TIMING_RE.finditer(result.stdout)]
+        fields = [parse_fields(match.group("fields")) for match in TIMING_PATTERNS[scope].finditer(result.stdout)]
+        if scope == "builtin":
+            fields = [timing for timing in fields if timing["shader"] in VALIDATED_BUILTIN_FAMILIES]
+        timings = tuple(
+            ShaderTiming(
+                shader=str(timing["shader"]),
+                variant=int(timing["variant"]),
+                backend=str(timing["backend"]),
+                translation_us=int(timing["translation_us"]),
+                fallback_stages=int(timing.get("fallback_stages", 0)),
+            )
+            for timing in fields
+        )
         if not timings:
             raise RuntimeError(
                 f"Godot {source_project.name} {method}/{backend} compiled no forward variants; see {log_path}"
             )
-        specialized_variants = sum(is_specialized_variant(method, int(timing["variant"])) for timing in timings)
-        if specialized_variants == 0:
+        specialized_variants = sum(
+            timing.shader in ("SceneForwardClusteredShaderRD", "SceneForwardMobileShaderRD")
+            and is_specialized_variant(method, timing.variant)
+            for timing in timings
+        )
+        if scope == "forward" and specialized_variants == 0:
             raise RuntimeError(
                 f"Godot {source_project.name} {method}/{backend} compiled no specialized variants; see {log_path}"
             )
-        unexpected = [timing for timing in timings if timing.get("backend") != backend]
+        unexpected = [timing for timing in timings if timing.backend != backend]
+        if scope == "all" and backend == "naga":
+            # A census deliberately records unsupported variants that safely used
+            # the production GLSLang/SPIRV-Cross fallback.
+            unexpected = []
         if unexpected:
             raise RuntimeError(
                 f"Godot {source_project.name} {method}/{backend} used a mixed compiler path; see {log_path}"
             )
-        if backend == "naga":
+        if backend == "naga" and scope != "all":
             if "falling back to GLSLang/SPIRV-Cross" in result.stdout:
                 raise RuntimeError(f"Naga fell back for {source_project.name} {method}; see {log_path}")
             if "Naga used its GLSLang-to-SPIR-V parser fallback" in result.stdout:
@@ -138,9 +197,10 @@ def run_once(
         return RunResult(
             variants=len(timings),
             specialized_variants=specialized_variants,
-            translation_us=sum(int(timing["translation_us"]) for timing in timings),
+            translation_us=sum(timing.translation_us for timing in timings),
             wall_seconds=wall_seconds,
             project_errors=project_errors,
+            timings=timings,
         )
     finally:
         shutil.rmtree(work_root)
@@ -154,6 +214,12 @@ def main() -> None:
     parser.add_argument("projects", nargs="+", type=Path)
     parser.add_argument("--binary", type=Path, default=repository / "bin/godot.macos.editor.arm64")
     parser.add_argument("--method", choices=("forward_plus", "mobile", "all"), default="all")
+    parser.add_argument(
+        "--scope",
+        choices=("forward", "builtin", "all"),
+        default="forward",
+        help="Benchmark forward shaders, all validated built-ins, or census every ShaderRD family with safe fallback.",
+    )
     parser.add_argument("--iterations", type=int, default=3)
     parser.add_argument("--frames", type=int, default=180)
     parser.add_argument("--output-dir", type=Path)
@@ -185,12 +251,25 @@ def main() -> None:
                         backend,
                         iteration,
                         arguments.frames,
+                        arguments.scope,
                     )
                     samples[backend].append(sample)
+                    if arguments.scope in ("all", "builtin") and backend == "naga":
+                        direct = sum(
+                            timing.backend == "naga" and timing.fallback_stages == 0 for timing in sample.timings
+                        )
+                        parser_fallback = sum(
+                            timing.backend == "naga" and timing.fallback_stages > 0 for timing in sample.timings
+                        )
+                        legacy_fallback = sum(timing.backend == "legacy" for timing in sample.timings)
+                        coverage = (
+                            f"direct={direct}, parser_fallback={parser_fallback}, legacy_fallback={legacy_fallback}"
+                        )
+                    else:
+                        coverage = f"{sample.specialized_variants} specialized"
                     print(
                         f"{project.name} {method} {backend} run {iteration + 1}: "
-                        f"variants={sample.variants} ({sample.specialized_variants} specialized), "
-                        f"translation={sample.translation_us / 1000:.3f} ms, "
+                        f"variants={sample.variants} ({coverage}), translation={sample.translation_us / 1000:.3f} ms, "
                         f"wall={sample.wall_seconds:.3f} s, project_errors={sample.project_errors}",
                         flush=True,
                     )
@@ -207,6 +286,57 @@ def main() -> None:
                 f"speedup={legacy_wall / naga_wall:.2f}x",
                 flush=True,
             )
+
+            if arguments.scope in ("all", "builtin"):
+                families = sorted(
+                    {
+                        timing.shader
+                        for backend_samples in samples.values()
+                        for sample in backend_samples
+                        for timing in sample.timings
+                    },
+                    key=lambda family: -statistics.median(
+                        sum(timing.translation_us for timing in sample.timings if timing.shader == family)
+                        for sample in samples["legacy"]
+                    ),
+                )
+                print(f"{project.name} {method} per-family census (ordered by legacy translation cost):")
+                for family in families:
+                    naga_family_samples = [
+                        [timing for timing in sample.timings if timing.shader == family] for sample in samples["naga"]
+                    ]
+                    legacy_family_samples = [
+                        [timing for timing in sample.timings if timing.shader == family] for sample in samples["legacy"]
+                    ]
+                    event_count = int(statistics.median(len(sample) for sample in naga_family_samples))
+                    direct_count = int(
+                        statistics.median(
+                            sum(timing.backend == "naga" and timing.fallback_stages == 0 for timing in sample)
+                            for sample in naga_family_samples
+                        )
+                    )
+                    parser_count = int(
+                        statistics.median(
+                            sum(timing.backend == "naga" and timing.fallback_stages > 0 for timing in sample)
+                            for sample in naga_family_samples
+                        )
+                    )
+                    fallback_count = int(
+                        statistics.median(
+                            sum(timing.backend == "legacy" for timing in sample) for sample in naga_family_samples
+                        )
+                    )
+                    naga_family_us = statistics.median(
+                        sum(timing.translation_us for timing in sample) for sample in naga_family_samples
+                    )
+                    legacy_family_us = statistics.median(
+                        sum(timing.translation_us for timing in sample) for sample in legacy_family_samples
+                    )
+                    print(
+                        f"  {family}: variants={event_count}, direct={direct_count}, parser_fallback={parser_count}, "
+                        f"legacy_fallback={fallback_count}, Naga={naga_family_us / 1000:.3f} ms, "
+                        f"legacy={legacy_family_us / 1000:.3f} ms"
+                    )
 
     print(f"Corpus logs: {output_dir}")
 

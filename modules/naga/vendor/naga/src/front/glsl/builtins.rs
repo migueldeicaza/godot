@@ -277,6 +277,22 @@ pub fn inject_builtin(
 
             texture_args_generator(TextureArgsOptions::SHADOW | variations.into(), f)
         }
+        "textureGather" => {
+            // GLSL's two-argument textureGather selects component zero. Other
+            // dimensions, offsets, shadow forms, and explicit component indices
+            // can be added as their users require them.
+            for kind in [Sk::Float, Sk::Sint, Sk::Uint] {
+                let image = TypeInner::Image {
+                    dim: Dim::D2,
+                    arrayed: false,
+                    class: ImageClass::Sampled { kind, multi: false },
+                };
+                declaration.overloads.push(module.add_builtin(
+                    vec![image, make_coords_arg(2, Sk::Float)],
+                    MacroCall::TextureGather,
+                ));
+            }
+        }
         "textureSize" => {
             let f = |kind, dim, arrayed, multi, shadow| {
                 let class = match shadow {
@@ -1684,6 +1700,7 @@ pub enum MacroCall {
         shadow: bool,
         level_type: TextureLevelType,
     },
+    TextureGather,
     TextureSize {
         arrayed: bool,
     },
@@ -1869,7 +1886,19 @@ impl MacroCall {
                         .map_or(SampleLevel::Auto, SampleLevel::Bias);
                 }
 
-                texture_call(ctx, args[0], level, comps, texture_offset, meta)?
+                texture_call(ctx, args[0], level, comps, texture_offset, None, meta)?
+            }
+            MacroCall::TextureGather => {
+                let comps = frontend.coordinate_components(ctx, args[0], args[1], None, Some(false), meta)?;
+                texture_call(
+                    ctx,
+                    args[0],
+                    SampleLevel::Zero,
+                    comps,
+                    None,
+                    Some(crate::SwizzleComponent::X),
+                    meta,
+                )?
             }
 
             MacroCall::TextureSize { arrayed } => {
@@ -2318,6 +2347,7 @@ fn texture_call(
     level: SampleLevel,
     comps: CoordComponents,
     offset: Option<Handle<Expression>>,
+    gather: Option<crate::SwizzleComponent>,
     meta: Span,
 ) -> Result<Handle<Expression>> {
     if let Some(sampler) = ctx.samplers.get(&image).copied() {
@@ -2331,7 +2361,7 @@ fn texture_call(
             Expression::ImageSample {
                 image,
                 sampler,
-                gather: None, //TODO
+                gather,
                 coordinate: comps.coordinate,
                 array_index,
                 offset,

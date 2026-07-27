@@ -88,7 +88,7 @@ void main() {
 	if (center != rel) {
 		//only process if it does not point to itself
 		const int ofs_table_size = 8;
-		const ivec2 ofs_table[ofs_table_size] = ivec2[](
+		const ivec2 ofs_table[8] = ivec2[](
 				ivec2(-1, -1),
 				ivec2(0, -1),
 				ivec2(+1, -1),
