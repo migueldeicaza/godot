@@ -3005,7 +3005,7 @@ void fragment_shader(in SceneData scene_data) {
 
 	normal_output_buffer.rgb = encode24(normal) * 0.5 + 0.5;
 	normal_output_buffer.a = 0.0;
-	depth_output_buffer.r = -vertex.z;
+	depth_output_buffer = -vertex.z;
 
 	orm_output_buffer.r = ao;
 	orm_output_buffer.g = roughness;

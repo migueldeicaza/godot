@@ -46,6 +46,22 @@ public:
 		uint32_t failed = 0;
 	};
 
+	struct NagaBenchmarkStats {
+		uint64_t naga_source_usec = 0;
+		uint64_t naga_variant_count = 0;
+		uint64_t legacy_glslang_usec = 0;
+		uint64_t legacy_container_usec = 0;
+		uint64_t legacy_variant_count = 0;
+		uint64_t naga_parse_usec = 0;
+		uint64_t naga_parse_count = 0;
+		uint64_t naga_reflect_usec = 0;
+		uint64_t naga_reflect_count = 0;
+		uint64_t naga_write_msl_usec = 0;
+		uint64_t naga_write_msl_count = 0;
+		uint64_t naga_fallback_usec = 0;
+		uint64_t naga_fallback_count = 0;
+	};
+
 	struct VariantDefine {
 		int group = 0;
 		CharString text;
@@ -252,6 +268,8 @@ public:
 
 	const Vector<uint64_t> &get_dynamic_buffers() const;
 	static NagaTestCoverage get_naga_test_coverage(const String &p_shader_name);
+	NagaBenchmarkStats get_naga_benchmark_stats(RID p_version);
+	static void reset_naga_benchmark_stats();
 
 	static void shaders_embedded_set_lock();
 	static const ShaderVersionPairSet &shaders_embedded_set_get();

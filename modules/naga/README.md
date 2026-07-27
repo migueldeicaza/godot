@@ -28,11 +28,11 @@ the LTC combined samplers used by the color Uber Shader. It uses flat Metal reso
 slots. For successful direct translations, Godot reflects descriptor layouts, stage
 interfaces, push constants, and specialization defaults directly from Naga IR. The
 direct path therefore performs no SPIR-V serialization and invokes neither GLSLang,
-SPIRV-Reflect, nor SPIRV-Cross. A Naga-generated SPIR-V reflection view remains as a
-compatibility fallback for IR resource types outside the tested built-in shader
-surface. GLSLang also remains available as a transformed SPIR-V fallback for GLSL
-constructs Naga cannot yet parse; successful output is never passed through
-SPIRV-Cross.
+SPIRV-Reflect, nor SPIRV-Cross. This includes storage-image formats and atomic access.
+A Naga-generated SPIR-V reflection view remains as a compatibility fallback for IR
+resource types outside the tested built-in shader surface. GLSLang also remains
+available as a transformed SPIR-V fallback for GLSL constructs Naga cannot yet parse;
+successful output is never passed through SPIRV-Cross.
 
 The exhaustive Metal smoke matrix compiles all 43 unique built-in Uber variants
 directly through Naga: 25 Forward+ and 18 Mobile (including both Mobile FP32 and
@@ -42,6 +42,30 @@ reads, fixed resource-binding arrays, subgroup operations, multiview, storage-im
 atomics, tightly packed three-component buffer members, buffer boolean layouts, and
 explicit-fp16 Mobile lighting. The legacy compiler path remains mandatory for
 untested permutations and other shaders.
+
+## Benchmark
+
+`tests/benchmark_metal.py` alternates Naga and legacy runs, disables Godot's shader
+cache through the smoke project, and adds a unique harmless comment to generated MSL
+for each process so Apple's Metal shader cache cannot satisfy a previous run. It
+measures translation work separately from blocking Metal pipeline creation and fails
+if a variant falls back or a pipeline cannot be created.
+
+```sh
+python3 modules/naga/tests/benchmark_metal.py --iterations 5
+```
+
+On an Apple M3 Ultra, a five-run median from the `speed_trace` editor build produced:
+
+| Renderer | Naga translation | Legacy translation | Translation speedup | Naga Metal pipelines | Legacy Metal pipelines |
+|---|---:|---:|---:|---:|---:|
+| Forward+ (25 variants) | 0.903 s | 4.119 s | 4.56x | 2.289 s | 2.233 s |
+| Mobile (18 variants) | 0.748 s | 1.668 s | 2.23x | 2.128 s | 2.078 s |
+
+Translation is the material improvement; cold Metal pipeline compilation is at
+parity, as expected. Set `GODOT_NAGA_BENCHMARK_UBER_VARIANTS=1` alongside the
+exhaustive-test variables to print parse/validation, reflection, MSL, GLSLang,
+SPIRV-Cross/container, and pipeline timings for an individual run.
 
 Naga 29.0.3 is vendored under `modules/naga/vendor/naga` because the tested Godot
 shader surface needs small GLSL frontend and MSL binding-array fixes not yet present

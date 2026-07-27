@@ -30,7 +30,10 @@
 
 #include "naga_bridge.h"
 
+#include "core/os/os.h"
 #include "core/string/ustring.h"
+
+static thread_local NagaShaderModule::Timing naga_timing;
 
 extern "C" {
 struct GodotNagaBinding {
@@ -54,10 +57,105 @@ struct GodotNagaUniformReflection {
 	uint32_t length;
 	uint32_t writable;
 	uint32_t image_dimension;
+	uint32_t image_format;
 	uint32_t image_arrayed;
 	uint32_t image_multisampled;
 };
+}
 
+static RenderingDeviceCommons::DataFormat naga_image_format_to_data_format(uint32_t p_format) {
+	using Naga = NagaShaderModule;
+	using RDC = RenderingDeviceCommons;
+	switch (p_format) {
+		case Naga::REFLECTION_IMAGE_FORMAT_R8_UNORM:
+			return RDC::DATA_FORMAT_R8_UNORM;
+		case Naga::REFLECTION_IMAGE_FORMAT_R8_SNORM:
+			return RDC::DATA_FORMAT_R8_SNORM;
+		case Naga::REFLECTION_IMAGE_FORMAT_R8_UINT:
+			return RDC::DATA_FORMAT_R8_UINT;
+		case Naga::REFLECTION_IMAGE_FORMAT_R8_SINT:
+			return RDC::DATA_FORMAT_R8_SINT;
+		case Naga::REFLECTION_IMAGE_FORMAT_R16_UINT:
+			return RDC::DATA_FORMAT_R16_UINT;
+		case Naga::REFLECTION_IMAGE_FORMAT_R16_SINT:
+			return RDC::DATA_FORMAT_R16_SINT;
+		case Naga::REFLECTION_IMAGE_FORMAT_R16_FLOAT:
+			return RDC::DATA_FORMAT_R16_SFLOAT;
+		case Naga::REFLECTION_IMAGE_FORMAT_RG8_UNORM:
+			return RDC::DATA_FORMAT_R8G8_UNORM;
+		case Naga::REFLECTION_IMAGE_FORMAT_RG8_SNORM:
+			return RDC::DATA_FORMAT_R8G8_SNORM;
+		case Naga::REFLECTION_IMAGE_FORMAT_RG8_UINT:
+			return RDC::DATA_FORMAT_R8G8_UINT;
+		case Naga::REFLECTION_IMAGE_FORMAT_RG8_SINT:
+			return RDC::DATA_FORMAT_R8G8_SINT;
+		case Naga::REFLECTION_IMAGE_FORMAT_R32_UINT:
+			return RDC::DATA_FORMAT_R32_UINT;
+		case Naga::REFLECTION_IMAGE_FORMAT_R32_SINT:
+			return RDC::DATA_FORMAT_R32_SINT;
+		case Naga::REFLECTION_IMAGE_FORMAT_R32_FLOAT:
+			return RDC::DATA_FORMAT_R32_SFLOAT;
+		case Naga::REFLECTION_IMAGE_FORMAT_RG16_UINT:
+			return RDC::DATA_FORMAT_R16G16_UINT;
+		case Naga::REFLECTION_IMAGE_FORMAT_RG16_SINT:
+			return RDC::DATA_FORMAT_R16G16_SINT;
+		case Naga::REFLECTION_IMAGE_FORMAT_RG16_FLOAT:
+			return RDC::DATA_FORMAT_R16G16_SFLOAT;
+		case Naga::REFLECTION_IMAGE_FORMAT_RGBA8_UNORM:
+			return RDC::DATA_FORMAT_R8G8B8A8_UNORM;
+		case Naga::REFLECTION_IMAGE_FORMAT_RGBA8_SNORM:
+			return RDC::DATA_FORMAT_R8G8B8A8_SNORM;
+		case Naga::REFLECTION_IMAGE_FORMAT_RGBA8_UINT:
+			return RDC::DATA_FORMAT_R8G8B8A8_UINT;
+		case Naga::REFLECTION_IMAGE_FORMAT_RGBA8_SINT:
+			return RDC::DATA_FORMAT_R8G8B8A8_SINT;
+		case Naga::REFLECTION_IMAGE_FORMAT_BGRA8_UNORM:
+			return RDC::DATA_FORMAT_B8G8R8A8_UNORM;
+		case Naga::REFLECTION_IMAGE_FORMAT_RGB10A2_UINT:
+			return RDC::DATA_FORMAT_A2B10G10R10_UINT_PACK32;
+		case Naga::REFLECTION_IMAGE_FORMAT_RGB10A2_UNORM:
+			return RDC::DATA_FORMAT_A2B10G10R10_UNORM_PACK32;
+		case Naga::REFLECTION_IMAGE_FORMAT_RG11B10_UFLOAT:
+			return RDC::DATA_FORMAT_B10G11R11_UFLOAT_PACK32;
+		case Naga::REFLECTION_IMAGE_FORMAT_R64_UINT:
+			return RDC::DATA_FORMAT_R64_UINT;
+		case Naga::REFLECTION_IMAGE_FORMAT_RG32_UINT:
+			return RDC::DATA_FORMAT_R32G32_UINT;
+		case Naga::REFLECTION_IMAGE_FORMAT_RG32_SINT:
+			return RDC::DATA_FORMAT_R32G32_SINT;
+		case Naga::REFLECTION_IMAGE_FORMAT_RG32_FLOAT:
+			return RDC::DATA_FORMAT_R32G32_SFLOAT;
+		case Naga::REFLECTION_IMAGE_FORMAT_RGBA16_UINT:
+			return RDC::DATA_FORMAT_R16G16B16A16_UINT;
+		case Naga::REFLECTION_IMAGE_FORMAT_RGBA16_SINT:
+			return RDC::DATA_FORMAT_R16G16B16A16_SINT;
+		case Naga::REFLECTION_IMAGE_FORMAT_RGBA16_FLOAT:
+			return RDC::DATA_FORMAT_R16G16B16A16_SFLOAT;
+		case Naga::REFLECTION_IMAGE_FORMAT_RGBA32_UINT:
+			return RDC::DATA_FORMAT_R32G32B32A32_UINT;
+		case Naga::REFLECTION_IMAGE_FORMAT_RGBA32_SINT:
+			return RDC::DATA_FORMAT_R32G32B32A32_SINT;
+		case Naga::REFLECTION_IMAGE_FORMAT_RGBA32_FLOAT:
+			return RDC::DATA_FORMAT_R32G32B32A32_SFLOAT;
+		case Naga::REFLECTION_IMAGE_FORMAT_R16_UNORM:
+			return RDC::DATA_FORMAT_R16_UNORM;
+		case Naga::REFLECTION_IMAGE_FORMAT_R16_SNORM:
+			return RDC::DATA_FORMAT_R16_SNORM;
+		case Naga::REFLECTION_IMAGE_FORMAT_RG16_UNORM:
+			return RDC::DATA_FORMAT_R16G16_UNORM;
+		case Naga::REFLECTION_IMAGE_FORMAT_RG16_SNORM:
+			return RDC::DATA_FORMAT_R16G16_SNORM;
+		case Naga::REFLECTION_IMAGE_FORMAT_RGBA16_UNORM:
+			return RDC::DATA_FORMAT_R16G16B16A16_UNORM;
+		case Naga::REFLECTION_IMAGE_FORMAT_RGBA16_SNORM:
+			return RDC::DATA_FORMAT_R16G16B16A16_SNORM;
+		case Naga::REFLECTION_IMAGE_FORMAT_NONE:
+			return RDC::DATA_FORMAT_MAX;
+	}
+	return RDC::DATA_FORMAT_MAX;
+}
+
+extern "C" {
 struct GodotNagaSpecializationReflection {
 	uint32_t kind;
 	uint32_t constant_id;
@@ -105,38 +203,50 @@ NagaShaderModule::~NagaShaderModule() {
 }
 
 String NagaShaderModule::preprocess_for_glslang(const String &p_source, String &r_error) {
+	const uint64_t start = OS::get_singleton()->get_ticks_usec();
 	CharString source = p_source.utf8();
 	char *error = nullptr;
 	char *preprocessed = godot_naga_preprocess_for_glslang(source.get_data(), &error);
 	r_error = take_naga_string(error);
-	return take_naga_string(preprocessed);
+	String result = take_naga_string(preprocessed);
+	naga_timing.fallback_usec += OS::get_singleton()->get_ticks_usec() - start;
+	return result;
 }
 
 bool NagaShaderModule::parse(RenderingDeviceCommons::ShaderStage p_stage, const String &p_source, String &r_error) {
 	ERR_FAIL_COND_V(module != nullptr, false);
+	const uint64_t start = OS::get_singleton()->get_ticks_usec();
 	CharString source = p_source.utf8();
 	char *error = nullptr;
 	module = godot_naga_parse(uint32_t(p_stage), source.get_data(), &error);
 	r_error = take_naga_string(error);
+	naga_timing.parse_usec += OS::get_singleton()->get_ticks_usec() - start;
+	naga_timing.parse_count++;
 	return module != nullptr;
 }
 
 bool NagaShaderModule::parse_spirv(RenderingDeviceCommons::ShaderStage p_stage, const Vector<uint8_t> &p_spirv, String &r_error) {
 	ERR_FAIL_COND_V(module != nullptr, false);
+	const uint64_t start = OS::get_singleton()->get_ticks_usec();
 	char *error = nullptr;
 	module = godot_naga_parse_spirv(uint32_t(p_stage), p_spirv.ptr(), p_spirv.size(), &error);
 	r_error = take_naga_string(error);
+	naga_timing.fallback_usec += OS::get_singleton()->get_ticks_usec() - start;
+	naga_timing.fallback_count++;
 	return module != nullptr;
 }
 
 bool NagaShaderModule::reflect(Reflection &r_reflection, String &r_error) const {
 	ERR_FAIL_NULL_V(module, false);
+	const uint64_t start = OS::get_singleton()->get_ticks_usec();
 	GodotNagaReflection reflection = {};
 	char *error = nullptr;
 	bool success = godot_naga_reflect(module, &reflection, &error);
 	r_error = take_naga_string(error);
 	if (!success) {
 		godot_naga_reflection_free(&reflection);
+		naga_timing.reflect_usec += OS::get_singleton()->get_ticks_usec() - start;
+		naga_timing.reflect_count++;
 		return false;
 	}
 
@@ -158,6 +268,7 @@ bool NagaShaderModule::reflect(Reflection &r_reflection, String &r_error) const 
 		target.length = source.length;
 		target.writable = source.writable;
 		target.image_dimension = ReflectionImageDimension(source.image_dimension);
+		target.image_format = naga_image_format_to_data_format(source.image_format);
 		target.image_arrayed = source.image_arrayed;
 		target.image_multisampled = source.image_multisampled;
 	}
@@ -170,11 +281,14 @@ bool NagaShaderModule::reflect(Reflection &r_reflection, String &r_error) const 
 		target.default_value = source.default_value;
 	}
 	godot_naga_reflection_free(&reflection);
+	naga_timing.reflect_usec += OS::get_singleton()->get_ticks_usec() - start;
+	naga_timing.reflect_count++;
 	return true;
 }
 
 Vector<uint8_t> NagaShaderModule::write_spirv(String &r_error) const {
 	ERR_FAIL_NULL_V(module, Vector<uint8_t>());
+	const uint64_t start = OS::get_singleton()->get_ticks_usec();
 	char *error = nullptr;
 	GodotNagaBytes bytes = godot_naga_write_spirv(module, &error);
 	r_error = take_naga_string(error);
@@ -184,11 +298,14 @@ Vector<uint8_t> NagaShaderModule::write_spirv(String &r_error) const {
 		memcpy(result.ptrw(), bytes.data, bytes.length);
 	}
 	godot_naga_bytes_free(bytes);
+	naga_timing.fallback_usec += OS::get_singleton()->get_ticks_usec() - start;
+	naga_timing.fallback_count++;
 	return result;
 }
 
 String NagaShaderModule::write_msl(uint32_t p_msl_major, uint32_t p_msl_minor, const Vector<Binding> &p_bindings, int32_t p_push_constant_buffer, String &r_entry_point, String &r_error) const {
 	ERR_FAIL_NULL_V(module, String());
+	const uint64_t start = OS::get_singleton()->get_ticks_usec();
 	Vector<GodotNagaBinding> bindings;
 	bindings.resize(p_bindings.size());
 	for (uint32_t i = 0; i < p_bindings.size(); i++) {
@@ -207,5 +324,16 @@ String NagaShaderModule::write_msl(uint32_t p_msl_major, uint32_t p_msl_minor, c
 	char *msl = godot_naga_write_msl(module, p_msl_major, p_msl_minor, bindings.ptr(), bindings.size(), p_push_constant_buffer, &entry_point, &error);
 	r_entry_point = take_naga_string(entry_point);
 	r_error = take_naga_string(error);
-	return take_naga_string(msl);
+	String result = take_naga_string(msl);
+	naga_timing.write_msl_usec += OS::get_singleton()->get_ticks_usec() - start;
+	naga_timing.write_msl_count++;
+	return result;
+}
+
+NagaShaderModule::Timing NagaShaderModule::get_timing() {
+	return naga_timing;
+}
+
+void NagaShaderModule::reset_timing() {
+	naga_timing = Timing();
 }

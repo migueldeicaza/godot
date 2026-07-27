@@ -680,6 +680,9 @@ void SceneShaderForwardMobile::init(const String p_defines) {
 		Vector<uint64_t> dynamic_buffers;
 		dynamic_buffers.push_back(ShaderRD::DynamicBuffer::encode(RenderForwardMobile::RENDER_PASS_UNIFORM_SET, 0));
 		dynamic_buffers.push_back(ShaderRD::DynamicBuffer::encode(RenderForwardMobile::RENDER_PASS_UNIFORM_SET, 1));
+		if (OS::get_singleton()->get_environment("GODOT_NAGA_BENCHMARK_UBER_VARIANTS") == "1") {
+			ShaderRD::reset_naga_benchmark_stats();
+		}
 		shader.initialize(shader_versions, p_defines, immutable_samplers, dynamic_buffers);
 
 		if (OS::get_singleton()->get_environment("GODOT_NAGA_TEST_ALL_UBER_VARIANTS") == "1") {
@@ -1025,6 +1028,7 @@ void SceneShaderForwardMobile::run_naga_exhaustive_pipeline_test() {
 	const bool original_use_fp16 = use_fp16;
 	uint32_t compiled = 0;
 	uint32_t failed = 0;
+	const uint64_t pipeline_start = OS::get_singleton()->get_ticks_usec();
 	for (uint32_t fp16 = 0; fp16 < 2; fp16++) {
 		use_fp16 = fp16;
 		for (uint32_t version = 0; version < SHADER_VERSION_MAX; version++) {
@@ -1051,8 +1055,20 @@ void SceneShaderForwardMobile::run_naga_exhaustive_pipeline_test() {
 	}
 	use_fp16 = original_use_fp16;
 
+	const uint64_t pipeline_usec = OS::get_singleton()->get_ticks_usec() - pipeline_start;
 	const ShaderRD::NagaTestCoverage coverage = ShaderRD::get_naga_test_coverage(shader.get_name());
 	print_line(vformat("Naga exhaustive coverage: Mobile direct Naga variants %d/18 (%d fallback); Metal pipelines %d/18 (%d failed).", coverage.succeeded, coverage.failed, compiled, failed));
+	if (OS::get_singleton()->get_environment("GODOT_NAGA_BENCHMARK_UBER_VARIANTS") == "1") {
+		const ShaderRD::NagaBenchmarkStats stats = shader.get_naga_benchmark_stats(default_material_shader_ptr->version);
+		const bool used_naga = stats.naga_variant_count > 0;
+		const uint64_t variant_count = used_naga ? stats.naga_variant_count : stats.legacy_variant_count;
+		const uint64_t translation_usec = used_naga ? stats.naga_source_usec : stats.legacy_glslang_usec + stats.legacy_container_usec;
+		print_line(vformat("Naga benchmark: renderer=Mobile backend=%s variants=%d translation_us=%d pipeline_us=%d naga_parse_us=%d naga_parse_stages=%d naga_reflect_us=%d naga_reflect_stages=%d naga_msl_us=%d naga_msl_stages=%d naga_fallback_us=%d naga_fallback_stages=%d glslang_us=%d legacy_container_us=%d",
+				used_naga ? "naga" : "legacy", variant_count, translation_usec, pipeline_usec,
+				stats.naga_parse_usec, stats.naga_parse_count, stats.naga_reflect_usec, stats.naga_reflect_count,
+				stats.naga_write_msl_usec, stats.naga_write_msl_count, stats.naga_fallback_usec, stats.naga_fallback_count,
+				stats.legacy_glslang_usec, stats.legacy_container_usec));
+	}
 }
 
 void SceneShaderForwardMobile::enable_fp32_shader_group() {

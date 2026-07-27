@@ -41,8 +41,14 @@
 #include "servers/rendering/shader_include_db.h"
 
 #include "modules/modules_enabled.gen.h" // For Naga.
+#ifdef MODULE_NAGA_ENABLED
+#include "modules/naga/naga_bridge.h"
+#endif
 
 #define ENABLE_SHADER_CACHE 1
+
+static Mutex naga_benchmark_mutex;
+static HashMap<uint64_t, ShaderRD::NagaBenchmarkStats> naga_benchmark_stats;
 
 #ifdef MODULE_NAGA_ENABLED
 static Mutex naga_test_coverage_mutex;
@@ -428,12 +434,16 @@ void ShaderRD::_compile_variant(uint32_t p_variant, CompileData p_data) {
 
 	Vector<String> variant_stage_sources = _build_variant_stage_sources(variant, p_data);
 	Vector<RD::ShaderStageSPIRVData> variant_stages;
+	const String variant_define = String::utf8(variant_defines[variant].text.get_data());
+	const bool benchmark_ubershader = OS::get_singleton()->get_environment("GODOT_NAGA_BENCHMARK_UBER_VARIANTS") == "1" &&
+			(name == "SceneForwardClusteredShaderRD" || name == "SceneForwardMobileShaderRD") &&
+			variant_define.contains("UBERSHADER");
 
 #ifdef MODULE_NAGA_ENABLED
 	const bool use_naga = OS::get_singleton()->get_current_rendering_driver_name() == "metal" &&
 			use_naga_metal_ubershaders() &&
 			(name == "SceneForwardClusteredShaderRD" || name == "SceneForwardMobileShaderRD") &&
-			(String::utf8(variant_defines[variant].text.get_data()).contains("UBERSHADER") || OS::get_singleton()->get_environment("GODOT_NAGA_TEST_ALL_FORWARD_VARIANTS") == "1");
+			(variant_define.contains("UBERSHADER") || OS::get_singleton()->get_environment("GODOT_NAGA_TEST_ALL_FORWARD_VARIANTS") == "1");
 	if (use_naga) {
 		Vector<RD::ShaderStageSourceData> source_stages;
 		for (uint32_t i = 0; i < variant_stage_sources.size(); i++) {
@@ -447,7 +457,26 @@ void ShaderRD::_compile_variant(uint32_t p_variant, CompileData p_data) {
 			source_stages.push_back(stage);
 		}
 		String naga_error;
+		if (benchmark_ubershader) {
+			NagaShaderModule::reset_timing();
+		}
+		const uint64_t start = benchmark_ubershader ? OS::get_singleton()->get_ticks_usec() : 0;
 		Vector<uint8_t> shader_data = RD::get_singleton()->shader_compile_binary_from_source(source_stages, name + ":" + itos(variant), &naga_error);
+		if (benchmark_ubershader) {
+			const NagaShaderModule::Timing timing = NagaShaderModule::get_timing();
+			MutexLock lock(naga_benchmark_mutex);
+			NagaBenchmarkStats &stats = naga_benchmark_stats[reinterpret_cast<uintptr_t>(p_data.version)];
+			stats.naga_source_usec += OS::get_singleton()->get_ticks_usec() - start;
+			stats.naga_variant_count++;
+			stats.naga_parse_usec += timing.parse_usec;
+			stats.naga_parse_count += timing.parse_count;
+			stats.naga_reflect_usec += timing.reflect_usec;
+			stats.naga_reflect_count += timing.reflect_count;
+			stats.naga_write_msl_usec += timing.write_msl_usec;
+			stats.naga_write_msl_count += timing.write_msl_count;
+			stats.naga_fallback_usec += timing.fallback_usec;
+			stats.naga_fallback_count += timing.fallback_count;
+		}
 		if (!shader_data.is_empty()) {
 			if (OS::get_singleton()->get_environment("GODOT_NAGA_TEST_ALL_UBER_VARIANTS") == "1") {
 				MutexLock lock(naga_test_coverage_mutex);
@@ -470,11 +499,23 @@ void ShaderRD::_compile_variant(uint32_t p_variant, CompileData p_data) {
 #endif
 
 	if (variant_stages.is_empty()) {
+		const uint64_t start = benchmark_ubershader ? OS::get_singleton()->get_ticks_usec() : 0;
 		variant_stages = compile_stages(variant_stage_sources, dynamic_buffers);
+		if (benchmark_ubershader) {
+			MutexLock lock(naga_benchmark_mutex);
+			NagaBenchmarkStats &stats = naga_benchmark_stats[reinterpret_cast<uintptr_t>(p_data.version)];
+			stats.legacy_glslang_usec += OS::get_singleton()->get_ticks_usec() - start;
+			stats.legacy_variant_count++;
+		}
 	}
 	ERR_FAIL_COND(variant_stages.is_empty());
 
+	const uint64_t container_start = benchmark_ubershader ? OS::get_singleton()->get_ticks_usec() : 0;
 	Vector<uint8_t> shader_data = RD::get_singleton()->shader_compile_binary_from_spirv(variant_stages, name + ":" + itos(variant));
+	if (benchmark_ubershader) {
+		MutexLock lock(naga_benchmark_mutex);
+		naga_benchmark_stats[reinterpret_cast<uintptr_t>(p_data.version)].legacy_container_usec += OS::get_singleton()->get_ticks_usec() - container_start;
+	}
 	ERR_FAIL_COND(shader_data.is_empty());
 
 	{
@@ -1039,6 +1080,29 @@ ShaderRD::NagaTestCoverage ShaderRD::get_naga_test_coverage(const String &p_shad
 	}
 #endif
 	return coverage;
+}
+
+ShaderRD::NagaBenchmarkStats ShaderRD::get_naga_benchmark_stats(RID p_version) {
+	NagaBenchmarkStats stats;
+	Version *version = version_owner.get_or_null(p_version);
+	ERR_FAIL_NULL_V(version, stats);
+	{
+		MutexLock lock(naga_benchmark_mutex);
+		if (const NagaBenchmarkStats *stored = naga_benchmark_stats.getptr(reinterpret_cast<uintptr_t>(version))) {
+			stats = *stored;
+		}
+	}
+	return stats;
+}
+
+void ShaderRD::reset_naga_benchmark_stats() {
+	{
+		MutexLock lock(naga_benchmark_mutex);
+		naga_benchmark_stats.clear();
+	}
+#ifdef MODULE_NAGA_ENABLED
+	NagaShaderModule::reset_timing();
+#endif
 }
 
 bool ShaderRD::shader_cache_cleanup_on_start = false;

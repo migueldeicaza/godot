@@ -52,6 +52,11 @@
 #include <spirv_msl.hpp>
 #include <spirv_parser.hpp>
 
+static String naga_benchmark_nonce_comment() {
+	const String nonce = OS::get_singleton()->get_environment("GODOT_NAGA_BENCHMARK_NONCE");
+	return nonce.is_empty() ? String() : "\n// GODOT_NAGA_BENCHMARK_NONCE_" + itos(nonce.hash()) + "\n";
+}
+
 void RenderingShaderContainerMetal::_initialize_toolchain_properties() {
 	if (compiler_props.is_valid()) {
 		return;
@@ -701,6 +706,7 @@ bool RenderingShaderContainerMetal::_set_code_from_reflection(const ReflectShade
 				}
 				return false;
 			}
+			msl_source += naga_benchmark_nonce_comment();
 
 			CharString source_utf8 = msl_source.utf8();
 			std::string source(source_utf8.get_data(), source_utf8.length());
@@ -773,6 +779,8 @@ bool RenderingShaderContainerMetal::_set_code_from_reflection(const ReflectShade
 		} catch (CompilerError &e) {
 			ERR_FAIL_V_MSG(false, "Failed to compile stage " + String(RDC::SHADER_STAGE_NAMES[stage]) + ": " + e.what());
 		}
+		const CharString benchmark_nonce = naga_benchmark_nonce_comment().utf8();
+		source.append(benchmark_nonce.get_data(), benchmark_nonce.length());
 
 		ERR_FAIL_COND_V_MSG(compiler.get_entry_points_and_stages().size() != 1, false, "Expected a single entry point and stage.");
 
@@ -865,6 +873,9 @@ bool RenderingShaderContainerMetal::_set_code_from_source(const String &p_shader
 				}
 			}
 #endif
+			if (transformed_parsed) {
+				print_verbose(vformat("Naga used its GLSLang-to-SPIR-V parser fallback for %s stage %d:\n%s", p_shader_name, p_source[i].shader_stage, error));
+			}
 			String spirv_error;
 			if (!transformed_parsed && (reflection_spirv.is_empty() || !module->parse_spirv(p_source[i].shader_stage, reflection_spirv, spirv_error))) {
 				memdelete(module);
@@ -968,6 +979,7 @@ bool RenderingShaderContainerMetal::_set_code_from_source(const String &p_shader
 			uniform.binding = source.binding;
 			uniform.length = source.length;
 			uniform.writable = source.writable;
+			uniform.image.format = source.image_format;
 			uniform.stages.set_flag(stage_flag);
 			uniform.image.arrayed = source.image_arrayed;
 			uniform.image.multisampled = source.image_multisampled;
@@ -1001,7 +1013,7 @@ bool RenderingShaderContainerMetal::_set_code_from_source(const String &p_shader
 				}
 			}
 			if (existing != nullptr) {
-				if (existing->type != uniform.type || existing->length != uniform.length || existing->writable != uniform.writable || existing->image.dimension != uniform.image.dimension || existing->image.arrayed != uniform.image.arrayed || existing->image.multisampled != uniform.image.multisampled) {
+				if (existing->type != uniform.type || existing->length != uniform.length || existing->writable != uniform.writable || existing->image.format != uniform.image.format || existing->image.dimension != uniform.image.dimension || existing->image.arrayed != uniform.image.arrayed || existing->image.multisampled != uniform.image.multisampled) {
 					direct_reflection_error = vformat("Naga reflected incompatible declarations at set %d, binding %d.", source.group, source.binding);
 					success = false;
 					break;

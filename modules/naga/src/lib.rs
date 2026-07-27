@@ -943,6 +943,7 @@ pub struct GodotNagaUniformReflection {
     length: u32,
     writable: u32,
     image_dimension: u32,
+    image_format: u32,
     image_arrayed: u32,
     image_multisampled: u32,
 }
@@ -988,6 +989,7 @@ impl Default for GodotNagaReflection {
 
 const REFLECTION_UNIFORM_SAMPLER: u32 = 0;
 const REFLECTION_UNIFORM_TEXTURE: u32 = 1;
+const REFLECTION_UNIFORM_IMAGE: u32 = 2;
 const REFLECTION_UNIFORM_UNIFORM_BUFFER: u32 = 3;
 const REFLECTION_UNIFORM_STORAGE_BUFFER: u32 = 4;
 
@@ -1029,6 +1031,53 @@ fn reflection_image_dimension(dim: naga::ImageDimension) -> u32 {
         naga::ImageDimension::D2 => REFLECTION_IMAGE_DIMENSION_2D,
         naga::ImageDimension::D3 => REFLECTION_IMAGE_DIMENSION_3D,
         naga::ImageDimension::Cube => REFLECTION_IMAGE_DIMENSION_CUBE,
+    }
+}
+
+// These values are the C ABI shared with NagaShaderModule::ReflectionImageFormat.
+fn reflection_storage_format(format: naga::StorageFormat) -> u32 {
+    match format {
+        naga::StorageFormat::R8Unorm => 1,
+        naga::StorageFormat::R8Snorm => 2,
+        naga::StorageFormat::R8Uint => 3,
+        naga::StorageFormat::R8Sint => 4,
+        naga::StorageFormat::R16Uint => 5,
+        naga::StorageFormat::R16Sint => 6,
+        naga::StorageFormat::R16Float => 7,
+        naga::StorageFormat::Rg8Unorm => 8,
+        naga::StorageFormat::Rg8Snorm => 9,
+        naga::StorageFormat::Rg8Uint => 10,
+        naga::StorageFormat::Rg8Sint => 11,
+        naga::StorageFormat::R32Uint => 12,
+        naga::StorageFormat::R32Sint => 13,
+        naga::StorageFormat::R32Float => 14,
+        naga::StorageFormat::Rg16Uint => 15,
+        naga::StorageFormat::Rg16Sint => 16,
+        naga::StorageFormat::Rg16Float => 17,
+        naga::StorageFormat::Rgba8Unorm => 18,
+        naga::StorageFormat::Rgba8Snorm => 19,
+        naga::StorageFormat::Rgba8Uint => 20,
+        naga::StorageFormat::Rgba8Sint => 21,
+        naga::StorageFormat::Bgra8Unorm => 22,
+        naga::StorageFormat::Rgb10a2Uint => 23,
+        naga::StorageFormat::Rgb10a2Unorm => 24,
+        naga::StorageFormat::Rg11b10Ufloat => 25,
+        naga::StorageFormat::R64Uint => 26,
+        naga::StorageFormat::Rg32Uint => 27,
+        naga::StorageFormat::Rg32Sint => 28,
+        naga::StorageFormat::Rg32Float => 29,
+        naga::StorageFormat::Rgba16Uint => 30,
+        naga::StorageFormat::Rgba16Sint => 31,
+        naga::StorageFormat::Rgba16Float => 32,
+        naga::StorageFormat::Rgba32Uint => 33,
+        naga::StorageFormat::Rgba32Sint => 34,
+        naga::StorageFormat::Rgba32Float => 35,
+        naga::StorageFormat::R16Unorm => 36,
+        naga::StorageFormat::R16Snorm => 37,
+        naga::StorageFormat::Rg16Unorm => 38,
+        naga::StorageFormat::Rg16Snorm => 39,
+        naga::StorageFormat::Rgba16Unorm => 40,
+        naga::StorageFormat::Rgba16Snorm => 41,
     }
 }
 
@@ -1151,6 +1200,7 @@ fn reflect_shader(shader: &ParsedShader) -> Result<GodotNagaReflection, String> 
             length: 0,
             writable: 0,
             image_dimension: REFLECTION_IMAGE_DIMENSION_NONE,
+            image_format: 0,
             image_arrayed: 0,
             image_multisampled: 0,
         };
@@ -1182,11 +1232,12 @@ fn reflect_shader(shader: &ParsedShader) -> Result<GodotNagaReflection, String> 
                     class,
                 } => {
                     uniform.kind = match class {
-                        naga::ImageClass::Storage { .. } => {
-                            return Err(
-                                "Naga direct reflection does not yet map storage image formats"
-                                    .to_owned(),
-                            )
+                        naga::ImageClass::Storage { format, access } => {
+                            uniform.image_format = reflection_storage_format(format);
+                            uniform.writable = u32::from(access.intersects(
+                                naga::StorageAccess::STORE | naga::StorageAccess::ATOMIC,
+                            ));
+                            REFLECTION_UNIFORM_IMAGE
                         }
                         naga::ImageClass::External => {
                             return Err(
@@ -2163,6 +2214,15 @@ void main() {
                 "{}",
                 CStr::from_ptr(error).to_string_lossy()
             );
+
+            let mut reflection = GodotNagaReflection::default();
+            assert_ne!(godot_naga_reflect(shader, &mut reflection, &mut error), 0);
+            let uniforms = slice::from_raw_parts(reflection.uniforms, reflection.uniform_count);
+            assert_eq!(uniforms.len(), 1);
+            assert_eq!(uniforms[0].kind, REFLECTION_UNIFORM_IMAGE);
+            assert_eq!(uniforms[0].image_format, 12);
+            assert_eq!(uniforms[0].writable, 1);
+            godot_naga_reflection_free(&mut reflection);
 
             let binding = GodotNagaBinding {
                 group: 0,

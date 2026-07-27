@@ -740,6 +740,9 @@ void SceneShaderForwardClustered::init(const String p_defines) {
 
 		Vector<uint64_t> dynamic_buffers;
 		dynamic_buffers.push_back(ShaderRD::DynamicBuffer::encode(RenderForwardClustered::RENDER_PASS_UNIFORM_SET, 2));
+		if (OS::get_singleton()->get_environment("GODOT_NAGA_BENCHMARK_UBER_VARIANTS") == "1") {
+			ShaderRD::reset_naga_benchmark_stats();
+		}
 		shader.initialize(shader_versions, p_defines, Vector<RD::PipelineImmutableSampler>(), dynamic_buffers);
 
 		if (OS::get_singleton()->get_environment("GODOT_NAGA_TEST_ALL_UBER_VARIANTS") == "1") {
@@ -1086,6 +1089,7 @@ void SceneShaderForwardClustered::run_naga_exhaustive_pipeline_test() {
 
 	uint32_t compiled = 0;
 	uint32_t failed = 0;
+	const uint64_t pipeline_start = OS::get_singleton()->get_ticks_usec();
 	auto compile_pipeline = [&](PipelineVersion p_version, uint32_t p_color_pass_flags, uint32_t p_output_mask, bool p_uint_location_one, bool p_multiview) {
 		ShaderData::PipelineKey key;
 		key.vertex_format_id = vertex_format;
@@ -1145,8 +1149,20 @@ void SceneShaderForwardClustered::run_naga_exhaustive_pipeline_test() {
 	}
 
 	default_material_shader_ptr->pipeline_hash_map.clear_pipelines();
+	const uint64_t pipeline_usec = OS::get_singleton()->get_ticks_usec() - pipeline_start;
 	const ShaderRD::NagaTestCoverage coverage = ShaderRD::get_naga_test_coverage(shader.get_name());
 	print_line(vformat("Naga exhaustive coverage: Forward+ direct Naga variants %d/25 (%d fallback); Metal pipelines %d/25 (%d failed).", coverage.succeeded, coverage.failed, compiled, failed));
+	if (OS::get_singleton()->get_environment("GODOT_NAGA_BENCHMARK_UBER_VARIANTS") == "1") {
+		const ShaderRD::NagaBenchmarkStats stats = shader.get_naga_benchmark_stats(default_material_shader_ptr->version);
+		const bool used_naga = stats.naga_variant_count > 0;
+		const uint64_t variant_count = used_naga ? stats.naga_variant_count : stats.legacy_variant_count;
+		const uint64_t translation_usec = used_naga ? stats.naga_source_usec : stats.legacy_glslang_usec + stats.legacy_container_usec;
+		print_line(vformat("Naga benchmark: renderer=Forward+ backend=%s variants=%d translation_us=%d pipeline_us=%d naga_parse_us=%d naga_parse_stages=%d naga_reflect_us=%d naga_reflect_stages=%d naga_msl_us=%d naga_msl_stages=%d naga_fallback_us=%d naga_fallback_stages=%d glslang_us=%d legacy_container_us=%d",
+				used_naga ? "naga" : "legacy", variant_count, translation_usec, pipeline_usec,
+				stats.naga_parse_usec, stats.naga_parse_count, stats.naga_reflect_usec, stats.naga_reflect_count,
+				stats.naga_write_msl_usec, stats.naga_write_msl_count, stats.naga_fallback_usec, stats.naga_fallback_count,
+				stats.legacy_glslang_usec, stats.legacy_container_usec));
+	}
 }
 
 void SceneShaderForwardClustered::enable_multiview_shader_group() {

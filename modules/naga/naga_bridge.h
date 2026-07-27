@@ -37,6 +37,17 @@ class NagaShaderModule {
 	void *module = nullptr;
 
 public:
+	struct Timing {
+		uint64_t parse_usec = 0;
+		uint64_t parse_count = 0;
+		uint64_t reflect_usec = 0;
+		uint64_t reflect_count = 0;
+		uint64_t write_msl_usec = 0;
+		uint64_t write_msl_count = 0;
+		uint64_t fallback_usec = 0;
+		uint64_t fallback_count = 0;
+	};
+
 	struct Binding {
 		uint32_t group = 0;
 		uint32_t binding = 0;
@@ -62,6 +73,51 @@ public:
 		REFLECTION_IMAGE_DIMENSION_CUBE,
 	};
 
+	enum ReflectionImageFormat : uint32_t {
+		REFLECTION_IMAGE_FORMAT_NONE,
+		REFLECTION_IMAGE_FORMAT_R8_UNORM,
+		REFLECTION_IMAGE_FORMAT_R8_SNORM,
+		REFLECTION_IMAGE_FORMAT_R8_UINT,
+		REFLECTION_IMAGE_FORMAT_R8_SINT,
+		REFLECTION_IMAGE_FORMAT_R16_UINT,
+		REFLECTION_IMAGE_FORMAT_R16_SINT,
+		REFLECTION_IMAGE_FORMAT_R16_FLOAT,
+		REFLECTION_IMAGE_FORMAT_RG8_UNORM,
+		REFLECTION_IMAGE_FORMAT_RG8_SNORM,
+		REFLECTION_IMAGE_FORMAT_RG8_UINT,
+		REFLECTION_IMAGE_FORMAT_RG8_SINT,
+		REFLECTION_IMAGE_FORMAT_R32_UINT,
+		REFLECTION_IMAGE_FORMAT_R32_SINT,
+		REFLECTION_IMAGE_FORMAT_R32_FLOAT,
+		REFLECTION_IMAGE_FORMAT_RG16_UINT,
+		REFLECTION_IMAGE_FORMAT_RG16_SINT,
+		REFLECTION_IMAGE_FORMAT_RG16_FLOAT,
+		REFLECTION_IMAGE_FORMAT_RGBA8_UNORM,
+		REFLECTION_IMAGE_FORMAT_RGBA8_SNORM,
+		REFLECTION_IMAGE_FORMAT_RGBA8_UINT,
+		REFLECTION_IMAGE_FORMAT_RGBA8_SINT,
+		REFLECTION_IMAGE_FORMAT_BGRA8_UNORM,
+		REFLECTION_IMAGE_FORMAT_RGB10A2_UINT,
+		REFLECTION_IMAGE_FORMAT_RGB10A2_UNORM,
+		REFLECTION_IMAGE_FORMAT_RG11B10_UFLOAT,
+		REFLECTION_IMAGE_FORMAT_R64_UINT,
+		REFLECTION_IMAGE_FORMAT_RG32_UINT,
+		REFLECTION_IMAGE_FORMAT_RG32_SINT,
+		REFLECTION_IMAGE_FORMAT_RG32_FLOAT,
+		REFLECTION_IMAGE_FORMAT_RGBA16_UINT,
+		REFLECTION_IMAGE_FORMAT_RGBA16_SINT,
+		REFLECTION_IMAGE_FORMAT_RGBA16_FLOAT,
+		REFLECTION_IMAGE_FORMAT_RGBA32_UINT,
+		REFLECTION_IMAGE_FORMAT_RGBA32_SINT,
+		REFLECTION_IMAGE_FORMAT_RGBA32_FLOAT,
+		REFLECTION_IMAGE_FORMAT_R16_UNORM,
+		REFLECTION_IMAGE_FORMAT_R16_SNORM,
+		REFLECTION_IMAGE_FORMAT_RG16_UNORM,
+		REFLECTION_IMAGE_FORMAT_RG16_SNORM,
+		REFLECTION_IMAGE_FORMAT_RGBA16_UNORM,
+		REFLECTION_IMAGE_FORMAT_RGBA16_SNORM,
+	};
+
 	enum ReflectionSpecializationKind : uint32_t {
 		REFLECTION_SPECIALIZATION_BOOL,
 		REFLECTION_SPECIALIZATION_INT,
@@ -75,6 +131,7 @@ public:
 		uint32_t length = 0;
 		bool writable = false;
 		ReflectionImageDimension image_dimension = REFLECTION_IMAGE_DIMENSION_NONE;
+		RenderingDeviceCommons::DataFormat image_format = RenderingDeviceCommons::DATA_FORMAT_MAX;
 		bool image_arrayed = false;
 		bool image_multisampled = false;
 	};
@@ -103,6 +160,8 @@ public:
 	NagaShaderModule &operator=(const NagaShaderModule &) = delete;
 
 	static String preprocess_for_glslang(const String &p_source, String &r_error);
+	static Timing get_timing();
+	static void reset_timing();
 	bool parse(RenderingDeviceCommons::ShaderStage p_stage, const String &p_source, String &r_error);
 	bool parse_spirv(RenderingDeviceCommons::ShaderStage p_stage, const Vector<uint8_t> &p_spirv, String &r_error);
 	bool reflect(Reflection &r_reflection, String &r_error) const;
