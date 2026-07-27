@@ -1134,8 +1134,8 @@ bool RenderingShaderContainerMetal::_set_code_from_source(const String &p_shader
 	}
 	reflection.specialization_constants.sort();
 	if (success) {
-		// Naga represents the two legacy LTC combined samplers as separate texture
-		// and sampler resources. Merge their synthetic reflection bindings back into
+		// Naga represents GLSL combined samplers as separate texture and sampler
+		// resources. Merge their synthetic reflection bindings back into
 		// Godot's original combined binding before assigning Metal slots.
 		constexpr uint32_t NAGA_SYNTHETIC_SAMPLER_BINDING_OFFSET = 1000;
 		for (ReflectDescriptorSet &set : reflection.uniform_sets) {

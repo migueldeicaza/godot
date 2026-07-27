@@ -31,15 +31,69 @@ The bridge applies Godot's Vulkan-to-Metal vertex-Y convention before parsing an
 strips desktop-GLSL precision qualifiers that Naga does not accept in structure
 members. It preserves Godot's specialization constants as Metal function constants,
 lowers matrix inverse operations using Naga's own WGSL inverse formulas, and splits
-the LTC combined samplers used by the color Uber Shader. It uses flat Metal resource
-slots. For successful direct translations, Godot reflects descriptor layouts, stage
-interfaces, push constants, and specialization defaults directly from Naga IR. The
+GLSL combined samplers into Naga's separate texture and sampler resources. It uses
+flat Metal resource slots. For successful direct translations, Godot reflects
+descriptor layouts, stage interfaces, push constants, and specialization defaults
+directly from Naga IR. The
 direct path therefore performs no SPIR-V serialization and invokes neither GLSLang,
 SPIRV-Reflect, nor SPIRV-Cross. This includes storage-image formats and atomic access.
 A Naga-generated SPIR-V reflection view remains as a compatibility fallback for IR
 resource types outside the tested built-in shader surface. GLSLang also remains
 available as a transformed SPIR-V fallback for GLSL constructs Naga cannot yet parse;
 successful output is never passed through SPIRV-Cross.
+
+## Direct IR reflection
+
+The direct path reflects the validated Naga IR rather than querying Metal or
+reflecting the generated MSL. For each shader stage, `ShaderRD` passes GLSL source to
+the Metal shader container, which parses and validates it into a `naga::Module` and
+its associated `ModuleInfo`. The bridge's `reflect_shader()` function then walks
+those structures and returns a small C-compatible reflection record to Godot:
+
+```text
+Godot GLSL -> Naga Module + ModuleInfo -> direct reflection -> Godot ReflectShader
+                                      \-> Naga MSL writer -> Metal source
+```
+
+The IR walker reflects:
+
+- descriptor set and binding numbers;
+- samplers, sampled textures, storage images, uniform buffers, and storage buffers;
+- fixed resource-array lengths, image dimensions and formats, multisampling, and
+  read/write or atomic access;
+- uniform-buffer and push-constant sizes using Naga's `Layouter`;
+- vertex input and fragment output location masks, including structure members;
+- multiview use through the `ViewIndex` built-in;
+- compute workgroup sizes; and
+- specialization constant IDs, scalar types, and literal default values retained by
+  the GLSL preprocessing step.
+
+Reflection deliberately includes every declared bound global so Godot sees a stable
+uniform-set layout across shader variants. Naga's validated entry-point usage is
+recorded separately for each resource. Godot consequently keeps two stage masks:
+the public `stages` mask describes where a resource is declared, while
+`backend_stages` describes where the selected Naga entry point actually emits it.
+The Metal backend uses `backend_stages` when assigning flat texture, sampler, and
+buffer slots, allowing slots to be reused between non-overlapping shader stages. The
+direct binder uses the same mask so a reused slot is written only to the vertex,
+fragment, or compute stage that owns it.
+
+The C++ side merges the per-stage records into Godot's backend-neutral
+`ReflectShader`, rejects incompatible declarations shared by multiple stages, sorts
+descriptor bindings and specialization constants, and serializes the result through
+the normal shader-container format. Combined samplers that are split into separate
+Naga texture and sampler globals are merged back into Godot's original
+combined-sampler bindings before Metal slots are assigned. Dynamic-buffer status is
+supplied by the existing `ShaderRD` sideband because it is a Godot binding policy,
+not part of Naga's type information.
+
+There are two independent compatibility fallbacks. If Naga's GLSL frontend cannot
+parse a supported source transformation, GLSLang may produce transformed SPIR-V that
+is parsed back into Naga IR. If direct IR reflection encounters an unsupported Naga
+resource type, the module is serialized to temporary SPIR-V and Godot's existing
+SPIRV-Reflect path builds the same `ReflectShader`. In the latter case SPIR-V is used
+only for metadata; successful MSL generation still goes through Naga and never
+through SPIRV-Cross.
 
 The exhaustive Metal smoke matrix compiles all 43 unique built-in Uber variants
 directly through Naga: 25 Forward+ and 18 Mobile (including both Mobile FP32 and
