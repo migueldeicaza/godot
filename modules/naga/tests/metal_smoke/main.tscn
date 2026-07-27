@@ -1,14 +1,97 @@
-[gd_scene load_steps=2 format=3]
+[gd_scene load_steps=12 format=3]
 
-[sub_resource type="BoxMesh" id="BoxMesh_smoke"]
+[ext_resource type="Script" path="res://capture.gd" id="1_capture"]
 
-[node name="NagaMetalSmoke" type="Node3D"]
+[sub_resource type="Environment" id="Environment_capture"]
+background_mode = 1
+background_color = Color(0.025, 0.04, 0.07, 1)
+ambient_light_source = 2
+ambient_light_color = Color(0.31, 0.39, 0.56, 1)
+ambient_light_energy = 0.7
+reflected_light_source = 1
+tonemap_mode = 1
+
+[sub_resource type="StandardMaterial3D" id="Material_floor"]
+albedo_color = Color(0.12, 0.14, 0.18, 1)
+metallic = 0.15
+roughness = 0.74
+
+[sub_resource type="PlaneMesh" id="Mesh_floor"]
+material = SubResource("Material_floor")
+size = Vector2(11, 8)
+
+[sub_resource type="StandardMaterial3D" id="Material_red"]
+albedo_color = Color(0.72, 0.055, 0.035, 1)
+metallic = 0.1
+roughness = 0.31
+
+[sub_resource type="SphereMesh" id="Mesh_sphere"]
+material = SubResource("Material_red")
+radius = 0.82
+height = 1.64
+radial_segments = 32
+rings = 16
+
+[sub_resource type="StandardMaterial3D" id="Material_metal"]
+albedo_color = Color(0.15, 0.42, 0.78, 1)
+metallic = 0.86
+roughness = 0.18
+
+[sub_resource type="BoxMesh" id="Mesh_box"]
+material = SubResource("Material_metal")
+size = Vector3(1.35, 1.35, 1.35)
+
+[sub_resource type="Shader" id="Shader_pattern"]
+code = "shader_type spatial;\nrender_mode diffuse_burley, specular_schlick_ggx;\n\nvoid vertex() {\n\tVERTEX.y += sin(VERTEX.x * 5.0 + VERTEX.z * 3.0) * 0.08;\n}\n\nvoid fragment() {\n\tvec2 cell = floor(UV * 10.0);\n\tfloat checker = mod(cell.x + cell.y, 2.0);\n\tALBEDO = mix(vec3(0.035, 0.32, 0.13), vec3(0.58, 0.78, 0.08), checker);\n\tROUGHNESS = mix(0.22, 0.68, checker);\n\tMETALLIC = 0.28;\n\tEMISSION = vec3(0.015, 0.05, 0.01) * (1.0 - checker);\n}\n"
+
+[sub_resource type="ShaderMaterial" id="Material_pattern"]
+render_priority = 0
+shader = SubResource("Shader_pattern")
+
+[sub_resource type="CylinderMesh" id="Mesh_cylinder"]
+material = SubResource("Material_pattern")
+top_radius = 0.7
+bottom_radius = 0.92
+height = 1.75
+radial_segments = 32
+rings = 4
+
+[node name="NagaMetalCapture" type="Node3D"]
+script = ExtResource("1_capture")
+
+[node name="WorldEnvironment" type="WorldEnvironment" parent="."]
+environment = SubResource("Environment_capture")
 
 [node name="Camera3D" type="Camera3D" parent="."]
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 3)
+transform = Transform3D(1, 0, 0, 0, 0.984808, 0.173648, 0, -0.173648, 0.984808, 0, 2.45, 7.4)
+fov = 46.0
 
-[node name="MeshInstance3D" type="MeshInstance3D" parent="."]
-mesh = SubResource("BoxMesh_smoke")
+[node name="Floor" type="MeshInstance3D" parent="."]
+mesh = SubResource("Mesh_floor")
 
-[node name="DirectionalLight3D" type="DirectionalLight3D" parent="."]
-rotation_degrees = Vector3(-45, -30, 0)
+[node name="Sphere" type="MeshInstance3D" parent="."]
+position = Vector3(-1.75, 0.84, 0)
+mesh = SubResource("Mesh_sphere")
+
+[node name="Box" type="MeshInstance3D" parent="."]
+position = Vector3(0, 0.78, -0.25)
+rotation_degrees = Vector3(0, 24, 0)
+mesh = SubResource("Mesh_box")
+
+[node name="Cylinder" type="MeshInstance3D" parent="."]
+position = Vector3(1.72, 0.88, 0.2)
+rotation_degrees = Vector3(0, -17, 0)
+mesh = SubResource("Mesh_cylinder")
+
+[node name="KeyLight" type="DirectionalLight3D" parent="."]
+rotation_degrees = Vector3(-48, -32, 0)
+light_color = Color(1, 0.87, 0.72, 1)
+light_energy = 2.2
+shadow_enabled = true
+
+[node name="FillLight" type="OmniLight3D" parent="."]
+position = Vector3(2.5, 2.8, 3.2)
+light_color = Color(0.28, 0.52, 1, 1)
+light_energy = 7.0
+omni_range = 7.0
+shadow_enabled = true

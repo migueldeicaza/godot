@@ -67,6 +67,27 @@ parity, as expected. Set `GODOT_NAGA_BENCHMARK_UBER_VARIANTS=1` alongside the
 exhaustive-test variables to print parse/validation, reflection, MSL, GLSLang,
 SPIRV-Cross/container, and pipeline timings for an individual run.
 
+## Render equivalence
+
+`tests/compare_metal_rendering.py` renders a fixed PBR scene through forced Uber
+pipelines using the legacy and direct-Naga Metal paths. It captures raw RGBA8 pixels,
+requires a Naga compilation marker with no fallback, and compares maximum, mean, and
+RMS channel error. It runs both Forward+ and Mobile by default:
+
+```sh
+python3 modules/naga/tests/compare_metal_rendering.py
+```
+
+Forward+ is bit-for-bit identical on the reference M3 Ultra. Mobile has a stable
+mean channel difference of 0.01/255 and RMS difference of 0.114/255, localized to
+shadow and triangle edges; the largest observed channel difference is 7/255 across
+9 channel values. The default tolerance admits this compiler-level floating-point
+variation while rejecting broader or visibly meaningful divergence. PNG captures,
+logs, raw pixels, and an amplified difference image are retained in the printed
+temporary output directory. `GODOT_NAGA_FORCE_UBERSHADERS=1` is the test-only switch
+used by the harness to prevent specialized pipelines from replacing the code under
+test.
+
 Naga 29.0.3 is vendored under `modules/naga/vendor/naga` because the tested Godot
 shader surface needs small GLSL frontend and MSL binding-array fixes not yet present
 upstream. `vendor/naga/GODOT_PATCHES.md` records their scope.

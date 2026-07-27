@@ -2556,7 +2556,7 @@ void RenderForwardMobile::_render_list_template(RenderingDevice::DrawListID p_dr
 		pipeline_key.framebuffer_format_id = framebuffer_format;
 		pipeline_key.wireframe = p_params->force_wireframe;
 		pipeline_key.render_pass = p_params->subpass;
-		pipeline_key.ubershader = 0;
+		pipeline_key.ubershader = force_ubershaders ? 1 : 0;
 
 		bool emulate_point_size = shader->uses_point_size && scene_shader.emulate_point_size;
 
@@ -2598,7 +2598,7 @@ void RenderForwardMobile::_render_list_template(RenderingDevice::DrawListID p_dr
 					prev_pipeline_hash = pipeline_hash;
 					break;
 				} else {
-					if (pipeline_key.ubershader == 1) {
+					if (pipeline_key.ubershader == 1 && !force_ubershaders) {
 						// If ubershader failed to compile, retry specialized shader and wait for it to finish compilation.
 						// This prevents pop-in at the cost of shader compilation stutters.
 						pipeline_key.ubershader = 0;
@@ -3559,8 +3559,11 @@ RenderForwardMobile::RenderForwardMobile() {
 	singleton = this;
 
 	disable_ubershaders = RD::get_singleton()->get_driver_workarounds().disable_ubershaders;
+	force_ubershaders = !disable_ubershaders && OS::get_singleton()->get_environment("GODOT_NAGA_FORCE_UBERSHADERS") == "1";
 	if (disable_ubershaders) {
 		print_verbose("Ubershaders: Disabled");
+	} else if (force_ubershaders) {
+		print_verbose("Ubershaders: Forced by GODOT_NAGA_FORCE_UBERSHADERS");
 	} else {
 		print_verbose("Ubershaders: Enabled");
 	}

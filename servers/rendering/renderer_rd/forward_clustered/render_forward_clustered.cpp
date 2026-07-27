@@ -486,7 +486,7 @@ void RenderForwardClustered::_render_list_template(RenderingDevice::DrawListID p
 
 		pipeline_key.framebuffer_format_id = framebuffer_format;
 		pipeline_key.wireframe = p_params->force_wireframe;
-		pipeline_key.ubershader = 0;
+		pipeline_key.ubershader = force_ubershaders ? 1 : 0;
 
 		bool emulate_point_size = shader->uses_point_size && scene_shader.emulate_point_size;
 
@@ -5103,6 +5103,10 @@ void RenderForwardClustered::_update_shader_quality_settings() {
 
 RenderForwardClustered::RenderForwardClustered() {
 	singleton = this;
+	force_ubershaders = OS::get_singleton()->get_environment("GODOT_NAGA_FORCE_UBERSHADERS") == "1";
+	if (force_ubershaders) {
+		print_verbose("Ubershaders: Forced by GODOT_NAGA_FORCE_UBERSHADERS");
+	}
 
 	/* SCENE SHADER */
 

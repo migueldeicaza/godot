@@ -5,11 +5,13 @@ run/main_scene="res://main.tscn"
 
 [display]
 
-window/size/viewport_width=64
-window/size/viewport_height=64
-window/size/window_width_override=64
-window/size/window_height_override=64
+window/size/viewport_width=320
+window/size/viewport_height=240
+window/size/window_width_override=320
+window/size/window_height_override=240
 
 [rendering]
 
 shader_compiler/shader_cache/enabled=false
+renderer/rendering_method="gl_compatibility"
+renderer/rendering_method.mobile="gl_compatibility"

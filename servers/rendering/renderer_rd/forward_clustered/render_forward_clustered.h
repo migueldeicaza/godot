@@ -86,6 +86,7 @@ class RenderForwardClustered : public RendererSceneRenderRD {
 	/* Scene Shader */
 
 	SceneShaderForwardClustered scene_shader;
+	bool force_ubershaders = false;
 
 public:
 	/* Framebuffer */
