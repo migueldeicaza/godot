@@ -130,6 +130,7 @@ public:
 		ReflectionUniformKind kind = REFLECTION_UNIFORM_SAMPLER;
 		uint32_t length = 0;
 		bool writable = false;
+		bool active = false;
 		ReflectionImageDimension image_dimension = REFLECTION_IMAGE_DIMENSION_NONE;
 		RenderingDeviceCommons::DataFormat image_format = RenderingDeviceCommons::DATA_FORMAT_MAX;
 		bool image_arrayed = false;

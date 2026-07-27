@@ -73,6 +73,25 @@ static bool use_naga_metal_forward_shaders() {
 static bool use_naga_metal_ubershaders() {
 	return use_naga_metal_forward_shaders() || bool(GLOBAL_GET("rendering/shader_compiler/metal/use_naga_for_ubershaders")) || OS::get_singleton()->get_environment("GODOT_NAGA_UBERSHADERS") == "1";
 }
+
+static String naga_metal_shader_cache_suffix() {
+	if (OS::get_singleton()->get_current_rendering_driver_name() != "metal") {
+		return String();
+	}
+	if (use_naga_metal_all_shader_rd()) {
+		return ".naga-all";
+	}
+	if (use_naga_metal_builtin_shaders()) {
+		return ".naga-builtin";
+	}
+	if (use_naga_metal_forward_shaders()) {
+		return ".naga-forward";
+	}
+	if (use_naga_metal_ubershaders()) {
+		return ".naga-uber";
+	}
+	return String();
+}
 #endif
 
 void ShaderRD::_add_stage(const char *p_code, StageType p_stage_type) {
@@ -752,7 +771,11 @@ static const uint32_t cache_file_version = 4;
 
 String ShaderRD::_get_cache_file_relative_path(Version *p_version, int p_group, const String &p_api_name) {
 	String sha1 = _version_get_sha1(p_version);
-	return name.path_join(group_sha256[p_group]).path_join(sha1) + "." + p_api_name + ".cache";
+	String compiler_suffix;
+#ifdef MODULE_NAGA_ENABLED
+	compiler_suffix = naga_metal_shader_cache_suffix();
+#endif
+	return name.path_join(group_sha256[p_group]).path_join(sha1) + "." + p_api_name + compiler_suffix + ".cache";
 }
 
 String ShaderRD::_get_cache_file_path(Version *p_version, int p_group, const String &p_api_name, bool p_user_dir) {

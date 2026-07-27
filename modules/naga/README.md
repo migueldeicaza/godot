@@ -84,7 +84,11 @@ SPIRV-Cross/container, and pipeline timings for an individual run.
 `tests/benchmark_project_corpus.py` benchmarks the shader variants actually loaded by
 one or more projects. Each run uses an isolated copy-on-write clone, disables its
 shader cache, alternates direct Naga and legacy compilation, and rejects any Naga
-fallback or mixed-compiler result. The source projects are never modified.
+fallback, mixed-compiler result, Metal library failure, or failed rendering pipeline.
+The source projects are never modified.
+
+Metal ShaderRD caches are namespaced by Naga routing mode, preventing legacy,
+direct-Naga, and diagnostic configurations from loading one another's containers.
 
 ```sh
 python3 modules/naga/tests/benchmark_project_corpus.py --iterations 3 \

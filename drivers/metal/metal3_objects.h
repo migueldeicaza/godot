@@ -241,22 +241,34 @@ public:
 	}
 };
 
+struct StageBindingCache {
+	BindingCache vertex;
+	BindingCache fragment;
+	BindingCache compute;
+
+	_FORCE_INLINE_ void clear() {
+		vertex.clear();
+		fragment.clear();
+		compute.clear();
+	}
+};
+
 // A type used to encode resources directly to a MTLCommandEncoder
 struct DirectEncoder {
 	MTL::CommandEncoder *encoder;
-	BindingCache &cache;
+	StageBindingCache &cache;
 	enum Mode {
 		RENDER,
 		COMPUTE
 	};
 	Mode mode;
 
-	void set(MTL::Buffer **p_buffers, const NS::UInteger *p_offsets, NS::Range p_range);
-	void set(MTL::Buffer *p_buffer, NS::UInteger p_offset, uint32_t p_index);
-	void set(MTL::Texture **p_textures, NS::Range p_range);
-	void set(MTL::SamplerState **p_samplers, NS::Range p_range);
+	void set(MTL::Buffer **p_buffers, const NS::UInteger *p_offsets, NS::Range p_range, BitField<RDD::ShaderStage> p_stages);
+	void set(MTL::Buffer *p_buffer, NS::UInteger p_offset, uint32_t p_index, BitField<RDD::ShaderStage> p_stages);
+	void set(MTL::Texture **p_textures, NS::Range p_range, BitField<RDD::ShaderStage> p_stages);
+	void set(MTL::SamplerState **p_samplers, NS::Range p_range, BitField<RDD::ShaderStage> p_stages);
 
-	DirectEncoder(MTL::CommandEncoder *p_encoder, BindingCache &p_cache, Mode p_mode) :
+	DirectEncoder(MTL::CommandEncoder *p_encoder, StageBindingCache &p_cache, Mode p_mode) :
 			encoder(p_encoder), cache(p_cache), mode(p_mode) {}
 };
 
@@ -266,7 +278,7 @@ class API_AVAILABLE(macos(11.0), ios(14.0), tvos(14.0)) MDCommandBuffer : public
 private:
 #pragma mark - Common State
 
-	BindingCache binding_cache;
+	StageBindingCache binding_cache;
 
 #pragma mark - Argument Buffer Ring Allocator
 

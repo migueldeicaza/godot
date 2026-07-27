@@ -186,6 +186,10 @@ protected:
 
 		uint32_t length = 0; // Size of arrays (in total elements), or ubos (in bytes * total elements).
 		bool writable = false;
+		// Stages where a direct-source backend actually emits this resource. The
+		// public reflection keeps the complete declared stage layout for uniform-set
+		// compatibility across shader variants.
+		BitField<RDC::ShaderStage> backend_stages = {};
 
 		bool operator<(const ReflectUniform &p_other) const {
 			if (binding != p_other.binding) {

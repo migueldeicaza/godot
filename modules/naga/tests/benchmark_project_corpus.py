@@ -28,6 +28,13 @@ VALIDATED_BUILTIN_FAMILIES = {
     "SkeletonShaderRD",
     "SkyShaderRD",
 }
+METAL_FAILURE_MARKERS = (
+    "error: 'sampler' attribute parameter is out of bounds",
+    "ERROR: Failed to compile Metal library",
+    "ERROR: Error compiling shader",
+    'Condition "pipeline.is_null()" is true',
+    "ERROR: Uniforms supplied for set",
+)
 
 
 @dataclass(frozen=True)
@@ -150,6 +157,12 @@ def run_once(
         if result.returncode != 0:
             raise RuntimeError(
                 f"Godot {source_project.name} {method}/{backend} failed; see {log_path}\n{result.stdout[-4000:]}"
+            )
+        metal_failures = [marker for marker in METAL_FAILURE_MARKERS if marker in result.stdout]
+        if metal_failures:
+            raise RuntimeError(
+                f"Godot {source_project.name} {method}/{backend} reported Metal shader or pipeline failures "
+                f"({', '.join(metal_failures)}); see {log_path}"
             )
 
         fields = [parse_fields(match.group("fields")) for match in TIMING_PATTERNS[scope].finditer(result.stdout)]

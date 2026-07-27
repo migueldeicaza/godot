@@ -468,6 +468,41 @@ bool RenderingShaderContainerMetal::_set_code_from_reflection(const ReflectShade
 			indices[p_t] += p_stride;
 			return v;
 		};
+		LocalVector<uint32_t> naga_slot_stages[IndexType::Max];
+		auto next_slot_index = [&next_index, &naga_slot_stages, p_naga_modules](IndexType p_t, uint32_t p_stride, BitField<RDC::ShaderStage> p_stages) -> uint32_t {
+			if (p_naga_modules == nullptr) {
+				return next_index(p_t, p_stride);
+			}
+
+			// Naga currently emits direct Metal resource arguments. Their indices only
+			// need to be unique within a shader stage, so reuse slots for bindings whose
+			// stage masks do not overlap. This avoids exhausting Metal's 16 direct
+			// sampler slots when vertex-only resources precede fragment-only resources.
+			LocalVector<uint32_t> &slot_stages = naga_slot_stages[p_t];
+			const uint32_t stages = uint32_t(p_stages);
+			uint32_t slot = 0;
+			while (true) {
+				bool available = true;
+				for (uint32_t i = 0; i < p_stride; i++) {
+					if (slot + i < slot_stages.size() && (slot_stages[slot + i] & stages) != 0) {
+						slot += i + 1;
+						available = false;
+						break;
+					}
+				}
+				if (available) {
+					break;
+				}
+			}
+
+			if (slot_stages.size() < slot + p_stride) {
+				slot_stages.resize(slot + p_stride);
+			}
+			for (uint32_t i = 0; i < p_stride; i++) {
+				slot_stages[slot + i] |= stages;
+			}
+			return slot;
+		};
 
 		uint32_t idx_dset = 0;
 		MSLBindingInfo *iter = spirv_bindings.ptr();
@@ -486,7 +521,7 @@ bool RenderingShaderContainerMetal::_set_code_from_reflection(const ReflectShade
 			for (const ReflectUniform &uniform : dset) {
 				const SpvReflectDescriptorBinding *binding = p_naga_modules == nullptr ? &uniform.get_spv_reflect() : nullptr;
 
-				found->active_stages = uniform.stages;
+				found->active_stages = p_naga_modules != nullptr ? uniform.backend_stages : uniform.stages;
 
 				RDC::UniformType type = RDC::UniformType(uniform.type);
 				uint32_t binding_stride = 1; // If this is an array, stride will be the length of the array.
@@ -557,7 +592,7 @@ bool RenderingShaderContainerMetal::_set_code_from_reflection(const ReflectShade
 				switch (type) {
 					case RDC::UNIFORM_TYPE_SAMPLER: {
 						found->data_type = MTL::DataTypeSampler;
-						found->get_indexes(UniformData::IndexType::SLOT).sampler = next_index(Sampler, binding_stride);
+						found->get_indexes(UniformData::IndexType::SLOT).sampler = next_slot_index(Sampler, binding_stride, uniform.backend_stages);
 						found->get_indexes(UniformData::IndexType::ARG).sampler = next_arg_index(binding_stride);
 
 						rb.basetype = SPIRType::BaseType::Sampler;
@@ -566,8 +601,8 @@ bool RenderingShaderContainerMetal::_set_code_from_reflection(const ReflectShade
 					case RDC::UNIFORM_TYPE_SAMPLER_WITH_TEXTURE:
 					case RDC::UNIFORM_TYPE_SAMPLER_WITH_TEXTURE_BUFFER: {
 						found->data_type = MTL::DataTypeTexture;
-						found->get_indexes(UniformData::IndexType::SLOT).texture = next_index(Texture, binding_stride);
-						found->get_indexes(UniformData::IndexType::SLOT).sampler = next_index(Sampler, binding_stride);
+						found->get_indexes(UniformData::IndexType::SLOT).texture = next_slot_index(Texture, binding_stride, uniform.backend_stages);
+						found->get_indexes(UniformData::IndexType::SLOT).sampler = next_slot_index(Sampler, binding_stride, uniform.backend_stages);
 						found->get_indexes(UniformData::IndexType::ARG).texture = next_arg_index(binding_stride);
 						found->get_indexes(UniformData::IndexType::ARG).sampler = next_arg_index(binding_stride);
 						rb.basetype = SPIRType::BaseType::SampledImage;
@@ -576,7 +611,7 @@ bool RenderingShaderContainerMetal::_set_code_from_reflection(const ReflectShade
 					case RDC::UNIFORM_TYPE_IMAGE:
 					case RDC::UNIFORM_TYPE_TEXTURE_BUFFER: {
 						found->data_type = MTL::DataTypeTexture;
-						found->get_indexes(UniformData::IndexType::SLOT).texture = next_index(Texture, binding_stride);
+						found->get_indexes(UniformData::IndexType::SLOT).texture = next_slot_index(Texture, binding_stride, uniform.backend_stages);
 						found->get_indexes(UniformData::IndexType::ARG).texture = next_arg_index(binding_stride);
 						rb.basetype = SPIRType::BaseType::Image;
 					} break;
@@ -588,13 +623,13 @@ bool RenderingShaderContainerMetal::_set_code_from_reflection(const ReflectShade
 					case RDC::UNIFORM_TYPE_UNIFORM_BUFFER:
 					case RDC::UNIFORM_TYPE_STORAGE_BUFFER: {
 						found->data_type = MTL::DataTypePointer;
-						found->get_indexes(UniformData::IndexType::SLOT).buffer = next_index(Buffer, binding_stride);
+						found->get_indexes(UniformData::IndexType::SLOT).buffer = next_slot_index(Buffer, binding_stride, uniform.backend_stages);
 						found->get_indexes(UniformData::IndexType::ARG).buffer = next_arg_index(binding_stride);
 						rb.basetype = SPIRType::BaseType::Void;
 					} break;
 					case RDC::UNIFORM_TYPE_INPUT_ATTACHMENT: {
 						found->data_type = MTL::DataTypeTexture;
-						found->get_indexes(UniformData::IndexType::SLOT).texture = next_index(Texture, binding_stride);
+						found->get_indexes(UniformData::IndexType::SLOT).texture = next_slot_index(Texture, binding_stride, uniform.backend_stages);
 						found->get_indexes(UniformData::IndexType::ARG).texture = next_arg_index(binding_stride);
 						rb.basetype = SPIRType::BaseType::Image;
 					} break;
@@ -681,7 +716,7 @@ bool RenderingShaderContainerMetal::_set_code_from_reflection(const ReflectShade
 			if (msl_options.argument_buffers) {
 				push_constant_resource_binding.msl_buffer = dset_count;
 			} else {
-				push_constant_resource_binding.msl_buffer = next_index(Buffer, 1);
+				push_constant_resource_binding.msl_buffer = next_slot_index(Buffer, 1, p_shader.push_constant_stages);
 			}
 			mtl_reflection_data.push_constant_binding = push_constant_resource_binding.msl_buffer;
 		}
@@ -981,6 +1016,9 @@ bool RenderingShaderContainerMetal::_set_code_from_source(const String &p_shader
 			uniform.writable = source.writable;
 			uniform.image.format = source.image_format;
 			uniform.stages.set_flag(stage_flag);
+			if (source.active) {
+				uniform.backend_stages.set_flag(stage_flag);
+			}
 			uniform.image.arrayed = source.image_arrayed;
 			uniform.image.multisampled = source.image_multisampled;
 			switch (source.image_dimension) {
@@ -1019,6 +1057,9 @@ bool RenderingShaderContainerMetal::_set_code_from_source(const String &p_shader
 					break;
 				}
 				existing->stages.set_flag(stage_flag);
+				if (source.active) {
+					existing->backend_stages.set_flag(stage_flag);
+				}
 			} else {
 				set.push_back(uniform);
 			}
@@ -1122,6 +1163,7 @@ bool RenderingShaderContainerMetal::_set_code_from_source(const String &p_shader
 
 				texture->type = RDC::UNIFORM_TYPE_SAMPLER_WITH_TEXTURE;
 				texture->stages.set_flag(sampler.stages);
+				texture->backend_stages.set_flag(sampler.backend_stages);
 				set.remove_at(sampler_index - 1);
 			}
 			if (!success) {

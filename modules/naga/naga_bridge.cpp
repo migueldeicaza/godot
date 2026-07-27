@@ -56,6 +56,7 @@ struct GodotNagaUniformReflection {
 	uint32_t kind;
 	uint32_t length;
 	uint32_t writable;
+	uint32_t active;
 	uint32_t image_dimension;
 	uint32_t image_format;
 	uint32_t image_arrayed;
@@ -267,6 +268,7 @@ bool NagaShaderModule::reflect(Reflection &r_reflection, String &r_error) const 
 		target.kind = ReflectionUniformKind(source.kind);
 		target.length = source.length;
 		target.writable = source.writable;
+		target.active = source.active;
 		target.image_dimension = ReflectionImageDimension(source.image_dimension);
 		target.image_format = naga_image_format_to_data_format(source.image_format);
 		target.image_arrayed = source.image_arrayed;

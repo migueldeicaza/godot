@@ -1542,67 +1542,83 @@ MDRenderShader::MDRenderShader(CharString p_name,
 		fragment_entry_point(p_fragment_entry_point) {
 }
 
-void DirectEncoder::set(MTL::Texture **p_textures, NS::Range p_range) {
-	if (cache.update(p_range, p_textures)) {
-		switch (mode) {
-			case RENDER: {
-				MTL::RenderCommandEncoder *enc = static_cast<MTL::RenderCommandEncoder *>(encoder);
+void DirectEncoder::set(MTL::Texture **p_textures, NS::Range p_range, BitField<RDD::ShaderStage> p_stages) {
+	switch (mode) {
+		case RENDER: {
+			MTL::RenderCommandEncoder *enc = static_cast<MTL::RenderCommandEncoder *>(encoder);
+			if (p_stages.has_flag(RDD::SHADER_STAGE_VERTEX_BIT) && cache.vertex.update(p_range, p_textures)) {
 				enc->setVertexTextures(p_textures, p_range);
+			}
+			if (p_stages.has_flag(RDD::SHADER_STAGE_FRAGMENT_BIT) && cache.fragment.update(p_range, p_textures)) {
 				enc->setFragmentTextures(p_textures, p_range);
-			} break;
-			case COMPUTE: {
+			}
+		} break;
+		case COMPUTE: {
+			if (p_stages.has_flag(RDD::SHADER_STAGE_COMPUTE_BIT) && cache.compute.update(p_range, p_textures)) {
 				MTL::ComputeCommandEncoder *enc = static_cast<MTL::ComputeCommandEncoder *>(encoder);
 				enc->setTextures(p_textures, p_range);
-			} break;
-		}
+			}
+		} break;
 	}
 }
 
-void DirectEncoder::set(MTL::Buffer **p_buffers, const NS::UInteger *p_offsets, NS::Range p_range) {
-	if (cache.update(p_range, p_buffers, p_offsets)) {
-		switch (mode) {
-			case RENDER: {
-				MTL::RenderCommandEncoder *enc = static_cast<MTL::RenderCommandEncoder *>(encoder);
+void DirectEncoder::set(MTL::Buffer **p_buffers, const NS::UInteger *p_offsets, NS::Range p_range, BitField<RDD::ShaderStage> p_stages) {
+	switch (mode) {
+		case RENDER: {
+			MTL::RenderCommandEncoder *enc = static_cast<MTL::RenderCommandEncoder *>(encoder);
+			if (p_stages.has_flag(RDD::SHADER_STAGE_VERTEX_BIT) && cache.vertex.update(p_range, p_buffers, p_offsets)) {
 				enc->setVertexBuffers(p_buffers, p_offsets, p_range);
+			}
+			if (p_stages.has_flag(RDD::SHADER_STAGE_FRAGMENT_BIT) && cache.fragment.update(p_range, p_buffers, p_offsets)) {
 				enc->setFragmentBuffers(p_buffers, p_offsets, p_range);
-			} break;
-			case COMPUTE: {
+			}
+		} break;
+		case COMPUTE: {
+			if (p_stages.has_flag(RDD::SHADER_STAGE_COMPUTE_BIT) && cache.compute.update(p_range, p_buffers, p_offsets)) {
 				MTL::ComputeCommandEncoder *enc = static_cast<MTL::ComputeCommandEncoder *>(encoder);
 				enc->setBuffers(p_buffers, p_offsets, p_range);
-			} break;
-		}
+			}
+		} break;
 	}
 }
 
-void DirectEncoder::set(MTL::Buffer *p_buffer, NS::UInteger p_offset, uint32_t p_index) {
-	if (cache.update(p_buffer, p_offset, p_index)) {
-		switch (mode) {
-			case RENDER: {
-				MTL::RenderCommandEncoder *enc = static_cast<MTL::RenderCommandEncoder *>(encoder);
+void DirectEncoder::set(MTL::Buffer *p_buffer, NS::UInteger p_offset, uint32_t p_index, BitField<RDD::ShaderStage> p_stages) {
+	switch (mode) {
+		case RENDER: {
+			MTL::RenderCommandEncoder *enc = static_cast<MTL::RenderCommandEncoder *>(encoder);
+			if (p_stages.has_flag(RDD::SHADER_STAGE_VERTEX_BIT) && cache.vertex.update(p_buffer, p_offset, p_index)) {
 				enc->setVertexBuffer(p_buffer, p_offset, p_index);
+			}
+			if (p_stages.has_flag(RDD::SHADER_STAGE_FRAGMENT_BIT) && cache.fragment.update(p_buffer, p_offset, p_index)) {
 				enc->setFragmentBuffer(p_buffer, p_offset, p_index);
-			} break;
-			case COMPUTE: {
+			}
+		} break;
+		case COMPUTE: {
+			if (p_stages.has_flag(RDD::SHADER_STAGE_COMPUTE_BIT) && cache.compute.update(p_buffer, p_offset, p_index)) {
 				MTL::ComputeCommandEncoder *enc = static_cast<MTL::ComputeCommandEncoder *>(encoder);
 				enc->setBuffer(p_buffer, p_offset, p_index);
-			} break;
-		}
+			}
+		} break;
 	}
 }
 
-void DirectEncoder::set(MTL::SamplerState **p_samplers, NS::Range p_range) {
-	if (cache.update(p_range, p_samplers)) {
-		switch (mode) {
-			case RENDER: {
-				MTL::RenderCommandEncoder *enc = static_cast<MTL::RenderCommandEncoder *>(encoder);
+void DirectEncoder::set(MTL::SamplerState **p_samplers, NS::Range p_range, BitField<RDD::ShaderStage> p_stages) {
+	switch (mode) {
+		case RENDER: {
+			MTL::RenderCommandEncoder *enc = static_cast<MTL::RenderCommandEncoder *>(encoder);
+			if (p_stages.has_flag(RDD::SHADER_STAGE_VERTEX_BIT) && cache.vertex.update(p_range, p_samplers)) {
 				enc->setVertexSamplerStates(p_samplers, p_range);
+			}
+			if (p_stages.has_flag(RDD::SHADER_STAGE_FRAGMENT_BIT) && cache.fragment.update(p_range, p_samplers)) {
 				enc->setFragmentSamplerStates(p_samplers, p_range);
-			} break;
-			case COMPUTE: {
+			}
+		} break;
+		case COMPUTE: {
+			if (p_stages.has_flag(RDD::SHADER_STAGE_COMPUTE_BIT) && cache.compute.update(p_range, p_samplers)) {
 				MTL::ComputeCommandEncoder *enc = static_cast<MTL::ComputeCommandEncoder *>(encoder);
 				enc->setSamplerStates(p_samplers, p_range);
-			} break;
-		}
+			}
+		} break;
 	}
 }
 
@@ -1682,7 +1698,7 @@ void MDCommandBuffer::_bind_uniforms_direct(MDUniformSet *p_set, MDShader *p_sha
 					objects[j] = rid::get<MTL::SamplerState>(uniform.ids[j]);
 				}
 				NS::Range sampler_range = { indexes.sampler, count };
-				p_enc.set(objects, sampler_range);
+				p_enc.set(objects, sampler_range, ui.active_stages);
 			} break;
 			case RDD::UNIFORM_TYPE_SAMPLER_WITH_TEXTURE: {
 				size_t count = uniform.ids.size() / 2;
@@ -1694,8 +1710,8 @@ void MDCommandBuffer::_bind_uniforms_direct(MDUniformSet *p_set, MDShader *p_sha
 				}
 				NS::Range sampler_range = { indexes.sampler, count };
 				NS::Range texture_range = { indexes.texture, count };
-				p_enc.set(samplers, sampler_range);
-				p_enc.set(textures, texture_range);
+				p_enc.set(samplers, sampler_range, ui.active_stages);
+				p_enc.set(textures, texture_range, ui.active_stages);
 			} break;
 			case RDD::UNIFORM_TYPE_TEXTURE: {
 				size_t count = uniform.ids.size();
@@ -1704,7 +1720,7 @@ void MDCommandBuffer::_bind_uniforms_direct(MDUniformSet *p_set, MDShader *p_sha
 					objects[j] = rid::get<MTL::Texture>(uniform.ids[j]);
 				}
 				NS::Range texture_range = { indexes.texture, count };
-				p_enc.set(objects, texture_range);
+				p_enc.set(objects, texture_range, ui.active_stages);
 			} break;
 			case RDD::UNIFORM_TYPE_IMAGE: {
 				size_t count = uniform.ids.size();
@@ -1713,7 +1729,7 @@ void MDCommandBuffer::_bind_uniforms_direct(MDUniformSet *p_set, MDShader *p_sha
 					objects[j] = rid::get<MTL::Texture>(uniform.ids[j]);
 				}
 				NS::Range texture_range = { indexes.texture, count };
-				p_enc.set(objects, texture_range);
+				p_enc.set(objects, texture_range, ui.active_stages);
 
 				if (indexes.buffer != UINT32_MAX) {
 					// Emulated atomic image access.
@@ -1726,7 +1742,7 @@ void MDCommandBuffer::_bind_uniforms_direct(MDUniformSet *p_set, MDShader *p_sha
 					NS::UInteger *offs = ALLOCA_ARRAY(NS::UInteger, count);
 					bzero(offs, sizeof(NS::UInteger) * count);
 					NS::Range buffer_range = { indexes.buffer, count };
-					p_enc.set(bufs, offs, buffer_range);
+					p_enc.set(bufs, offs, buffer_range, ui.active_stages);
 				}
 			} break;
 			case RDD::UNIFORM_TYPE_TEXTURE_BUFFER: {
@@ -1741,12 +1757,12 @@ void MDCommandBuffer::_bind_uniforms_direct(MDUniformSet *p_set, MDShader *p_sha
 			case RDD::UNIFORM_TYPE_UNIFORM_BUFFER:
 			case RDD::UNIFORM_TYPE_STORAGE_BUFFER: {
 				const RDM::BufferInfo *buf_info = (const RDM::BufferInfo *)uniform.ids[0].id;
-				p_enc.set(buf_info->metal_buffer.get(), 0, indexes.buffer);
+				p_enc.set(buf_info->metal_buffer.get(), 0, indexes.buffer, ui.active_stages);
 			} break;
 			case RDD::UNIFORM_TYPE_UNIFORM_BUFFER_DYNAMIC:
 			case RDD::UNIFORM_TYPE_STORAGE_BUFFER_DYNAMIC: {
 				const MetalBufferDynamicInfo *buf_info = (const MetalBufferDynamicInfo *)uniform.ids[0].id;
-				p_enc.set(buf_info->metal_buffer.get(), frame_idx * buf_info->size_bytes, indexes.buffer);
+				p_enc.set(buf_info->metal_buffer.get(), frame_idx * buf_info->size_bytes, indexes.buffer, ui.active_stages);
 			} break;
 			case RDD::UNIFORM_TYPE_INPUT_ATTACHMENT: {
 				size_t count = uniform.ids.size();
@@ -1755,7 +1771,7 @@ void MDCommandBuffer::_bind_uniforms_direct(MDUniformSet *p_set, MDShader *p_sha
 					objects[j] = rid::get<MTL::Texture>(uniform.ids[j]);
 				}
 				NS::Range texture_range = { indexes.texture, count };
-				p_enc.set(objects, texture_range);
+				p_enc.set(objects, texture_range, ui.active_stages);
 			} break;
 			default: {
 				DEV_ASSERT(false);

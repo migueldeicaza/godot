@@ -1148,6 +1148,7 @@ pub struct GodotNagaUniformReflection {
     kind: u32,
     length: u32,
     writable: u32,
+    active: u32,
     image_dimension: u32,
     image_format: u32,
     image_arrayed: u32,
@@ -1373,11 +1374,13 @@ fn specialization_default(
 
 fn reflect_shader(shader: &ParsedShader) -> Result<GodotNagaReflection, String> {
     let module = &shader.module;
-    let entry_point = module
+    let (entry_point_index, entry_point) = module
         .entry_points
         .iter()
-        .find(|entry| entry.stage == shader.stage && entry.name == "main")
+        .enumerate()
+        .find(|(_, entry)| entry.stage == shader.stage && entry.name == "main")
         .ok_or_else(|| "Naga reflection could not find the main entry point".to_owned())?;
+    let entry_point_info = shader.info.get_entry_point(entry_point_index);
     let mut layouter = naga::proc::Layouter::default();
     layouter
         .update(naga::proc::GlobalCtx {
@@ -1390,7 +1393,7 @@ fn reflect_shader(shader: &ParsedShader) -> Result<GodotNagaReflection, String> 
 
     let mut uniforms = Vec::new();
     let mut push_constant_size = 0;
-    for (_, variable) in module.global_variables.iter() {
+    for (handle, variable) in module.global_variables.iter() {
         if variable.space == naga::AddressSpace::Immediate {
             push_constant_size = layouter[variable.ty].size;
         }
@@ -1405,6 +1408,7 @@ fn reflect_shader(shader: &ParsedShader) -> Result<GodotNagaReflection, String> 
             kind: u32::MAX,
             length: 0,
             writable: 0,
+            active: u32::from(!entry_point_info[handle].is_empty()),
             image_dimension: REFLECTION_IMAGE_DIMENSION_NONE,
             image_format: 0,
             image_arrayed: 0,
@@ -2111,6 +2115,8 @@ void main() {
         const FRAGMENT: &str = r#"#version 450
 layout(location = 0) out vec4 color;
 layout(set = 0, binding = 18) uniform sampler2D ltc_lut1;
+layout(set = 0, binding = 19) uniform texture2D unused_lut_texture;
+layout(set = 0, binding = 1019) uniform sampler unused_lut_sampler;
 void ltc_evaluate_specular(sampler2D ltc_lut1, out vec4 result) {
     result = texture(ltc_lut1, vec2(0.5));
 }
@@ -2135,11 +2141,25 @@ void main() {
                 uniform.group == 0
                     && uniform.binding == 18
                     && uniform.kind == REFLECTION_UNIFORM_TEXTURE
+                    && uniform.active != 0
             }));
             assert!(uniforms.iter().any(|uniform| {
                 uniform.group == 0
                     && uniform.binding == 1018
                     && uniform.kind == REFLECTION_UNIFORM_SAMPLER
+                    && uniform.active != 0
+            }));
+            assert!(uniforms.iter().any(|uniform| {
+                uniform.group == 0
+                    && uniform.binding == 19
+                    && uniform.kind == REFLECTION_UNIFORM_TEXTURE
+                    && uniform.active == 0
+            }));
+            assert!(uniforms.iter().any(|uniform| {
+                uniform.group == 0
+                    && uniform.binding == 1019
+                    && uniform.kind == REFLECTION_UNIFORM_SAMPLER
+                    && uniform.active == 0
             }));
             godot_naga_reflection_free(&mut reflection);
 
