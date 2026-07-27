@@ -384,6 +384,7 @@ public:
 	bool is_multiview_shader_group_enabled() const;
 	bool is_advanced_shader_group_enabled(bool p_multiview) const;
 	uint32_t get_pipeline_compilations(RSE::PipelineSource p_source);
+	void run_naga_exhaustive_pipeline_test();
 };
 
 } // namespace RendererSceneRenderImplementation

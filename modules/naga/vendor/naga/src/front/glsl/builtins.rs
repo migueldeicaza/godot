@@ -466,6 +466,34 @@ pub fn inject_builtin(
             // Don't generate shadow nor multisampled images since they aren't supported
             texture_args_generator(variations.into(), f)
         }
+        "imageAtomicOr" => {
+            let f = |kind: Sk, dim, arrayed, _, _| {
+                if kind == Sk::Float || dim == Dim::Cube {
+                    return;
+                }
+
+                let image = TypeInner::Image {
+                    dim,
+                    arrayed,
+                    class: ImageClass::Storage {
+                        format: kind.dummy_storage_format(),
+                        access: crate::StorageAccess::LOAD | crate::StorageAccess::STORE,
+                    },
+                };
+                let coordinates =
+                    make_coords_arg(image_dims_to_coords_size(dim) + arrayed as usize, Sk::Sint);
+                let args = vec![image, coordinates, TypeInner::Scalar(Scalar { kind, width: 4 })];
+
+                let mut overload = module.add_builtin(
+                    args,
+                    MacroCall::ImageAtomic(crate::AtomicFunction::InclusiveOr),
+                );
+                overload.void = true;
+                declaration.overloads.push(overload)
+            };
+
+            texture_args_generator(variations.into(), f)
+        }
         _ => {}
     }
 }
@@ -1664,6 +1692,7 @@ pub enum MacroCall {
         multi: bool,
     },
     ImageStore,
+    ImageAtomic(crate::AtomicFunction),
     MathFunction(MathFunction),
     FindLsbUint,
     FindMsbUint,
@@ -1954,6 +1983,57 @@ impl MacroCall {
                         image: args[0],
                         coordinate: comps.coordinate,
                         array_index: comps.array_index,
+                        value: args[2],
+                    },
+                    meta,
+                );
+                return Ok(None);
+            }
+            MacroCall::ImageAtomic(fun) => {
+                let comps =
+                    frontend.coordinate_components(ctx, args[0], args[1], None, None, meta)?;
+                let image_ty = match ctx[args[0]] {
+                    Expression::GlobalVariable(handle) => {
+                        &mut ctx.module.global_variables.get_mut(handle).ty
+                    }
+                    Expression::FunctionArgument(index) => &mut ctx.arguments[index as usize].ty,
+                    _ => {
+                        return Err(Error {
+                            kind: ErrorKind::SemanticError(
+                                "Not a valid storage image expression".into(),
+                            ),
+                            meta,
+                        })
+                    }
+                };
+                if let TypeInner::Image {
+                    dim,
+                    arrayed,
+                    class: ImageClass::Storage { format, access },
+                } = ctx.module.types[*image_ty].inner
+                {
+                    *image_ty = ctx.module.types.insert(
+                        Type {
+                            name: None,
+                            inner: TypeInner::Image {
+                                dim,
+                                arrayed,
+                                class: ImageClass::Storage {
+                                    format,
+                                    access: access | crate::StorageAccess::ATOMIC,
+                                },
+                            },
+                        },
+                        meta,
+                    );
+                }
+                ctx.emit_restart();
+                ctx.body.push(
+                    crate::Statement::ImageAtomic {
+                        image: args[0],
+                        coordinate: comps.coordinate,
+                        array_index: comps.array_index,
+                        fun,
                         value: args[2],
                     },
                     meta,

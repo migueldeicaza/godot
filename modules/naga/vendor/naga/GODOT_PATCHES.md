@@ -24,3 +24,14 @@ dynamically indexed lightmap texture arrays. The MSL backend emits fixed-size
 binding arrays as direct `metal::array` texture or sampler arguments, matching
 Godot's existing flat Metal resource slots; runtime-sized binding arrays retain
 Naga's argument-buffer representation.
+
+Godot's multiview variants use `gl_ViewIndex`, which the local GLSL frontend maps
+to Naga's existing `ViewIndex` built-in. The SDFGI variant uses `imageAtomicOr` on
+an `r32ui` storage image; the frontend lowers it to Naga's image-atomic statement
+and marks the image type with atomic access.
+
+The MSL backend wraps tightly packed three-component structure members in their
+ordinary Metal vector type before bitcasts. This preserves the source vector's
+logical size when Naga rewrites signed integer arithmetic through unsigned
+operations, avoiding invalid `as_type` conversions between `packed_int3` and
+`uint3`.

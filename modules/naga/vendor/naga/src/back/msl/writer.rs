@@ -839,6 +839,7 @@ impl<'a> ExpressionContext<'a> {
 
     fn get_packed_vec_kind(&self, expr_handle: Handle<crate::Expression>) -> Option<crate::Scalar> {
         match self.function.expressions[expr_handle] {
+            crate::Expression::Load { pointer } => self.get_packed_vec_kind(pointer),
             crate::Expression::AccessIndex { base, index } => {
                 let ty = match *self.resolve_type(base) {
                     crate::TypeInner::Pointer { base, .. } => &self.module.types[base].inner,
@@ -2291,7 +2292,12 @@ impl<W: Write> Writer<W> {
                                         &to_unsigned(context.resolve_type(expr))?,
                                         context,
                                         &|writer, context, is_scoped| {
-                                            writer.put_expression(expr, context, is_scoped)
+                                            writer.put_wrapped_expression_for_packed_vec3_access(
+                                                expr,
+                                                context,
+                                                is_scoped,
+                                                &Self::put_expression,
+                                            )
                                         },
                                     )
                                 },
@@ -2809,7 +2815,12 @@ impl<W: Write> Writer<W> {
                             _ => put_numeric_type(&mut self.out, target_scalar, &[])?,
                         };
                         write!(self.out, ">(")?;
-                        self.put_expression(expr, context, true)?;
+                        self.put_wrapped_expression_for_packed_vec3_access(
+                            expr,
+                            context,
+                            true,
+                            &Self::put_expression,
+                        )?;
                         write!(self.out, ")")?;
                     }
                 }

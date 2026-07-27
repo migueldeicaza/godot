@@ -15,6 +15,8 @@ At runtime, enable `rendering/shader_compiler/metal/use_naga_for_ubershaders` in
 project settings. Translation failures automatically use the existing compiler path.
 For one-off testing and benchmarks, `GODOT_NAGA_UBERSHADERS=1` enables the same path
 without changing a project file.
+`GODOT_NAGA_TEST_ALL_UBER_VARIANTS=1` enables every Forward+ or Mobile shader
+group and creates a real Metal render pipeline for every built-in Uber variant.
 `GODOT_NAGA_TEST_ALL_FORWARD_VARIANTS=1` additionally routes non-Uber forward
 variants through Naga, which is useful only for exercising the fallback boundary.
 
@@ -32,23 +34,29 @@ surface. GLSLang also remains available as a transformed SPIR-V fallback for GLS
 constructs Naga cannot yet parse; successful output is never passed through
 SPIRV-Cross.
 
-The clean-cache Metal smoke matrix currently compiles all 27 active Uber-shader
-attempts directly through Naga: 12 Forward+ and 15 Mobile, with no observed
-GLSLang/SPIRV-Cross fallback. The bridge handles the tested comparison samplers,
-ordinary depth reads, fixed resource-binding arrays, subgroup operations, buffer
-boolean layouts, and explicit-fp16 Mobile lighting. The legacy compiler path remains
-mandatory for untested permutations and other shaders.
+The exhaustive Metal smoke matrix compiles all 43 unique built-in Uber variants
+directly through Naga: 25 Forward+ and 18 Mobile (including both Mobile FP32 and
+FP16 groups). It also creates all 43 corresponding Metal render pipelines, with no
+GLSLang/SPIRV-Cross fallback. The bridge handles comparison samplers, ordinary depth
+reads, fixed resource-binding arrays, subgroup operations, multiview, storage-image
+atomics, tightly packed three-component buffer members, buffer boolean layouts, and
+explicit-fp16 Mobile lighting. The legacy compiler path remains mandatory for
+untested permutations and other shaders.
 
 Naga 29.0.3 is vendored under `modules/naga/vendor/naga` because the tested Godot
 shader surface needs small GLSL frontend and MSL binding-array fixes not yet present
 upstream. `vendor/naga/GODOT_PATCHES.md` records their scope.
 
-Run the included Metal smoke test with verbose compiler selection logging:
+Run the included exhaustive Metal smoke test for each rendering method:
 
 ```sh
-GODOT_NAGA_UBERSHADERS=1 bin/godot.macos.editor.dev.arm64 \
-  --path modules/naga/tests --rendering-method forward_plus \
-  --rendering-driver metal --quit-after 2 --verbose
+GODOT_NAGA_UBERSHADERS=1 GODOT_NAGA_TEST_ALL_UBER_VARIANTS=1 \
+  bin/godot.macos.editor.arm64 --path modules/naga/tests/metal_smoke \
+  --rendering-method forward_plus --rendering-driver metal --quit-after 2 --verbose
+
+GODOT_NAGA_UBERSHADERS=1 GODOT_NAGA_TEST_ALL_UBER_VARIANTS=1 \
+  bin/godot.macos.editor.arm64 --path modules/naga/tests/metal_smoke \
+  --rendering-method mobile --rendering-driver metal --quit-after 2 --verbose
 ```
 
 Set `GODOT_NAGA_DUMP_GLSL_DIR` or `GODOT_NAGA_DUMP_MSL_DIR` to a directory to retain

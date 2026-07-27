@@ -45,6 +45,10 @@
 #define ENABLE_SHADER_CACHE 1
 
 #ifdef MODULE_NAGA_ENABLED
+static Mutex naga_test_coverage_mutex;
+static HashMap<String, HashSet<uint32_t>> naga_test_successes;
+static HashMap<String, HashSet<uint32_t>> naga_test_failures;
+
 static bool use_naga_metal_ubershaders() {
 	return bool(GLOBAL_GET("rendering/shader_compiler/metal/use_naga_for_ubershaders")) || OS::get_singleton()->get_environment("GODOT_NAGA_UBERSHADERS") == "1";
 }
@@ -445,10 +449,21 @@ void ShaderRD::_compile_variant(uint32_t p_variant, CompileData p_data) {
 		String naga_error;
 		Vector<uint8_t> shader_data = RD::get_singleton()->shader_compile_binary_from_source(source_stages, name + ":" + itos(variant), &naga_error);
 		if (!shader_data.is_empty()) {
+			if (OS::get_singleton()->get_environment("GODOT_NAGA_TEST_ALL_UBER_VARIANTS") == "1") {
+				MutexLock lock(naga_test_coverage_mutex);
+				naga_test_successes[name].insert(variant);
+				naga_test_failures[name].erase(variant);
+			}
 			print_verbose(vformat("Compiled Metal forward shader variant %s:%d with Naga.", name, variant));
 			p_data.version->variants.write[variant] = RD::get_singleton()->shader_create_from_bytecode_with_samplers(shader_data, p_data.version->variants[variant], immutable_samplers);
 			p_data.version->variant_data.write[variant] = shader_data;
 			return;
+		}
+		if (OS::get_singleton()->get_environment("GODOT_NAGA_TEST_ALL_UBER_VARIANTS") == "1") {
+			MutexLock lock(naga_test_coverage_mutex);
+			if (!naga_test_successes[name].has(variant)) {
+				naga_test_failures[name].insert(variant);
+			}
 		}
 		print_verbose(vformat("Naga could not compile Metal forward shader variant %s:%d; falling back to GLSLang/SPIRV-Cross.\n%s", name, variant, naga_error));
 	}
@@ -1010,6 +1025,20 @@ const String &ShaderRD::get_name() const {
 
 const Vector<uint64_t> &ShaderRD::get_dynamic_buffers() const {
 	return dynamic_buffers;
+}
+
+ShaderRD::NagaTestCoverage ShaderRD::get_naga_test_coverage(const String &p_shader_name) {
+	NagaTestCoverage coverage;
+#ifdef MODULE_NAGA_ENABLED
+	MutexLock lock(naga_test_coverage_mutex);
+	if (const HashSet<uint32_t> *successes = naga_test_successes.getptr(p_shader_name)) {
+		coverage.succeeded = successes->size();
+	}
+	if (const HashSet<uint32_t> *failures = naga_test_failures.getptr(p_shader_name)) {
+		coverage.failed = failures->size();
+	}
+#endif
+	return coverage;
 }
 
 bool ShaderRD::shader_cache_cleanup_on_start = false;

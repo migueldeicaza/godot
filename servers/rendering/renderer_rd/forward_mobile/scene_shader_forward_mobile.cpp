@@ -32,11 +32,65 @@
 
 #include "core/config/project_settings.h"
 #include "core/math/math_defs.h"
+#include "core/os/os.h"
 #include "servers/rendering/renderer_rd/forward_mobile/render_forward_mobile.h"
 #include "servers/rendering/renderer_rd/renderer_compositor_rd.h"
 #include "servers/rendering/renderer_rd/storage_rd/material_storage.h"
 
 using namespace RendererSceneRenderImplementation;
+
+namespace {
+
+RD::VertexFormatID naga_test_vertex_format() {
+	Vector<RD::VertexAttribute> attributes;
+	for (uint32_t location = 0; location <= 13; location++) {
+		if (location == 2) {
+			continue;
+		}
+
+		RD::VertexAttribute attribute;
+		attribute.location = location;
+		attribute.stride = 0;
+		if (location == 4 || location == 5) {
+			attribute.format = RD::DATA_FORMAT_R32G32_SFLOAT;
+		} else if (location == 10) {
+			attribute.format = RD::DATA_FORMAT_R32G32B32A32_UINT;
+		} else {
+			attribute.format = RD::DATA_FORMAT_R32G32B32A32_SFLOAT;
+		}
+		attributes.push_back(attribute);
+	}
+	return RD::get_singleton()->vertex_format_create(attributes);
+}
+
+RD::FramebufferFormatID naga_test_framebuffer_format(uint32_t p_output_mask, uint32_t p_view_count) {
+	Vector<RD::AttachmentFormat> attachments;
+	RD::FramebufferPass pass;
+
+	for (uint32_t location = 0; location < 5; location++) {
+		if (p_output_mask & (1U << location)) {
+			RD::AttachmentFormat attachment;
+			attachment.format = location == 4 ? RD::DATA_FORMAT_R32_SFLOAT : RD::DATA_FORMAT_R16G16B16A16_SFLOAT;
+			attachment.usage_flags = RD::TEXTURE_USAGE_COLOR_ATTACHMENT_BIT;
+			pass.color_attachments.push_back(attachments.size());
+			attachments.push_back(attachment);
+		} else if (p_output_mask >> location) {
+			pass.color_attachments.push_back(RD::ATTACHMENT_UNUSED);
+		}
+	}
+
+	RD::AttachmentFormat depth_attachment;
+	depth_attachment.format = RD::DATA_FORMAT_D32_SFLOAT;
+	depth_attachment.usage_flags = RD::TEXTURE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
+	pass.depth_attachment = attachments.size();
+	attachments.push_back(depth_attachment);
+
+	Vector<RD::FramebufferPass> passes;
+	passes.push_back(pass);
+	return RD::get_singleton()->framebuffer_format_create_multipass(attachments, passes, p_view_count);
+}
+
+} // namespace
 
 /* ShaderData */
 
@@ -628,6 +682,13 @@ void SceneShaderForwardMobile::init(const String p_defines) {
 		dynamic_buffers.push_back(ShaderRD::DynamicBuffer::encode(RenderForwardMobile::RENDER_PASS_UNIFORM_SET, 1));
 		shader.initialize(shader_versions, p_defines, immutable_samplers, dynamic_buffers);
 
+		if (OS::get_singleton()->get_environment("GODOT_NAGA_TEST_ALL_UBER_VARIANTS") == "1") {
+			for (int group = 0; group < shader.get_group_count(); group++) {
+				shader.enable_group(group);
+			}
+			print_line(vformat("Naga exhaustive coverage: enabled all %d Mobile shader groups (%d declared variants, 18 Uber variants).", shader.get_group_count(), shader.get_variant_count()));
+		}
+
 		if (RendererCompositorRD::get_singleton()->is_xr_enabled()) {
 			enable_multiview_shader_group();
 		}
@@ -953,6 +1014,45 @@ void SceneShaderForwardMobile::set_default_specialization(const ShaderSpecializa
 uint32_t SceneShaderForwardMobile::get_pipeline_compilations(RSE::PipelineSource p_source) {
 	MutexLock lock(SceneShaderForwardMobile::singleton_mutex);
 	return pipeline_compilations[p_source];
+}
+
+void SceneShaderForwardMobile::run_naga_exhaustive_pipeline_test() {
+	ERR_FAIL_NULL(default_material_shader_ptr);
+
+	const RD::VertexFormatID vertex_format = naga_test_vertex_format();
+	ERR_FAIL_COND(vertex_format == RD::INVALID_ID);
+
+	const bool original_use_fp16 = use_fp16;
+	uint32_t compiled = 0;
+	uint32_t failed = 0;
+	for (uint32_t fp16 = 0; fp16 < 2; fp16++) {
+		use_fp16 = fp16;
+		for (uint32_t version = 0; version < SHADER_VERSION_MAX; version++) {
+			const bool multiview = version >= SHADER_VERSION_COLOR_PASS_MULTIVIEW;
+			const uint32_t output_mask = version == SHADER_VERSION_DEPTH_PASS_WITH_MATERIAL ? 0x1f : (version == SHADER_VERSION_SHADOW_PASS || version == SHADER_VERSION_SHADOW_PASS_DP || version == SHADER_VERSION_SHADOW_PASS_MULTIVIEW ? 0 : 0x1);
+
+			ShaderData::PipelineKey key;
+			key.vertex_format_id = vertex_format;
+			key.framebuffer_format_id = naga_test_framebuffer_format(output_mask, multiview ? 2 : 1);
+			key.cull_mode = RD::POLYGON_CULL_DISABLED;
+			key.primitive_type = RSE::PRIMITIVE_TRIANGLES;
+			key.shader_specialization = default_specialization;
+			key.version = ShaderVersion(version);
+			key.ubershader = true;
+
+			RID pipeline = default_material_shader_ptr->pipeline_hash_map.get_pipeline(key, key.hash(), true, RSE::PIPELINE_SOURCE_SPECIALIZATION);
+			if (pipeline.is_valid()) {
+				compiled++;
+			} else {
+				failed++;
+			}
+		}
+		default_material_shader_ptr->pipeline_hash_map.clear_pipelines();
+	}
+	use_fp16 = original_use_fp16;
+
+	const ShaderRD::NagaTestCoverage coverage = ShaderRD::get_naga_test_coverage(shader.get_name());
+	print_line(vformat("Naga exhaustive coverage: Mobile direct Naga variants %d/18 (%d fallback); Metal pipelines %d/18 (%d failed).", coverage.succeeded, coverage.failed, compiled, failed));
 }
 
 void SceneShaderForwardMobile::enable_fp32_shader_group() {

@@ -31,6 +31,7 @@
 #include "render_forward_clustered.h"
 
 #include "core/config/project_settings.h"
+#include "core/os/os.h"
 #include "servers/rendering/renderer_rd/environment/fog.h"
 #include "servers/rendering/renderer_rd/framebuffer_cache_rd.h"
 #include "servers/rendering/renderer_rd/storage_rd/light_storage.h"
@@ -5235,6 +5236,9 @@ RenderForwardClustered::RenderForwardClustered() {
 
 	_update_shader_quality_settings();
 	_update_global_pipeline_data_requirements_from_project();
+	if (OS::get_singleton()->get_environment("GODOT_NAGA_TEST_ALL_UBER_VARIANTS") == "1") {
+		scene_shader.run_naga_exhaustive_pipeline_test();
+	}
 
 	taa = memnew(RendererRD::TAA);
 	fsr2_effect = memnew(RendererRD::FSR2Effect);

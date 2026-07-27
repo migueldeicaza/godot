@@ -41,6 +41,11 @@ class StringBuilder;
 
 class ShaderRD {
 public:
+	struct NagaTestCoverage {
+		uint32_t succeeded = 0;
+		uint32_t failed = 0;
+	};
+
 	struct VariantDefine {
 		int group = 0;
 		CharString text;
@@ -246,6 +251,7 @@ public:
 	const String &get_name() const;
 
 	const Vector<uint64_t> &get_dynamic_buffers() const;
+	static NagaTestCoverage get_naga_test_coverage(const String &p_shader_name);
 
 	static void shaders_embedded_set_lock();
 	static const ShaderVersionPairSet &shaders_embedded_set_get();

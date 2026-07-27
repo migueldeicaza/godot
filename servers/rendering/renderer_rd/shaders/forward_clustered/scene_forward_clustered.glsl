@@ -2910,9 +2910,9 @@ void fragment_shader(in SceneData scene_data) {
 		ivec3 grid_pos = implementation_data.sdf_offset + ivec3(local_pos * vec3(implementation_data.sdf_size));
 
 		uint albedo16 = 0x1; //solid flag
-		albedo16 |= clamp(uint(albedo.r * 31.0), 0, 31) << 11;
-		albedo16 |= clamp(uint(albedo.g * 31.0), 0, 31) << 6;
-		albedo16 |= clamp(uint(albedo.b * 31.0), 0, 31) << 1;
+		albedo16 |= clamp(uint(albedo.r * 31.0), 0u, 31u) << 11;
+		albedo16 |= clamp(uint(albedo.g * 31.0), 0u, 31u) << 6;
+		albedo16 |= clamp(uint(albedo.b * 31.0), 0u, 31u) << 1;
 
 		imageStore(albedo_volume_grid, grid_pos, uvec4(albedo16));
 
@@ -2959,7 +2959,7 @@ void fragment_shader(in SceneData scene_data) {
 			uint light_aniso = 0;
 
 			for (int i = 0; i < 6; i++) {
-				light_aniso |= min(31, uint((lumas[i] / luma_total) * 31.0)) << (i * 5);
+				light_aniso |= min(31u, uint((lumas[i] / luma_total) * 31.0)) << (i * 5);
 			}
 
 			//compress to RGBE9995 to save space

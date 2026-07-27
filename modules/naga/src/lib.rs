@@ -1610,7 +1610,11 @@ pub unsafe extern "C" fn godot_naga_write_msl(
         return ptr::null_mut();
     }
     let shader = &*shader.cast::<ParsedShader>();
-    let bindings = slice::from_raw_parts(bindings, binding_count);
+    let bindings = if binding_count == 0 {
+        &[]
+    } else {
+        slice::from_raw_parts(bindings, binding_count)
+    };
     let result = catch_unwind(AssertUnwindSafe(|| -> Result<(String, String), String> {
         let mut resources = msl::EntryPointResources::default();
         for binding in bindings {
@@ -2098,6 +2102,131 @@ void main() {
             );
             let source = CStr::from_ptr(msl).to_string_lossy();
             assert!(source.contains("metal::half3"));
+
+            godot_naga_string_free(msl);
+            godot_naga_string_free(entry);
+            godot_naga_module_free(shader);
+        }
+    }
+
+    #[test]
+    fn translates_multiview_builtin() {
+        const VERTEX: &str = r#"#version 450
+#extension GL_EXT_multiview : require
+layout(location = 0) in vec3 position;
+void main() {
+    gl_Position = vec4(position + vec3(float(gl_ViewIndex)), 1.0);
+}
+"#;
+        unsafe {
+            let source = CString::new(VERTEX).unwrap();
+            let mut error = ptr::null_mut();
+            let shader = godot_naga_parse(0, source.as_ptr(), &mut error);
+            assert!(
+                !shader.is_null(),
+                "{}",
+                CStr::from_ptr(error).to_string_lossy()
+            );
+
+            let mut entry = ptr::null_mut();
+            let msl =
+                godot_naga_write_msl(shader, 2, 4, ptr::null(), 0, -1, &mut entry, &mut error);
+            assert!(
+                !msl.is_null(),
+                "{}",
+                CStr::from_ptr(error).to_string_lossy()
+            );
+            assert!(CStr::from_ptr(msl)
+                .to_string_lossy()
+                .contains("[[amplification_id]]"));
+
+            godot_naga_string_free(msl);
+            godot_naga_string_free(entry);
+            godot_naga_module_free(shader);
+        }
+    }
+
+    #[test]
+    fn translates_storage_image_atomic_or() {
+        const FRAGMENT: &str = r#"#version 450
+layout(r32ui, set = 0, binding = 0) uniform uimage3D grid;
+void main() {
+    imageAtomicOr(grid, ivec3(0), 1u);
+}
+"#;
+        unsafe {
+            let source = CString::new(FRAGMENT).unwrap();
+            let mut error = ptr::null_mut();
+            let shader = godot_naga_parse(1, source.as_ptr(), &mut error);
+            assert!(
+                !shader.is_null(),
+                "{}",
+                CStr::from_ptr(error).to_string_lossy()
+            );
+
+            let binding = GodotNagaBinding {
+                group: 0,
+                binding: 0,
+                buffer: -1,
+                texture: 0,
+                sampler: -1,
+                writable: 1,
+            };
+            let mut entry = ptr::null_mut();
+            let msl = godot_naga_write_msl(shader, 2, 4, &binding, 1, -1, &mut entry, &mut error);
+            assert!(
+                !msl.is_null(),
+                "{}",
+                CStr::from_ptr(error).to_string_lossy()
+            );
+            assert!(CStr::from_ptr(msl).to_string_lossy().contains("fetch_or"));
+
+            godot_naga_string_free(msl);
+            godot_naga_string_free(entry);
+            godot_naga_module_free(shader);
+        }
+    }
+
+    #[test]
+    fn wraps_packed_vec3_before_signed_arithmetic_bitcast() {
+        const FRAGMENT: &str = r#"#version 450
+layout(std430, set = 0, binding = 0) readonly buffer Data {
+    ivec3 offset;
+    int next_value;
+} data;
+layout(location = 0) out ivec4 color;
+void main() {
+    color = ivec4(data.offset + ivec3(1), data.next_value);
+}
+"#;
+        unsafe {
+            let source = CString::new(FRAGMENT).unwrap();
+            let mut error = ptr::null_mut();
+            let shader = godot_naga_parse(1, source.as_ptr(), &mut error);
+            assert!(
+                !shader.is_null(),
+                "{}",
+                CStr::from_ptr(error).to_string_lossy()
+            );
+
+            let binding = GodotNagaBinding {
+                group: 0,
+                binding: 0,
+                buffer: 0,
+                texture: -1,
+                sampler: -1,
+                writable: 0,
+            };
+            let mut entry = ptr::null_mut();
+            let msl = godot_naga_write_msl(shader, 2, 4, &binding, 1, -1, &mut entry, &mut error);
+            assert!(
+                !msl.is_null(),
+                "{}",
+                CStr::from_ptr(error).to_string_lossy()
+            );
+            assert!(CStr::from_ptr(msl)
+                .to_string_lossy()
+                .contains("as_type<metal::uint3>(metal::int3("));
 
             godot_naga_string_free(msl);
             godot_naga_string_free(entry);
