@@ -21,6 +21,11 @@ It accepts the two-argument, non-shadow `textureGather` overloads used by
 Godot's Canvas shaders and lowers their implicit LOD to Naga's zero-level gather
 operation.
 
+The GLSL frontend lowers `memoryBarrierShared` and `groupMemoryBarrier` to
+Naga memory-barrier statements. The first operation synchronizes shared memory.
+The second operation synchronizes buffer, shared, and texture memory for the
+workgroup.
+
 Uniform arrays whose elements are textures or samplers are lowered to Naga
 `BindingArray` types instead of ordinary data arrays, enabling Godot's
 dynamically indexed lightmap texture arrays. The MSL backend emits fixed-size

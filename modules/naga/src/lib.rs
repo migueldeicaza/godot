@@ -2643,6 +2643,64 @@ void main() {
     }
 
     #[test]
+    fn preserves_compute_memory_barrier_scopes() {
+        const COMPUTE: &str = r#"#version 450
+layout(local_size_x = 1, local_size_y = 1, local_size_z = 1) in;
+void main() {
+    memoryBarrierShared();
+    groupMemoryBarrier();
+}
+"#;
+        unsafe {
+            let source = CString::new(COMPUTE).unwrap();
+            let mut error = ptr::null_mut();
+            let shader = godot_naga_parse(4, source.as_ptr(), &mut error);
+            assert!(
+                !shader.is_null(),
+                "{}",
+                CStr::from_ptr(error).to_string_lossy()
+            );
+
+            let parsed = &*shader.cast::<ParsedShader>();
+            let barriers = parsed
+                .module
+                .functions
+                .iter()
+                .flat_map(|(_, function)| function.body.iter())
+                .chain(parsed.module.entry_points[0].function.body.iter())
+                .filter_map(|statement| match statement {
+                    naga::Statement::MemoryBarrier(flags) => Some(*flags),
+                    _ => None,
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(
+                barriers,
+                vec![
+                    naga::Barrier::WORK_GROUP,
+                    naga::Barrier::STORAGE | naga::Barrier::WORK_GROUP | naga::Barrier::TEXTURE,
+                ]
+            );
+
+            let mut entry = ptr::null_mut();
+            let msl =
+                godot_naga_write_msl(shader, 2, 4, ptr::null(), 0, -1, &mut entry, &mut error);
+            assert!(
+                !msl.is_null(),
+                "{}",
+                CStr::from_ptr(error).to_string_lossy()
+            );
+            let source = CStr::from_ptr(msl).to_string_lossy();
+            assert_eq!(source.matches("mem_device").count(), 1);
+            assert_eq!(source.matches("mem_threadgroup").count(), 2);
+            assert_eq!(source.matches("mem_texture").count(), 1);
+
+            godot_naga_string_free(msl);
+            godot_naga_string_free(entry);
+            godot_naga_module_free(shader);
+        }
+    }
+
+    #[test]
     fn marks_separate_shadow_samplers_as_comparison_samplers() {
         const FRAGMENT: &str = r#"#version 450
 #define SPEC_CONSTANT_LOOP_ANNOTATION [[dont_unroll]]

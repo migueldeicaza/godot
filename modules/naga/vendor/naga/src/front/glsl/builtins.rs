@@ -1185,6 +1185,16 @@ fn inject_standard_builtins(
         "barrier" => declaration
             .overloads
             .push(module.add_builtin(Vec::new(), MacroCall::Barrier)),
+        "memoryBarrierShared" => declaration.overloads.push(module.add_builtin(
+            Vec::new(),
+            MacroCall::MemoryBarrier(crate::Barrier::WORK_GROUP),
+        )),
+        "groupMemoryBarrier" => declaration.overloads.push(module.add_builtin(
+            Vec::new(),
+            MacroCall::MemoryBarrier(
+                crate::Barrier::STORAGE | crate::Barrier::WORK_GROUP | crate::Barrier::TEXTURE,
+            ),
+        )),
         // Add common builtins with full- and half-precision floats. Godot's
         // mobile forward shaders use explicit f16 vectors for lighting math.
         _ => {
@@ -1741,6 +1751,7 @@ pub enum MacroCall {
     BitCast(Sk),
     Derivate(Axis, Ctrl),
     Barrier,
+    MemoryBarrier(crate::Barrier),
     SubgroupCollective(SubgroupOperation),
     SubgroupBroadcastFirst,
     /// SmoothStep needs a separate variant because it might need it's inputs
@@ -2307,6 +2318,11 @@ impl MacroCall {
                     crate::Statement::ControlBarrier(crate::Barrier::all()),
                     meta,
                 );
+                return Ok(None);
+            }
+            MacroCall::MemoryBarrier(flags) => {
+                ctx.emit_restart();
+                ctx.body.push(crate::Statement::MemoryBarrier(flags), meta);
                 return Ok(None);
             }
             MacroCall::SubgroupCollective(op) => {
