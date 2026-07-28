@@ -32,7 +32,9 @@ strips desktop-GLSL precision qualifiers that Naga does not accept in structure
 members. It preserves Godot's specialization constants as Metal function constants,
 lowers matrix inverse operations using Naga's own WGSL inverse formulas, and splits
 GLSL combined samplers into Naga's separate texture and sampler resources. It also
-supports 2D-array texture gathers and explicit gather components. It removes the
+discards combined-sampler metadata when the active preprocessor branch uses the same
+binding for a different resource type. The bridge also supports 2D-array texture
+gathers and explicit gather components. It removes the
 generated LTC helper from compute shaders that do not call it. Naga's overload
 ranking prefers exact argument types over implicit conversions. Compute shaders keep
 `memoryBarrierShared()` separate from `groupMemoryBarrier()`. The first operation

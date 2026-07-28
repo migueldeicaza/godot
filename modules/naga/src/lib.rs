@@ -1095,6 +1095,32 @@ fn find_combined_samplers(module: &naga::Module) -> Vec<CombinedSampler> {
         .collect()
 }
 
+fn remove_shadowed_combined_samplers(
+    module: &naga::Module,
+    combined_samplers: &mut Vec<CombinedSampler>,
+) {
+    combined_samplers.retain(|combined| {
+        let Some(variable) = module.global_variables.iter().find_map(|(_, variable)| {
+            let binding = variable.binding.as_ref()?;
+            (binding.group == combined.group && binding.binding == combined.binding)
+                .then_some(variable)
+        }) else {
+            return true;
+        };
+        let resource_ty = match module.types[variable.ty].inner {
+            naga::TypeInner::BindingArray { base, .. } => base,
+            _ => variable.ty,
+        };
+        matches!(
+            module.types[resource_ty].inner,
+            naga::TypeInner::Image {
+                class: naga::ImageClass::Sampled { .. } | naga::ImageClass::Depth { .. },
+                ..
+            }
+        )
+    });
+}
+
 fn invalid_spirv_id_context(bytes: &[u8], id: u32) -> String {
     let words = bytes
         .chunks_exact(4)
@@ -1823,7 +1849,8 @@ pub unsafe extern "C" fn godot_naga_parse(
         let source = CStr::from_ptr(source)
             .to_str()
             .map_err(|err| format!("GLSL source is not UTF-8: {err}"))?;
-        let (source, specialization_constants, combined_samplers) = godot_source(stage, source)?;
+        let (source, specialization_constants, mut combined_samplers) =
+            godot_source(stage, source)?;
         if let Ok(directory) = std::env::var("GODOT_NAGA_DUMP_GLSL_DIR") {
             std::fs::create_dir_all(&directory)
                 .map_err(|err| format!("Could not create Naga GLSL dump directory: {err}"))?;
@@ -1841,6 +1868,10 @@ pub unsafe extern "C" fn godot_naga_parse(
                     combined_sampler_context(&source)
                 )
             })?;
+        // Preprocessor branches can reuse one descriptor binding for different
+        // resource types. Remove combined-sampler metadata when the selected
+        // branch declares a different resource at the original binding.
+        remove_shadowed_combined_samplers(&module, &mut combined_samplers);
         // The GLSL frontend drops constants that are unused by this entry point.
         // Keep only the declarations that survived so reflection and backend
         // restoration do not require an inactive constant in every shader stage.
@@ -2527,6 +2558,74 @@ void main() {
 
             godot_naga_string_free(msl);
             godot_naga_string_free(entry);
+            godot_naga_module_free(shader);
+        }
+    }
+
+    #[test]
+    fn removes_combined_sampler_metadata_shadowed_by_an_active_image() {
+        const COMPUTE: &str = r#"#version 450
+layout(local_size_x = 1) in;
+#ifdef READ_TEXTURE
+layout(set = 0, binding = 0) uniform sampler2D source_texture;
+#else
+layout(r32f, set = 0, binding = 0) uniform readonly image2D source_luminance;
+#endif
+layout(r32f, set = 1, binding = 0) uniform writeonly image2D destination;
+void main() {
+#ifdef READ_TEXTURE
+    vec4 value = texelFetch(source_texture, ivec2(0), 0);
+#else
+    vec4 value = imageLoad(source_luminance, ivec2(0));
+#endif
+    imageStore(destination, ivec2(0), value);
+}
+"#;
+        unsafe {
+            let mut error = ptr::null_mut();
+            let source = CString::new(COMPUTE).unwrap();
+            let shader = godot_naga_parse(4, source.as_ptr(), &mut error);
+            assert!(
+                !shader.is_null(),
+                "{}",
+                CStr::from_ptr(error).to_string_lossy()
+            );
+            let mut reflection = GodotNagaReflection::default();
+            assert_eq!(godot_naga_reflect(shader, &mut reflection, &mut error), 1);
+            let uniforms = slice::from_raw_parts(reflection.uniforms, reflection.uniform_count);
+            assert!(uniforms.iter().any(|uniform| {
+                uniform.group == 0
+                    && uniform.binding == 0
+                    && uniform.kind == REFLECTION_UNIFORM_IMAGE
+            }));
+            assert!(!uniforms.iter().any(|uniform| {
+                uniform.group == 0 && uniform.binding == SYNTHETIC_SAMPLER_BINDING_OFFSET
+            }));
+            godot_naga_reflection_free(&mut reflection);
+            godot_naga_module_free(shader);
+
+            let active = COMPUTE.replacen("#version 450", "#version 450\n#define READ_TEXTURE", 1);
+            let source = CString::new(active).unwrap();
+            let shader = godot_naga_parse(4, source.as_ptr(), &mut error);
+            assert!(
+                !shader.is_null(),
+                "{}",
+                CStr::from_ptr(error).to_string_lossy()
+            );
+            let mut reflection = GodotNagaReflection::default();
+            assert_eq!(godot_naga_reflect(shader, &mut reflection, &mut error), 1);
+            let uniforms = slice::from_raw_parts(reflection.uniforms, reflection.uniform_count);
+            assert!(uniforms.iter().any(|uniform| {
+                uniform.group == 0
+                    && uniform.binding == 0
+                    && uniform.kind == REFLECTION_UNIFORM_TEXTURE
+            }));
+            assert!(uniforms.iter().any(|uniform| {
+                uniform.group == 0
+                    && uniform.binding == SYNTHETIC_SAMPLER_BINDING_OFFSET
+                    && uniform.kind == REFLECTION_UNIFORM_SAMPLER
+            }));
+            godot_naga_reflection_free(&mut reflection);
             godot_naga_module_free(shader);
         }
     }
