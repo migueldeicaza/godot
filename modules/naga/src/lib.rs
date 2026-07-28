@@ -31,6 +31,8 @@ struct CombinedSampler {
     group: u32,
     binding: u32,
     synthetic_sampler_binding: u32,
+    image_dimension: naga::ImageDimension,
+    image_arrayed: bool,
 }
 
 const SYNTHETIC_SAMPLER_BINDING_OFFSET: u32 = 1_000;
@@ -756,13 +758,28 @@ fn split_combined_samplers(source: String) -> Result<(String, Vec<CombinedSample
         binding: CombinedSampler,
     }
 
-    const TYPES: [(&str, &str); 6] = [
-        ("sampler1D", "texture1D"),
-        ("sampler1DArray", "texture1DArray"),
-        ("sampler2D", "texture2D"),
-        ("sampler2DArray", "texture2DArray"),
-        ("sampler3D", "texture3D"),
-        ("samplerCube", "textureCube"),
+    const TYPES: [(&str, &str, naga::ImageDimension, bool); 6] = [
+        ("sampler1D", "texture1D", naga::ImageDimension::D1, false),
+        (
+            "sampler1DArray",
+            "texture1DArray",
+            naga::ImageDimension::D1,
+            true,
+        ),
+        ("sampler2D", "texture2D", naga::ImageDimension::D2, false),
+        (
+            "sampler2DArray",
+            "texture2DArray",
+            naga::ImageDimension::D2,
+            true,
+        ),
+        ("sampler3D", "texture3D", naga::ImageDimension::D3, false),
+        (
+            "samplerCube",
+            "textureCube",
+            naga::ImageDimension::Cube,
+            false,
+        ),
     ];
 
     let mut active = Vec::new();
@@ -775,9 +792,9 @@ fn split_combined_samplers(source: String) -> Result<(String, Vec<CombinedSample
         let Some(source_type) = declaration_tokens.next() else {
             continue;
         };
-        let Some((sampler_type, texture_type)) = TYPES
+        let Some((sampler_type, texture_type, image_dimension, image_arrayed)) = TYPES
             .iter()
-            .find(|(sampler_type, _)| *sampler_type == source_type)
+            .find(|(sampler_type, _, _, _)| *sampler_type == source_type)
             .copied()
         else {
             continue;
@@ -823,6 +840,8 @@ fn split_combined_samplers(source: String) -> Result<(String, Vec<CombinedSample
                 group,
                 binding,
                 synthetic_sampler_binding: binding + SYNTHETIC_SAMPLER_BINDING_OFFSET,
+                image_dimension,
+                image_arrayed,
             },
         });
     }
@@ -873,13 +892,15 @@ fn split_combined_samplers(source: String) -> Result<(String, Vec<CombinedSample
         }
         adjusted.push_str(&line);
     }
-    Ok((
-        adjusted,
-        active
-            .into_iter()
-            .map(|combined| combined.binding)
-            .collect(),
-    ))
+    let mut combined_bindings = Vec::new();
+    for combined in active {
+        if !combined_bindings.iter().any(|binding: &CombinedSampler| {
+            binding.group == combined.binding.group && binding.binding == combined.binding.binding
+        }) {
+            combined_bindings.push(combined.binding);
+        }
+    }
+    Ok((adjusted, combined_bindings))
 }
 
 fn add_inverse_polyfills(source: String) -> Result<String, String> {
@@ -1041,10 +1062,34 @@ fn find_combined_samplers(module: &naga::Module) -> Vec<CombinedSampler> {
         .iter()
         .filter_map(|(_, variable)| {
             let binding = variable.binding.as_ref()?;
-            (binding.binding >= SYNTHETIC_SAMPLER_BINDING_OFFSET).then(|| CombinedSampler {
+            if binding.binding < SYNTHETIC_SAMPLER_BINDING_OFFSET {
+                return None;
+            }
+            let texture_binding = binding.binding - SYNTHETIC_SAMPLER_BINDING_OFFSET;
+            let (image_dimension, image_arrayed) = module
+                .global_variables
+                .iter()
+                .find_map(|(_, candidate)| {
+                    let candidate_binding = candidate.binding.as_ref()?;
+                    if candidate_binding.group != binding.group
+                        || candidate_binding.binding != texture_binding
+                    {
+                        return None;
+                    }
+                    match module.types[candidate.ty].inner {
+                        naga::TypeInner::Image { dim, arrayed, .. } => Some((dim, arrayed)),
+                        _ => None,
+                    }
+                })
+                // The original bridge supported only the 2D LTC samplers. Keep
+                // that type as a fallback if SPIR-V removed an inactive texture.
+                .unwrap_or((naga::ImageDimension::D2, false));
+            Some(CombinedSampler {
                 group: binding.group,
-                binding: binding.binding - SYNTHETIC_SAMPLER_BINDING_OFFSET,
+                binding: texture_binding,
                 synthetic_sampler_binding: binding.binding,
+                image_dimension,
+                image_arrayed,
             })
         })
         .collect()
@@ -1625,27 +1670,43 @@ fn reflect_shader(shader: &ParsedShader) -> Result<GodotNagaReflection, String> 
         }
         uniforms.push(uniform);
     }
+    // Naga can remove either half of an inactive combined GLSL sampler. It also
+    // removes the sampler half from texelFetch-only code. Preserve the declared
+    // descriptor layout so Godot can merge both resources into one binding.
     for combined in &shader.combined_samplers {
-        if uniforms.iter().any(|uniform| {
+        if !uniforms
+            .iter()
+            .any(|uniform| uniform.group == combined.group && uniform.binding == combined.binding)
+        {
+            uniforms.push(GodotNagaUniformReflection {
+                group: combined.group,
+                binding: combined.binding,
+                kind: REFLECTION_UNIFORM_TEXTURE,
+                length: 1,
+                writable: 0,
+                active: 0,
+                image_dimension: reflection_image_dimension(combined.image_dimension),
+                image_format: 0,
+                image_arrayed: u32::from(combined.image_arrayed),
+                image_multisampled: 0,
+            });
+        }
+        if !uniforms.iter().any(|uniform| {
             uniform.group == combined.group && uniform.binding == combined.synthetic_sampler_binding
         }) {
-            continue;
+            uniforms.push(GodotNagaUniformReflection {
+                group: combined.group,
+                binding: combined.synthetic_sampler_binding,
+                kind: REFLECTION_UNIFORM_SAMPLER,
+                length: 1,
+                writable: 0,
+                active: 0,
+                image_dimension: REFLECTION_IMAGE_DIMENSION_NONE,
+                image_format: 0,
+                image_arrayed: 0,
+                image_multisampled: 0,
+            });
         }
-        // Naga removes the sampler half when a combined GLSL resource is used only
-        // by operations such as texelFetch. Preserve Godot's declared combined
-        // descriptor layout so uniform sets remain compatible across variants.
-        uniforms.push(GodotNagaUniformReflection {
-            group: combined.group,
-            binding: combined.synthetic_sampler_binding,
-            kind: REFLECTION_UNIFORM_SAMPLER,
-            length: 1,
-            writable: 0,
-            active: 0,
-            image_dimension: REFLECTION_IMAGE_DIMENSION_NONE,
-            image_format: 0,
-            image_arrayed: 0,
-            image_multisampled: 0,
-        });
     }
     uniforms.sort_by_key(|uniform| (uniform.group, uniform.binding));
 
@@ -2463,6 +2524,95 @@ void main() {
                     assert!(source.contains(&format!("[[sampler({binding})]]")));
                 }
             }
+
+            godot_naga_string_free(msl);
+            godot_naga_string_free(entry);
+            godot_naga_module_free(shader);
+        }
+    }
+
+    #[test]
+    fn translates_array_and_component_texture_gathers() {
+        const FRAGMENT: &str = r#"#version 450
+layout(location = 0) out vec4 color;
+#define USE_ARRAY
+#ifdef USE_ARRAY
+layout(set = 0, binding = 0) uniform sampler2DArray source_layers;
+#else
+layout(set = 0, binding = 0) uniform sampler2D inactive_color;
+#endif
+layout(set = 0, binding = 1) uniform sampler2D source_color;
+layout(set = 0, binding = 2) uniform sampler3D unused_volume;
+void main() {
+    color = textureGather(source_layers, vec3(0.5, 0.5, 0.0));
+    color += textureGather(source_color, vec2(0.5), 2);
+}
+"#;
+        unsafe {
+            let source = CString::new(FRAGMENT).unwrap();
+            let mut error = ptr::null_mut();
+            let shader = godot_naga_parse(1, source.as_ptr(), &mut error);
+            assert!(
+                !shader.is_null(),
+                "{}",
+                CStr::from_ptr(error).to_string_lossy()
+            );
+
+            let mut reflection = GodotNagaReflection::default();
+            assert_eq!(godot_naga_reflect(shader, &mut reflection, &mut error), 1);
+            let uniforms = slice::from_raw_parts(reflection.uniforms, reflection.uniform_count);
+            assert!(uniforms.iter().any(|uniform| {
+                uniform.group == 0
+                    && uniform.binding == 2
+                    && uniform.kind == REFLECTION_UNIFORM_TEXTURE
+                    && uniform.image_dimension == REFLECTION_IMAGE_DIMENSION_3D
+                    && uniform.active == 0
+            }));
+            assert!(uniforms.iter().any(|uniform| {
+                uniform.group == 0
+                    && uniform.binding == 1002
+                    && uniform.kind == REFLECTION_UNIFORM_SAMPLER
+                    && uniform.active == 0
+            }));
+            godot_naga_reflection_free(&mut reflection);
+
+            let bindings = [
+                GodotNagaBinding {
+                    group: 0,
+                    binding: 0,
+                    buffer: -1,
+                    texture: 0,
+                    sampler: 0,
+                    writable: 0,
+                },
+                GodotNagaBinding {
+                    group: 0,
+                    binding: 1,
+                    buffer: -1,
+                    texture: 1,
+                    sampler: 1,
+                    writable: 0,
+                },
+            ];
+            let mut entry = ptr::null_mut();
+            let msl = godot_naga_write_msl(
+                shader,
+                2,
+                4,
+                bindings.as_ptr(),
+                bindings.len(),
+                -1,
+                &mut entry,
+                &mut error,
+            );
+            assert!(
+                !msl.is_null(),
+                "{}",
+                CStr::from_ptr(error).to_string_lossy()
+            );
+            let source = CStr::from_ptr(msl).to_string_lossy();
+            assert_eq!(source.matches(".gather(").count(), 2);
+            assert!(source.contains("metal::component::z"));
 
             godot_naga_string_free(msl);
             godot_naga_string_free(entry);

@@ -32,12 +32,12 @@ strips desktop-GLSL precision qualifiers that Naga does not accept in structure
 members. It preserves Godot's specialization constants as Metal function constants,
 lowers matrix inverse operations using Naga's own WGSL inverse formulas, and splits
 GLSL combined samplers into Naga's separate texture and sampler resources. It also
-prunes the generated LTC helper from compute shaders that never call it. It
-uses flat Metal resource slots. For successful direct translations, Godot reflects
+supports 2D-array texture gathers and explicit gather components. It removes the
+generated LTC helper from compute shaders that do not call it. It uses flat Metal
+resource slots. For successful direct translations, Godot reflects
 descriptor layouts, stage interfaces, push constants, and specialization defaults
-directly from Naga IR. The
-direct path therefore performs no SPIR-V serialization and invokes neither GLSLang,
-SPIRV-Reflect, nor SPIRV-Cross. This includes storage-image formats and atomic access.
+directly from Naga IR. This direct path does not serialize SPIR-V. It does not invoke
+GLSLang, SPIRV-Reflect, or SPIRV-Cross. This includes storage-image formats and atomic access.
 A Naga-generated SPIR-V reflection view remains as a compatibility fallback for IR
 resource types outside the tested built-in shader surface. GLSLang also remains
 available as a transformed SPIR-V fallback for GLSL constructs Naga cannot yet parse;

@@ -278,19 +278,33 @@ pub fn inject_builtin(
             texture_args_generator(TextureArgsOptions::SHADOW | variations.into(), f)
         }
         "textureGather" => {
-            // GLSL's two-argument textureGather selects component zero. Other
-            // dimensions, offsets, shadow forms, and explicit component indices
-            // can be added as their users require them.
             for kind in [Sk::Float, Sk::Sint, Sk::Uint] {
-                let image = TypeInner::Image {
-                    dim: Dim::D2,
-                    arrayed: false,
-                    class: ImageClass::Sampled { kind, multi: false },
-                };
-                declaration.overloads.push(module.add_builtin(
-                    vec![image, make_coords_arg(2, Sk::Float)],
-                    MacroCall::TextureGather,
-                ));
+                for arrayed in [false, true] {
+                    let image = TypeInner::Image {
+                        dim: Dim::D2,
+                        arrayed,
+                        class: ImageClass::Sampled { kind, multi: false },
+                    };
+                    let args = vec![
+                        image.clone(),
+                        make_coords_arg(if arrayed { 3 } else { 2 }, Sk::Float),
+                    ];
+                    declaration.overloads.push(module.add_builtin(
+                        args.clone(),
+                        MacroCall::TextureGather {
+                            explicit_component: false,
+                        },
+                    ));
+
+                    let mut component_args = args;
+                    component_args.push(TypeInner::Scalar(Scalar::I32));
+                    declaration.overloads.push(module.add_builtin(
+                        component_args,
+                        MacroCall::TextureGather {
+                            explicit_component: true,
+                        },
+                    ));
+                }
             }
         }
         "textureSize" => {
@@ -1700,7 +1714,9 @@ pub enum MacroCall {
         shadow: bool,
         level_type: TextureLevelType,
     },
-    TextureGather,
+    TextureGather {
+        explicit_component: bool,
+    },
     TextureSize {
         arrayed: bool,
     },
@@ -1888,15 +1904,29 @@ impl MacroCall {
 
                 texture_call(ctx, args[0], level, comps, texture_offset, None, meta)?
             }
-            MacroCall::TextureGather => {
-                let comps = frontend.coordinate_components(ctx, args[0], args[1], None, Some(false), meta)?;
+            MacroCall::TextureGather {
+                explicit_component,
+            } => {
+                let comps = frontend.coordinate_components(
+                    ctx,
+                    args[0],
+                    args[1],
+                    None,
+                    Some(false),
+                    meta,
+                )?;
+                let component = if explicit_component {
+                    texture_gather_component(ctx, args[2], meta)?
+                } else {
+                    crate::SwizzleComponent::X
+                };
                 texture_call(
                     ctx,
                     args[0],
                     SampleLevel::Zero,
                     comps,
                     None,
-                    Some(crate::SwizzleComponent::X),
+                    Some(component),
                     meta,
                 )?
             }
@@ -2338,6 +2368,42 @@ impl MacroCall {
                 )?
             }
         }))
+    }
+}
+
+fn texture_gather_component(
+    ctx: &Context,
+    argument: Handle<Expression>,
+    meta: Span,
+) -> Result<crate::SwizzleComponent> {
+    let literal = match ctx.expressions[argument] {
+        Expression::Literal(literal) => Some(literal),
+        Expression::Constant(constant) => {
+            match ctx.module.global_expressions[ctx.module.constants[constant].init] {
+                Expression::Literal(literal) => Some(literal),
+                _ => None,
+            }
+        }
+        _ => None,
+    };
+    let index = match literal {
+        Some(crate::Literal::I32(value)) => Some(i64::from(value)),
+        Some(crate::Literal::U32(value)) => Some(i64::from(value)),
+        Some(crate::Literal::I64(value) | crate::Literal::AbstractInt(value)) => Some(value),
+        Some(crate::Literal::U64(value)) => i64::try_from(value).ok(),
+        _ => None,
+    };
+    match index {
+        Some(0) => Ok(crate::SwizzleComponent::X),
+        Some(1) => Ok(crate::SwizzleComponent::Y),
+        Some(2) => Ok(crate::SwizzleComponent::Z),
+        Some(3) => Ok(crate::SwizzleComponent::W),
+        _ => Err(Error {
+            kind: ErrorKind::SemanticError(
+                "textureGather component must be a constant integer from 0 to 3".into(),
+            ),
+            meta,
+        }),
     }
 }
 
