@@ -567,6 +567,7 @@ impl Frontend {
             // If Some(true) the new overload is better
             // If Some(false) the old overload is better
             let mut superior = None;
+            let mut conflicting = false;
             // Store the conversions for the current overload so that later they can replace the
             // conversions used for querying the best overload
             let mut new_conversions = vec![Conversion::None; args.len()];
@@ -650,6 +651,12 @@ impl Frontend {
                 } else if overload_param_ty == call_arg_ty {
                     // If the types match there's no need to check for conversions so continue
                     new_conversions[i] = Conversion::Exact;
+                    if old_conversions[i] != Conversion::Exact {
+                        match superior {
+                            Some(false) => conflicting = true,
+                            _ => superior = Some(true),
+                        }
+                    }
                     continue;
                 }
 
@@ -686,6 +693,7 @@ impl Frontend {
                 // At this point a conversion will be needed so the overload no longer
                 // exactly matches the call arguments
                 exact = false;
+                new_conversions[i] = conversion;
 
                 // Compare the conversions needed for this overload parameter to that of the
                 // last overload analyzed respective parameter, the value is:
@@ -713,14 +721,11 @@ impl Frontend {
                 // to pass to the next comparison, if this isn't true mark it as ambiguous
                 match best_arg {
                     true => match superior {
-                        Some(false) => ambiguous = true,
-                        _ => {
-                            superior = Some(true);
-                            new_conversions[i] = conversion
-                        }
+                        Some(false) => conflicting = true,
+                        _ => superior = Some(true),
                     },
                     false => match superior {
-                        Some(true) => ambiguous = true,
+                        Some(true) => conflicting = true,
                         _ => superior = Some(false),
                     },
                 }
@@ -741,9 +746,11 @@ impl Frontend {
                     maybe_overload = Some(overload);
                     // Replace the conversions
                     old_conversions = new_conversions;
+                    // A better overload resolves ambiguity between older candidates.
+                    ambiguous = conflicting;
                 }
                 // Old overload is better do nothing
-                Some(false) => {}
+                Some(false) => ambiguous |= conflicting,
                 // No overload was better than the other this can be caused
                 // when all conversions are ambiguous in which the overloads themselves are
                 // ambiguous.

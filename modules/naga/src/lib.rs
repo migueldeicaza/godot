@@ -2621,6 +2621,28 @@ void main() {
     }
 
     #[test]
+    fn prefers_exact_integer_builtin_overloads() {
+        const COMPUTE: &str = r#"#version 450
+layout(local_size_x = 1, local_size_y = 1, local_size_z = 1) in;
+void main() {
+    uint value = min(gl_GlobalInvocationID.x, 5);
+    value = max(1, value);
+}
+"#;
+        unsafe {
+            let source = CString::new(COMPUTE).unwrap();
+            let mut error = ptr::null_mut();
+            let shader = godot_naga_parse(4, source.as_ptr(), &mut error);
+            assert!(
+                !shader.is_null(),
+                "{}",
+                CStr::from_ptr(error).to_string_lossy()
+            );
+            godot_naga_module_free(shader);
+        }
+    }
+
+    #[test]
     fn marks_separate_shadow_samplers_as_comparison_samplers() {
         const FRAGMENT: &str = r#"#version 450
 #define SPEC_CONSTANT_LOOP_ANNOTATION [[dont_unroll]]

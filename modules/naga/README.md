@@ -33,8 +33,9 @@ members. It preserves Godot's specialization constants as Metal function constan
 lowers matrix inverse operations using Naga's own WGSL inverse formulas, and splits
 GLSL combined samplers into Naga's separate texture and sampler resources. It also
 supports 2D-array texture gathers and explicit gather components. It removes the
-generated LTC helper from compute shaders that do not call it. It uses flat Metal
-resource slots. For successful direct translations, Godot reflects
+generated LTC helper from compute shaders that do not call it. Naga's overload
+ranking prefers exact argument types over implicit conversions. The bridge uses flat
+Metal resource slots. For successful direct translations, Godot reflects
 descriptor layouts, stage interfaces, push constants, and specialization defaults
 directly from Naga IR. This direct path does not serialize SPIR-V. It does not invoke
 GLSLang, SPIRV-Reflect, or SPIRV-Cross. This includes storage-image formats and atomic access.
