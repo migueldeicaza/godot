@@ -61,6 +61,9 @@
 #include "servers/display/display_server.h"
 #include "servers/display/native_menu.h"
 #include "servers/movie_writer/movie_writer.h"
+#if defined(MACOS_ENABLED) || defined(IOS_ENABLED) || defined(VISIONOS_ENABLED)
+#include "servers/movie_writer/movie_writer_apple.h"
+#endif
 #include "servers/movie_writer/movie_writer_pngwav.h"
 #include "servers/rendering/renderer_rd/framebuffer_cache_rd.h"
 #include "servers/rendering/renderer_rd/storage_rd/render_data_rd.h"
@@ -142,6 +145,9 @@ static bool has_server_feature_callback(const String &p_feature) {
 }
 
 static MovieWriterPNGWAV *writer_pngwav = nullptr;
+#if defined(MACOS_ENABLED) || defined(IOS_ENABLED) || defined(VISIONOS_ENABLED)
+static MovieWriterApple *writer_apple = nullptr;
+#endif
 
 void register_server_types() {
 	OS::get_singleton()->benchmark_begin_measure("Servers", "Register Extensions");
@@ -374,6 +380,12 @@ void register_server_types() {
 		writer_pngwav = memnew(MovieWriterPNGWAV);
 		MovieWriter::add_writer(writer_pngwav);
 	}
+#if defined(MACOS_ENABLED) || defined(IOS_ENABLED) || defined(VISIONOS_ENABLED)
+	if constexpr (GD_IS_CLASS_ENABLED(MovieWriterApple)) {
+		writer_apple = memnew(MovieWriterApple);
+		MovieWriter::add_writer(writer_apple);
+	}
+#endif
 
 	OS::get_singleton()->benchmark_end_measure("Servers", "Register Extensions");
 }
@@ -386,6 +398,11 @@ void unregister_server_types() {
 	if constexpr (GD_IS_CLASS_ENABLED(MovieWriterPNGWAV)) {
 		memdelete(writer_pngwav);
 	}
+#if defined(MACOS_ENABLED) || defined(IOS_ENABLED) || defined(VISIONOS_ENABLED)
+	if constexpr (GD_IS_CLASS_ENABLED(MovieWriterApple)) {
+		memdelete(writer_apple);
+	}
+#endif
 
 	OS::get_singleton()->benchmark_end_measure("Servers", "Unregister Extensions");
 }

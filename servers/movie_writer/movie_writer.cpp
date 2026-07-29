@@ -99,7 +99,7 @@ void MovieWriter::get_supported_extensions(List<String> *r_extensions) const {
 	}
 }
 
-void MovieWriter::begin(const Size2i &p_movie_size, uint32_t p_fps, const String &p_base_path) {
+Error MovieWriter::begin(const Size2i &p_movie_size, uint32_t p_fps, const String &p_base_path) {
 	project_name = GLOBAL_GET("application/config/name");
 	movie_size = p_movie_size;
 
@@ -132,7 +132,13 @@ void MovieWriter::begin(const Size2i &p_movie_size, uint32_t p_fps, const String
 	audio_channels = AudioDriverDummy::get_dummy_singleton()->get_channels();
 	audio_mix_buffer.resize(mix_rate * audio_channels / fps);
 
-	write_begin(movie_size, p_fps, p_base_path);
+	const Error err = write_begin(movie_size, p_fps, p_base_path);
+	recording_active = err == OK;
+	recording_started = err == OK;
+	if (err != OK) {
+		ERR_PRINT(vformat("MovieWriter: failed to start recording to `%s` (error code: %d).", p_base_path, int(err)));
+	}
+	return err;
 }
 
 void MovieWriter::_bind_methods() {
@@ -155,6 +161,17 @@ void MovieWriter::_bind_methods() {
 	GLOBAL_DEF(PropertyInfo(Variant::FLOAT, "editor/movie_writer/ogv/audio_quality", PROPERTY_HINT_RANGE, "-0.1,1.0,0.01"), 0.5);
 	GLOBAL_DEF(PropertyInfo(Variant::INT, "editor/movie_writer/ogv/encoding_speed", PROPERTY_HINT_ENUM, "Fastest (Lowest Efficiency):4,Fast (Low Efficiency):3,Slow (High Efficiency):2,Slowest (Highest Efficiency):1"), 4);
 	GLOBAL_DEF(PropertyInfo(Variant::INT, "editor/movie_writer/ogv/keyframe_interval", PROPERTY_HINT_RANGE, "1,1024,1"), 64);
+#if defined(MACOS_ENABLED) || defined(IOS_ENABLED) || defined(VISIONOS_ENABLED)
+	GLOBAL_DEF(PropertyInfo(Variant::STRING, "editor/movie_writer/apple/video_codec", PROPERTY_HINT_ENUM, "h264,hevc,prores,mjpeg"), "hevc");
+	GLOBAL_DEF(PropertyInfo(Variant::STRING, "editor/movie_writer/apple/audio_codec", PROPERTY_HINT_ENUM, "aac,pcm_s16le,pcm_s24le,alac"), "aac");
+	GLOBAL_DEF(PropertyInfo(Variant::INT, "editor/movie_writer/apple/video_bitrate", PROPERTY_HINT_RANGE, "0,1000000000,1000,or_greater"), 0);
+	GLOBAL_DEF(PropertyInfo(Variant::INT, "editor/movie_writer/apple/audio_bitrate", PROPERTY_HINT_RANGE, "8000,1000000000,1000,or_greater"), 128000);
+	GLOBAL_DEF(PropertyInfo(Variant::INT, "editor/movie_writer/apple/keyframe_interval", PROPERTY_HINT_RANGE, "1,1024,1"), 64);
+	GLOBAL_DEF(PropertyInfo(Variant::INT, "editor/movie_writer/apple/audio_bit_depth", PROPERTY_HINT_ENUM, "16:16,24:24"), 16);
+	GLOBAL_DEF("editor/movie_writer/apple/allow_alpha", false);
+	GLOBAL_DEF(PropertyInfo(Variant::STRING, "editor/movie_writer/apple/prores/profile", PROPERTY_HINT_ENUM, "proxy,lt,422,hq,4444,4444_xq"), "422");
+	GLOBAL_DEF("editor/movie_writer/apple/debug_logging", false);
+#endif
 
 	// Used by the editor.
 	GLOBAL_DEF_BASIC("editor/movie_writer/movie_file", "");
@@ -184,6 +201,14 @@ void MovieWriter::set_extensions_hint() {
 }
 
 void MovieWriter::add_frame() {
+	if (!recording_active) {
+		// The dummy audio driver is not threaded in Movie Maker mode, so mixing here is the
+		// only thing that advances the audio server. Keep pumping it after recording stops,
+		// otherwise audio playback freezes engine-wide and `finished` signals never emit.
+		AudioDriverDummy::get_dummy_singleton()->mix_audio(mix_rate / fps, audio_mix_buffer.ptr());
+		return;
+	}
+
 	const int movie_time_seconds = Engine::get_singleton()->get_frames_drawn() / fps;
 	const int frame_remainder = Engine::get_singleton()->get_frames_drawn() % fps;
 	const String movie_time = vformat("%s:%s:%s:%s",
@@ -244,14 +269,30 @@ void MovieWriter::add_frame() {
 	AudioDriverDummy::get_dummy_singleton()->mix_audio(mix_rate / fps, audio_mix_buffer.ptr());
 
 	uint64_t encoding_start_usec = Time::get_singleton()->get_ticks_usec();
-	write_frame(vp_tex, audio_mix_buffer.ptr());
+	const Error err = write_frame(vp_tex, audio_mix_buffer.ptr());
 	uint64_t encoding_end_usec = Time::get_singleton()->get_ticks_usec();
 	encoding_time_usec += encoding_end_usec - encoding_start_usec;
+	if (err != OK) {
+		ERR_PRINT(vformat("MovieWriter: failed to write frame %d (error code: %d), aborting recording.", Engine::get_singleton()->get_frames_drawn(), int(err)));
+		write_end();
+		recording_active = false;
+	}
 }
 
 void MovieWriter::end() {
+	if (!recording_started) {
+		// Recording never started, so there is nothing to finalize or report.
+		return;
+	}
+
+	// `add_frame()` already finalized the writer if a frame error aborted the recording.
+	const bool aborted = !recording_active;
+
 	uint64_t encoding_start_usec = Time::get_singleton()->get_ticks_usec();
-	write_end();
+	if (recording_active) {
+		write_end();
+		recording_active = false;
+	}
 	uint64_t encoding_end_usec = Time::get_singleton()->get_ticks_usec();
 	encoding_time_usec += encoding_end_usec - encoding_start_usec;
 
@@ -263,7 +304,11 @@ void MovieWriter::end() {
 		// and to make it clickable in terminal emulators that support this.
 		movie_path = ProjectSettings::get_singleton()->globalize_path("res://").path_join(movie_path);
 	}
-	print_line(vformat("Done recording movie at path: %s", movie_path));
+	if (aborted) {
+		print_line(vformat("Recording aborted, movie at path may be incomplete or missing: %s", movie_path));
+	} else {
+		print_line(vformat("Done recording movie at path: %s", movie_path));
+	}
 
 	const int movie_time_seconds = Engine::get_singleton()->get_frames_drawn() / fps;
 	const int frame_remainder = Engine::get_singleton()->get_frames_drawn() % fps;

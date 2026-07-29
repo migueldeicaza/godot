@@ -4,3 +4,6 @@ from misc.utility.scons_hints import *
 Import("env")
 
 env.add_source_files(env.servers_sources, "*.cpp")
+
+if env["platform"] in ["macos", "ios", "visionos"]:
+    env.add_source_files(env.servers_sources, "*.mm")

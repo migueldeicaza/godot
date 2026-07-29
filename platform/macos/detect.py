@@ -267,6 +267,8 @@ def configure(env: "SConsEnvironment"):
             "-framework",
             "CoreMedia",
             "-framework",
+            "VideoToolbox",
+            "-framework",
             "QuartzCore",
             "-framework",
             "Security",

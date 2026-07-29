@@ -756,7 +756,7 @@ String EditorExportPlatformAppleEmbedded::_get_additional_plist_content() {
 
 String EditorExportPlatformAppleEmbedded::_get_linker_flags() {
 	Vector<Ref<EditorExportPlugin>> export_plugins = EditorExport::get_singleton()->get_export_plugins();
-	String result;
+	String result = "-framework AVFoundation -framework AudioToolbox -framework CoreMedia -framework CoreVideo -framework VideoToolbox";
 	for (int i = 0; i < export_plugins.size(); ++i) {
 		String flags = export_plugins[i]->get_apple_embedded_platform_linker_flags();
 		if (flags.length() == 0) {

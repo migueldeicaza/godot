@@ -4848,7 +4848,10 @@ int Main::start() {
 				movie_size.height = window_height_override;
 			}
 		}
-		movie_writer->begin(movie_size, fixed_fps, Engine::get_singleton()->get_write_movie_path());
+		if (movie_writer->begin(movie_size, fixed_fps, Engine::get_singleton()->get_write_movie_path()) != OK) {
+			// `begin()` already reported the reason for the failure.
+			return EXIT_FAILURE;
+		}
 	}
 
 	GDExtensionManager::get_singleton()->startup();

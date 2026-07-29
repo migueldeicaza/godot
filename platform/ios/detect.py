@@ -152,6 +152,20 @@ def configure(env: "SConsEnvironment"):
 
     env.Prepend(CPPPATH=["#platform/ios"])
     env.Append(CPPDEFINES=["IOS_ENABLED", "APPLE_EMBEDDED_ENABLED", "UNIX_ENABLED", "COREAUDIO_ENABLED"])
+    env.Append(
+        LINKFLAGS=[
+            "-framework",
+            "AVFoundation",
+            "-framework",
+            "AudioToolbox",
+            "-framework",
+            "CoreMedia",
+            "-framework",
+            "CoreVideo",
+            "-framework",
+            "VideoToolbox",
+        ]
+    )
 
     if env["metal"] and env["simulator"]:
         print_warning("iOS Simulator does not support the Metal rendering driver")
