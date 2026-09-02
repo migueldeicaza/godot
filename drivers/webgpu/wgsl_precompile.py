@@ -371,7 +371,7 @@ SHADER_REGISTRY = [
      GENERAL_DEFINES_NONE, [("default", "", [VERT, FRAG])]),
 
     ("servers/rendering/renderer_rd/shaders/effects/cube_to_octmap.glsl",
-     GENERAL_DEFINES_NONE, [("default", "", [COMP])]),
+     GENERAL_DEFINES_NONE, [("default", "", [VERT, FRAG])]),
 
     # ── Tone Mapper ─────────────────────────────────────────────────
     ("servers/rendering/renderer_rd/shaders/effects/tonemap_mobile.glsl",
@@ -491,15 +491,30 @@ SHADER_REGISTRY = [
 
     # ── Octahedral Map Effects ──────────────────────────────────────
     ("servers/rendering/renderer_rd/shaders/effects/octmap_downsampler.glsl",
-     GENERAL_DEFINES_NONE, [("default", "", [COMP])]),
+     GENERAL_DEFINES_NONE, [
+        ("DOWNSAMPLER_MODE_RGBA16F", "\n#define OCTMAP_FORMAT rgba16f\n", [COMP]),
+        ("DOWNSAMPLER_MODE_RGB10_A2", "\n#define OCTMAP_FORMAT rgb10_a2\n", [COMP]),
+    ]),
     ("servers/rendering/renderer_rd/shaders/effects/octmap_downsampler_raster.glsl",
      GENERAL_DEFINES_NONE, [("default", "", [VERT, FRAG])]),
     ("servers/rendering/renderer_rd/shaders/effects/octmap_filter.glsl",
-     GENERAL_DEFINES_NONE, [("default", "", [COMP])]),
+     GENERAL_DEFINES_NONE, [
+        ("FILTER_MODE_LOW_QUALITY_RGBA16F", "\n#define USE_LOW_QUALITY\n\n#define OCTMAP_FORMAT rgba16f\n", [COMP]),
+        ("FILTER_MODE_HIGH_QUALITY_RGBA16F", "\n#define USE_HIGH_QUALITY\n\n#define OCTMAP_FORMAT rgba16f\n", [COMP]),
+        ("FILTER_MODE_LOW_QUALITY_ARRAY_RGBA16F", "\n#define USE_LOW_QUALITY\n\n#define USE_TEXTURE_ARRAY\n\n#define OCTMAP_FORMAT rgba16f\n", [COMP]),
+        ("FILTER_MODE_HIGH_QUALITY_ARRAY_RGBA16F", "\n#define USE_HIGH_QUALITY\n\n#define USE_TEXTURE_ARRAY\n\n#define OCTMAP_FORMAT rgba16f\n", [COMP]),
+        ("FILTER_MODE_LOW_QUALITY_RGB10_A2", "\n#define USE_LOW_QUALITY\n\n#define OCTMAP_FORMAT rgb10_a2\n", [COMP]),
+        ("FILTER_MODE_HIGH_QUALITY_RGB10_A2", "\n#define USE_HIGH_QUALITY\n\n#define OCTMAP_FORMAT rgb10_a2\n", [COMP]),
+        ("FILTER_MODE_LOW_QUALITY_ARRAY_RGB10_A2", "\n#define USE_LOW_QUALITY\n\n#define USE_TEXTURE_ARRAY\n\n#define OCTMAP_FORMAT rgb10_a2\n", [COMP]),
+        ("FILTER_MODE_HIGH_QUALITY_ARRAY_RGB10_A2", "\n#define USE_HIGH_QUALITY\n\n#define USE_TEXTURE_ARRAY\n\n#define OCTMAP_FORMAT rgb10_a2\n", [COMP]),
+    ]),
     ("servers/rendering/renderer_rd/shaders/effects/octmap_filter_raster.glsl",
      GENERAL_DEFINES_NONE, [("default", "", [VERT, FRAG])]),
     ("servers/rendering/renderer_rd/shaders/effects/octmap_roughness.glsl",
-     GENERAL_DEFINES_NONE, [("default", "", [COMP])]),
+     GENERAL_DEFINES_NONE, [
+        ("ROUGHNESS_MODE_RGBA16F", "\n#define OCTMAP_FORMAT rgba16f\n", [COMP]),
+        ("ROUGHNESS_MODE_RGB10_A2", "\n#define OCTMAP_FORMAT rgb10_a2\n", [COMP]),
+    ]),
     ("servers/rendering/renderer_rd/shaders/effects/octmap_roughness_raster.glsl",
      GENERAL_DEFINES_NONE, [("default", "", [VERT, FRAG])]),
 
@@ -519,7 +534,11 @@ SHADER_REGISTRY = [
     ("servers/rendering/renderer_rd/shaders/effects/ssao.glsl",
      GENERAL_DEFINES_NONE, [("default", "", [COMP])]),
     ("servers/rendering/renderer_rd/shaders/effects/ssao_blur.glsl",
-     GENERAL_DEFINES_NONE, [("default", "", [COMP])]),
+     GENERAL_DEFINES_NONE, [
+        ("SSAO_BLUR_PASS", "\n#define MODE_NON_SMART\n", [COMP]),
+        ("SSAO_BLUR_PASS_SMART", "\n#define MODE_SMART\n", [COMP]),
+        ("SSAO_BLUR_PASS_WIDE", "\n#define MODE_WIDE\n", [COMP]),
+    ]),
     ("servers/rendering/renderer_rd/shaders/effects/ssao_importance_map.glsl",
      GENERAL_DEFINES_NONE, [("default", "", [COMP])]),
     ("servers/rendering/renderer_rd/shaders/effects/ssao_interleave.glsl",
@@ -529,7 +548,11 @@ SHADER_REGISTRY = [
     ("servers/rendering/renderer_rd/shaders/effects/ssil.glsl",
      GENERAL_DEFINES_NONE, [("default", "", [COMP])]),
     ("servers/rendering/renderer_rd/shaders/effects/ssil_blur.glsl",
-     GENERAL_DEFINES_NONE, [("default", "", [COMP])]),
+     GENERAL_DEFINES_NONE, [
+        ("SSIL_BLUR_PASS", "\n#define MODE_NON_SMART\n", [COMP]),
+        ("SSIL_BLUR_PASS_SMART", "\n#define MODE_SMART\n", [COMP]),
+        ("SSIL_BLUR_PASS_WIDE", "\n#define MODE_WIDE\n", [COMP]),
+    ]),
     ("servers/rendering/renderer_rd/shaders/effects/ssil_importance_map.glsl",
      GENERAL_DEFINES_NONE, [("default", "", [COMP])]),
     ("servers/rendering/renderer_rd/shaders/effects/ssil_interleave.glsl",
@@ -537,7 +560,11 @@ SHADER_REGISTRY = [
 
     # ── Subsurface Scattering ───────────────────────────────────────
     ("servers/rendering/renderer_rd/shaders/effects/subsurface_scattering.glsl",
-     GENERAL_DEFINES_NONE, [("default", "", [COMP])]),
+     GENERAL_DEFINES_NONE, [
+        ("SUBSURFACE_SCATTERING_MODE_LOW_QUALITY", "\n#define USE_11_SAMPLES\n", [COMP]),
+        ("SUBSURFACE_SCATTERING_MODE_MEDIUM_QUALITY", "\n#define USE_17_SAMPLES\n", [COMP]),
+        ("SUBSURFACE_SCATTERING_MODE_HIGH_QUALITY", "\n#define USE_25_SAMPLES\n", [COMP]),
+    ]),
 
     # ── SS Effects Downsample ───────────────────────────────────────
     ("servers/rendering/renderer_rd/shaders/effects/ss_effects_downsample.glsl",
@@ -545,9 +572,12 @@ SHADER_REGISTRY = [
 
     # ── Cluster ─────────────────────────────────────────────────────
     ("servers/rendering/renderer_rd/shaders/cluster_debug.glsl",
-     GENERAL_DEFINES_NONE, [("default", "", [VERT, FRAG])]),
+     GENERAL_DEFINES_NONE, [("default", "", [COMP])]),
     ("servers/rendering/renderer_rd/shaders/cluster_render.glsl",
-     GENERAL_DEFINES_NONE, [("default", "", [VERT, FRAG])]),
+     GENERAL_DEFINES_NONE, [
+        ("SHADER_NORMAL", "", [VERT, FRAG]),
+        ("SHADER_USE_ATTACHMENT", "\n#define USE_ATTACHMENT\n", [VERT, FRAG]),
+    ]),
     ("servers/rendering/renderer_rd/shaders/cluster_store.glsl",
      GENERAL_DEFINES_NONE, [("default", "", [COMP])]),
 
@@ -558,10 +588,6 @@ SHADER_REGISTRY = [
     # ── GI (gi.cpp:3573) ───────────────────────────────────────────
     ("servers/rendering/renderer_rd/shaders/environment/gi.glsl",
      "\n#define SDFGI_OCT_SIZE 5\n", [("default", "", [COMP])]),
-
-    # ── GI Probe Write ──────────────────────────────────────────────
-    ("servers/rendering/renderer_rd/shaders/giprobe_write.glsl",
-     GENERAL_DEFINES_NONE, [("default", "", [COMP])]),
 
     # ── Volumetric Fog (fog.cpp:218) ────────────────────────────────
     ("servers/rendering/renderer_rd/shaders/environment/volumetric_fog.glsl",
@@ -606,7 +632,8 @@ def compile_glsl_to_spirv(glsl_source, stage, glslang_path="glslangValidator"):
         glslang_path: Path to glslangValidator binary.
 
     Returns:
-        SPIR-V bytes on success, None on failure.
+        A tuple with SPIR-V bytes and no error on success, or no bytes and an
+        error message on failure.
     """
     with tempfile.NamedTemporaryFile(suffix=f".{stage}", mode="w", delete=False) as f:
         f.write(glsl_source)
@@ -619,6 +646,7 @@ def compile_glsl_to_spirv(glsl_source, stage, glslang_path="glslangValidator"):
             [
                 glslang_path,
                 "-V",
+                "--target-env", "vulkan1.1",
                 "-S", stage,
                 "-o", spv_path,
                 glsl_path,
@@ -629,7 +657,14 @@ def compile_glsl_to_spirv(glsl_source, stage, glslang_path="glslangValidator"):
         )
 
         if result.returncode != 0:
-            return None, result.stderr
+            diagnostics = "\n".join(
+                output.strip()
+                for output in (result.stdout, result.stderr)
+                if output.strip()
+            )
+            if not diagnostics:
+                diagnostics = f"glslangValidator exited with status {result.returncode}"
+            return None, diagnostics
 
         with open(spv_path, "rb") as f:
             spv_bytes = f.read()
@@ -796,7 +831,8 @@ def precompile_wgsl(repo_root, output_path, glslang_path="glslangValidator"):
                 spv_bytes, error = compile_glsl_to_spirv(glsl_source, stage_type, glslang_path)
                 if spv_bytes is None:
                     shader_name = os.path.basename(glsl_rel)
-                    print(f"  FAIL: {shader_name}:{variant_name}:{stage_type} — {error[:120] if error else 'unknown'}")
+                    print(f"  FAIL: {shader_name}:{variant_name}:{stage_type}")
+                    print(error if error else "unknown error")
                     failed_compile += 1
                     continue
 
