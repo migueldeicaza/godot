@@ -206,6 +206,12 @@ Because there is no local emscripten, the port is verified in two stages.
 Stage A — now, without emscripten:
 
 1. macOS editor build (`vulkan=no`, Metal path) must still compile and link.
+   **Passing as of `a152908809`**: `scons platform=macos target=editor
+   vulkan=no metal=yes webgpu=no` builds and links `bin/godot.macos.editor.arm64`,
+   and `--headless --quit` runs clean. Note that the background-task wrapper
+   reported exit 0 for a *failed* SCons run, so always confirm with
+   `scons: done building targets.` and the presence of the binary rather than
+   trusting the exit code.
    This exercises every shared-engine change: `rendering_device.cpp`,
    `rendering_device_driver.h`, `rendering_device_graph.*`, the renderer_rd
    storage classes, and all the patched GLSL. The Metal driver implements the
@@ -228,9 +234,9 @@ Stage B — after installing emsdk (>= 4.0.10):
 | 0 | Branch `webgpu-4.7` from the 4.7 tip; fetch `refs/wgpu/webgpu-4.6.2` | **done** |
 | 1 | Apply the `4.6.2-stable..webgpu-4.6.2` delta 3-way; resolve the 12 conflicts | **done** (`5e065e95cf`) |
 | 2 | Reconcile `thirdparty/spirv-headers`; confirm glslang + spirv-reflect build | **done** (`5e065e95cf`); build confirmation pending step 5 |
-| 3 | Stub the 25 new pure virtuals; `VSyncMode` rename | ~4h |
+| 3 | Stub the 24 new pure virtuals; `VSyncMode` rename | next |
 | 4 | `SHADER_STAGE_MAX`, `pipeline_type`, container fixups, `RS::`->`RSE::` | ~2h |
-| 5 | Stage A verification (macOS build green) | ~2h |
+| 5 | Stage A verification, non-WebGPU half (macOS build green) | **done** (`a152908809`) |
 | 6 | GLSL workaround sweep against the 4.7 shader set | ~2h |
 | 7 | glslang 1.4.335 SPIR-V fallout in `spirv_preprocess.cpp` / Tint | unbounded |
 | 8 | Stage B verification (needs emsdk) | — |
