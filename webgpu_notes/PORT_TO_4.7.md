@@ -109,25 +109,34 @@ the branch ships 157 SPIR-V preprocessing tests plus cargo/libFuzzer targets
 under `webgpu_tests/preprocessing_tests` — run them first; they localize
 failures quickly.
 
-### 3.5 spirv-headers collision — RESOLVED, and the opposite of expected
+### 3.5 spirv-headers collision — RESOLVED, per file, and neither way round
 
-4.7 vendors 4 files (`vulkan-sdk-1.4.335.0`, `b824a462`, 2025). The WebGPU
-branch vendors 11 (git `ad9184e7`, labelled 2026) because SPIRV-Tools needs
-`DebugInfo.h`, `NonSemantic*.h`, `OpenCL*.h` and `GLSL.std.450.h`.
+4.7 vendors 4 files (`vulkan-sdk-1.4.335.0`, 2025); the WebGPU branch vendors 11
+(git `ad9184e7`) because SPIRV-Tools needs `DebugInfo.h`, `NonSemantic*.h`,
+`OpenCL*.h` and `GLSL.std.450.h`. It took two attempts to get this right, and
+the lesson is that "which snapshot is newer" is the wrong question — the two
+snapshots diverged, and they diverged *differently per file*.
 
-The first draft of this plan assumed the WebGPU snapshot was newer and should be
-taken wholesale. That is wrong. Comparing the two `spirv.h` copies:
+| File | Enumerants only in 4.7 | Only in WebGPU | Keep |
+| --- | --- | --- | --- |
+| `spirv.h` | 169 | 0 | **4.7** |
+| `spirv.hpp` | 169 | 0 | **4.7** |
+| `spirv.hpp11` | 0 | **43** | **WebGPU** |
+| the 7 extra headers | — | only copy | WebGPU |
 
-* 169 enumerants exist only in 4.7's copy; **zero** exist only in the WebGPU
-  branch's copy.
-* The 145 lines that differ in the other direction are the INTEL -> ALTERA
-  vendor rename, and 4.7's copy retains all 985 `INTEL` aliases.
-* The vendored SPIRV-Tools sources reference none of those names directly.
+`spirv.h`/`spirv.hpp` carry the INTEL -> ALTERA vendor rename and newer
+extensions that `glslang` 1.4.335, `spirv-reflect` and `re-spirv` compile
+against; 4.7 also retains all 985 `INTEL` aliases, so nothing regresses.
+`spirv.hpp11` is the opposite: it carries `OpTypeBufferEXT`,
+`OpMemberDecorateIdEXT`, `OpSpecConstantDataKHR`, `OpBufferPointerEXT`,
+`OpUntypedImageTexelPointerEXT` and friends, which the vendored SPIRV-Tools
+references directly and 4.7's copy lacks. Both `hpp11` copies declare the same
+74 enum-class types and the same SPIR-V version `0x00010600`, and glslang's six
+SPIRV translation units — the other consumer of `hpp11` — compile clean against
+the WebGPU copy.
 
-So 4.7's `spirv.{h,hpp,hpp11}` and `LICENSE` are kept, and only the 7 extra
-headers are taken from the WebGPU branch. Taking the WebGPU copy wholesale would
-have silently downgraded the headers that `glslang` 1.4.335 and `spirv-reflect`
-compile against.
+Verify a change here by checking all three files independently. Comparing one
+and generalising is exactly the mistake that cost a build cycle.
 
 ### 3.6 GLSL workaround sweep
 
@@ -184,6 +193,19 @@ exactly one offending reference (`RS::LIGHT_OMNI_SHADOW_DUAL_PARABOLOID`), but
 auto-merged hunks land beside renamed code, so a compile pass is needed to catch
 stragglers.
 
+### 3.8 A third drift axis: emdawnwebgpu
+
+The port has three independent sources of drift, not two:
+
+1. Godot 4.6.2 -> 4.7 (sections 3.1-3.7).
+2. Bundled glslang 1.3.283 -> 1.4.335, changing the SPIR-V fed to Tint (3.4, and
+   section 7 below).
+3. **emdawnwebgpu / Dawn moving with the Emscripten version.** Nothing to do
+   with Godot. A newer Dawn added a `WGPUStringView` message parameter to
+   `WGPUQueueWorkDoneCallback`, breaking `_fence_work_done_callback`. Only that
+   one callback was affected (the map-async callback already had the newer
+   shape), but expect more of this whenever the Emscripten floor moves.
+
 ## 4. Build wiring
 
 * `SConstruct`: one line — `opts.Add(BoolVariable("webgpu", ...))`.
@@ -195,9 +217,18 @@ stragglers.
 * `modules/glslang/config.py`: `can_build` must also return true for
   `env["webgpu"]`.
 
-Emscripten 4.0.10+ is required for the `emdawnwebgpu` port. 4.7 already sets a
-4.0.0 floor. **No emscripten toolchain is currently installed on this machine**,
-so the web build cannot be exercised locally yet — see section 5.
+Emscripten 4.0.10+ is required for the `emdawnwebgpu` port; 4.7 already sets a
+4.0.0 floor. Verified working with Emscripten **6.0.9**.
+
+Host tool dependencies, neither of which the repository documents:
+
+* **`glslangValidator`** — the WGSL precompile step shells out to it to turn the
+  70 engine shaders into SPIR-V. Without it the build dies with
+  `glslangValidator: Permission denied`, which does not name the real problem.
+  Installed here via `brew install glslang` (16.5.0). See section 7 for why this
+  binary is only a bootstrap.
+* **`tint_convert_cli`** — built from source by `drivers/webgpu/SCsub` during the
+  build; no action needed, but it links ~570 objects and is not cheap.
 
 ## 5. Verification strategy
 
@@ -229,22 +260,78 @@ Stage B — after installing emsdk (>= 4.0.10):
 
 ## 6. Sequencing
 
-| Step | Work | Estimate |
+| Step | Work | Status |
 | --- | --- | --- |
-| 0 | Branch `webgpu-4.7` from the 4.7 tip; fetch `refs/wgpu/webgpu-4.6.2` | **done** |
-| 1 | Apply the `4.6.2-stable..webgpu-4.6.2` delta 3-way; resolve the 12 conflicts | **done** (`5e065e95cf`) |
-| 2 | Reconcile `thirdparty/spirv-headers`; confirm glslang + spirv-reflect build | **done** (`5e065e95cf`); build confirmation pending step 5 |
-| 3 | Stub the 24 new pure virtuals; `VSyncMode` rename | next |
-| 4 | `SHADER_STAGE_MAX`, `pipeline_type`, container fixups, `RS::`->`RSE::` | ~2h |
-| 5 | Stage A verification, non-WebGPU half (macOS build green) | **done** (`a152908809`) |
-| 6 | GLSL workaround sweep against the 4.7 shader set | ~2h |
-| 7 | glslang 1.4.335 SPIR-V fallout in `spirv_preprocess.cpp` / Tint | unbounded |
-| 8 | Stage B verification (needs emsdk) | — |
+| 0 | Branch `webgpu-4.7`; fetch `refs/wgpu/webgpu-4.6.2` | **done** |
+| 1 | Apply the delta 3-way; resolve the 12 conflicts | **done** `5e065e95cf` |
+| 2 | Reconcile `thirdparty/spirv-headers` | **done** `5e065e95cf`, corrected `1cdb49c4b4` |
+| 3 | The 24 new pure virtuals; `VSyncMode` rename | **done** `b9729024b6` |
+| 4 | `SHADER_STAGE_MAX`; emdawnwebgpu callback; HDR stub hardening | **done** `b9729024b6`, `1cdb49c4b4` |
+| 5 | Stage A: macOS build green, **web build green** | **done** `1cdb49c4b4` |
+| 6 | GLSL workaround sweep against the 4.7 shader set | next |
+| 7 | SPIR-V -> WGSL fallout; regenerate the precompiled table | open |
+| 8 | Stage B: scene smoketest, screenshots, benchmarks | open |
 
-Steps 1-6 are well understood. Step 7 is the genuine unknown and is the reason
-steps 1-5 are front-loaded: they get us to that answer fastest.
+Both builds now pass:
 
-## 7. Scope decision
+```
+scons platform=macos target=editor vulkan=no metal=yes webgpu=no   # links, runs
+scons platform=web webgpu=yes target=template_debug                # 45MB wasm + template zip
+```
+
+## 7. SPIR-V -> WGSL fallout (the remaining work)
+
+The precompile step reports:
+
+```
+Processing 70 shader files...
+Converting 182 SPIR-V modules to WGSL...
+Results: 171 compiled, 11 glsl failures, 11 tint failures
+Unique entries: 143 (from 193 total modules)
+```
+
+**171 of 182 modules convert.** The 11 Tint failures, by root cause:
+
+| Cause | Count | Shaders |
+| --- | --- | --- |
+| `TINT_UNIMPLEMENTED` crash | 3 | `forward_mobile/scene_forward_mobile` (`color_pass`, `uber_lightmap`), `environment/volumetric_fog` |
+| SPIR-V validation: `OpFunctionCall` argument type mismatch | 3 | `effects/tonemap` (`bicubic`, `bicubic_1d_lut`), `effects/taa_resolve` |
+| `textureLoad` on `input_attachment<f32>` | 2 | `effects/tonemap_mobile` (`subpass`, `subpass_1d_lut`) |
+| `textureStore` on `texture_storage_2d<undefined, write>` | 1 | `effects/screen_space_reflection_filter` |
+| `read_write` storage var in a vertex stage | 1 | `environment/voxel_gi_debug` |
+| missing `position` on vertex entry point | 1 | `environment/sdfgi_debug_probes` |
+
+`scene_forward_mobile:color_pass` is the one that matters most — it is the main
+3D shader for the mobile renderer, which is what WebGPU uses.
+
+The two `input_attachment` failures are expected: WebGPU has no subpasses, and
+the delta already forces `using_subpass_post_process = false`. Those variants
+are compiled by the precompiler but never used at runtime, so they can be
+excluded from the variant registry rather than fixed.
+
+### An important caveat on these numbers
+
+These 11 failures were measured against **system glslangValidator 16.5.0**, not
+against Godot's own bundled glslang 1.4.335. Per
+`webgpu_notes/precompile_naga_spirv_to_wgsl.md` the two emit different SPIR-V,
+which is the whole reason the two-step capture process exists. So this list is
+*indicative, not authoritative* — some entries (particularly the
+`OpFunctionCall` validation failures, which smell like a glslang 16.5 codegen
+quirk) may not reproduce with the engine's own glslang, and there may be
+failures this run does not show.
+
+Getting an authoritative list requires the capture path: build, run a scene in
+Chrome under Playwright via `webgpu_tests/wgsl_cache/capture_runtime_wgsl.mjs`,
+and let the runtime Tint fallback record `hash -> WGSL` for what the engine
+actually compiles. **4.7's glslang bump invalidates any previously captured
+table**, so this capture must be redone regardless.
+
+Until then the precompiled table's hashes will not match at runtime, every
+lookup misses, and shaders fall back to in-engine Tint conversion — functional
+but slow to start, and it is exactly the ~4.7s startup cost the precompilation
+was built to remove.
+
+## 8. Scope decision
 
 The whole `webgpu_tests/`, `webgpu_notes/` and `webgpu_site/` trees are carried
 over. They cost nothing at build time, and `webgpu_tests/preprocessing_tests` is
