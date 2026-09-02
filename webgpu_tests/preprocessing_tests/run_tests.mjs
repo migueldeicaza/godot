@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // SPIR-V preprocessing pass tests for the Tint-based WGSL conversion pipeline.
 //
-// Tests all 12 SPIR-V preprocessing passes via tint_convert_cli end-to-end.
+// Tests all 13 SPIR-V preprocessing passes via tint_convert_cli.
 //
 // Usage: node run_tests.mjs
 
@@ -74,6 +74,20 @@ function convertToWgsl(spvBytes) {
     return { wgsl, error: null };
   } catch (e) {
     return { wgsl: null, error: e.stderr || e.message || "unknown error" };
+  } finally {
+    try { unlinkSync(tmp); } catch (_) {}
+  }
+}
+
+// Run only the write-only storage buffer pass and return its SPIR-V bytes.
+function promoteWriteOnlyStorageBuffers(spvBytes) {
+  const tmp = join(tmpdir(), `preprocess_test_${Date.now()}_${Math.random().toString(36).slice(2)}.spv`);
+  try {
+    writeFileSync(tmp, spvBytes);
+    const spv = execFileSync(TINT_CLI, ["--promote-writeonly", tmp], { timeout: 30000 });
+    return { spv, error: null };
+  } catch (e) {
+    return { spv: null, error: e.stderr || e.message || "unknown error" };
   } finally {
     try { unlinkSync(tmp); } catch (_) {}
   }
@@ -340,6 +354,63 @@ function buildComputeWithStorageBuffer(hasStore = false) {
     ...encodeInst(Op.FunctionEnd),
   );
   return buildSpirvV13(13, insts);
+}
+
+// Build a compute shader with NonReadable on a written storage buffer.
+function buildComputeWithWriteOnlyStorageBuffer() {
+  // IDs: 1=void, 2=fn_type, 3=uint, 4=struct, 5=ptr_sb, 6=sb_var,
+  //      7=main, 8=label, 9=const0, 10=ptr_uint, 11=access_chain
+  return buildSpirvV13(12, [
+    ...encodeInst(Op.Capability, 1),
+    ...encodeInst(Op.MemoryModel, 0, 1),
+    ...encodeEntryPoint(ExecModel.GLCompute, 7, "main"),
+    ...encodeInst(Op.ExecutionMode, 7, 17, 1, 1, 1),
+    ...encodeInst(Op.Decorate, 4, Deco.Block),
+    ...encodeInst(Op.MemberDecorate, 4, 0, Deco.Offset, 0),
+    ...encodeInst(Op.MemberDecorate, 4, 0, Deco.NonReadable),
+    ...encodeInst(Op.Decorate, 6, Deco.DescriptorSet, 0),
+    ...encodeInst(Op.Decorate, 6, Deco.Binding, 0),
+    ...encodeInst(Op.Decorate, 6, Deco.NonReadable),
+    ...encodeInst(Op.TypeVoid, 1),
+    ...encodeInst(Op.TypeFunction, 2, 1),
+    ...encodeInst(Op.TypeInt, 3, 32, 0),
+    ...encodeInst(Op.TypeStruct, 4, 3),
+    ...encodeInst(Op.TypePointer, 5, SC.StorageBuffer, 4),
+    ...encodeInst(Op.TypePointer, 10, SC.StorageBuffer, 3),
+    ...encodeInst(Op.Variable, 5, 6, SC.StorageBuffer),
+    ...encodeInst(Op.Constant, 3, 9, 0),
+    ...encodeInst(Op.Function, 1, 7, 0, 2),
+    ...encodeInst(Op.Label, 8),
+    ...encodeInst(Op.AccessChain, 10, 11, 6, 9),
+    ...encodeInst(Op.Store, 11, 9),
+    ...encodeInst(Op.Return),
+    ...encodeInst(Op.FunctionEnd),
+  ]);
+}
+
+// Build a compute shader with NonReadable on a storage image.
+function buildComputeWithWriteOnlyStorageImage() {
+  // IDs: 1=void, 2=fn_type, 3=float, 4=image, 5=ptr_image,
+  //      6=image_var, 7=main, 8=label
+  return buildSpirvV13(9, [
+    ...encodeInst(Op.Capability, 1),
+    ...encodeInst(Op.MemoryModel, 0, 1),
+    ...encodeEntryPoint(ExecModel.GLCompute, 7, "main"),
+    ...encodeInst(Op.ExecutionMode, 7, 17, 1, 1, 1),
+    ...encodeInst(Op.Decorate, 6, Deco.DescriptorSet, 0),
+    ...encodeInst(Op.Decorate, 6, Deco.Binding, 0),
+    ...encodeInst(Op.Decorate, 6, Deco.NonReadable),
+    ...encodeInst(Op.TypeVoid, 1),
+    ...encodeInst(Op.TypeFunction, 2, 1),
+    ...encodeInst(Op.TypeFloat, 3, 32),
+    ...encodeInst(Op.TypeImage, 4, 3, 1, 0, 0, 0, 2, 1), // 2D rgba32f storage image
+    ...encodeInst(Op.TypePointer, 5, SC.UniformConstant, 4),
+    ...encodeInst(Op.Variable, 5, 6, SC.UniformConstant),
+    ...encodeInst(Op.Function, 1, 7, 0, 2),
+    ...encodeInst(Op.Label, 8),
+    ...encodeInst(Op.Return),
+    ...encodeInst(Op.FunctionEnd),
+  ]);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -810,9 +881,9 @@ console.log("\n=== Test 13: Edge cases ===");
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Test 14: Storage buffer access patterns
+// Test 14: Storage buffer access and write-only promotion
 // ─────────────────────────────────────────────────────────────────────────────
-console.log("\n=== Test 14: Storage buffer access patterns ===");
+console.log("\n=== Test 14: Storage buffer access and write-only promotion ===");
 
 {
   // 14a. Read-only storage buffer fixture.
@@ -862,6 +933,43 @@ console.log("\n=== Test 14: Storage buffer access patterns ===");
   const r = convertFixture("compute_particles.spv");
   if (r.wgsl) {
     assert(r.wgsl.includes("var<storage, read_write>"), "compute_particles has read_write buffer");
+  }
+}
+
+{
+  // 14f. NonReadable is removed from a written StorageBuffer and its member.
+  const spv = buildComputeWithWriteOnlyStorageBuffer();
+  const preprocessed = promoteWriteOnlyStorageBuffers(spv);
+  assert(preprocessed.spv !== null, "write-only storage buffer pass succeeds");
+  if (preprocessed.spv) {
+    assert(!preprocessed.spv.equals(spv), "write-only storage buffer SPIR-V is changed");
+    assertEq(preprocessed.spv.length, spv.length - 28, "variable and member NonReadable decorations are removed");
+  }
+
+  const r = convertToWgsl(spv);
+  assert(r.wgsl !== null, "write-only storage buffer converts");
+  if (r.wgsl) {
+    assert(r.wgsl.includes("var<storage, read_write>"), "write-only storage buffer becomes read_write");
+  }
+}
+
+{
+  // 14g. A write-only storage image is outside the pass and stays byte-identical.
+  const spv = buildComputeWithWriteOnlyStorageImage();
+  const r = promoteWriteOnlyStorageBuffers(spv);
+  assert(r.spv !== null, "write-only storage image pass succeeds");
+  if (r.spv) {
+    assert(r.spv.equals(spv), "write-only storage image stays byte-identical");
+  }
+}
+
+{
+  // 14h. A shader without NonReadable storage stays byte-identical.
+  const spv = buildMinimalComputeShader();
+  const r = promoteWriteOnlyStorageBuffers(spv);
+  assert(r.spv !== null, "unrelated shader pass succeeds");
+  if (r.spv) {
+    assert(r.spv.equals(spv), "unrelated shader stays byte-identical");
   }
 }
 

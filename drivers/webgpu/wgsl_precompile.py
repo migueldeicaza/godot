@@ -617,6 +617,23 @@ SHADER_REGISTRY = [
 ]
 # fmt: on
 
+# These shader variants use subpasses and input attachments. WebGPU supports
+# neither feature, and the WebGPU renderer disables the related runtime path.
+# Keep the entries in SHADER_REGISTRY so this reason remains visible.
+# Each entry is (shader path, variant name, reason).
+WGSL_PRECOMPILE_EXCLUSIONS = [
+    (
+        "servers/rendering/renderer_rd/shaders/effects/tonemap_mobile.glsl",
+        "subpass",
+        "WebGPU does not support subpasses or input attachments",
+    ),
+    (
+        "servers/rendering/renderer_rd/shaders/effects/tonemap_mobile.glsl",
+        "subpass_1d_lut",
+        "WebGPU does not support subpasses or input attachments",
+    ),
+]
+
 
 # ---------------------------------------------------------------------------
 # Build Pipeline
@@ -793,7 +810,13 @@ def precompile_wgsl(repo_root, output_path, glslang_path="glslangValidator"):
     compiled = 0
     failed_compile = 0
     failed_convert = 0
+    skipped_unsupported = 0
     entries = []  # (spv_hash, wgsl)
+
+    exclusion_reasons = {
+        (shader, variant): reason
+        for shader, variant, reason in WGSL_PRECOMPILE_EXCLUSIONS
+    }
 
     # Collect all SPIR-V files for batch Tint conversion.
     spv_batch = []  # (key, spv_path)
@@ -811,6 +834,12 @@ def precompile_wgsl(repo_root, output_path, glslang_path="glslangValidator"):
         stages = parse_glsl_file(glsl_path)
 
         for variant_name, variant_defines, stage_types in variants:
+            exclusion_reason = exclusion_reasons.get((glsl_rel, variant_name))
+            if exclusion_reason:
+                print(f"  SKIP: {glsl_rel}:{variant_name} ({exclusion_reason})")
+                skipped_unsupported += 1
+                continue
+
             for stage_type in stage_types:
                 total += 1
 
@@ -870,6 +899,7 @@ def precompile_wgsl(repo_root, output_path, glslang_path="glslangValidator"):
     generate_precompiled_header(entries, output_path)
 
     print(f"[WGSL Precompile] Results: {compiled} compiled, {failed_compile} glsl failures, {failed_convert} tint failures")
+    print(f"[WGSL Precompile] Skipped: {skipped_unsupported} (unsupported on WebGPU)")
     print(f"[WGSL Precompile] Unique entries: {len(entries)} (from {total} total modules)")
     print(f"[WGSL Precompile] Output: {output_path}")
 

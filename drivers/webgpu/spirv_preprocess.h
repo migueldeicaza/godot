@@ -106,6 +106,11 @@ Vector<uint8_t> fix_nonfinite_literals(const Vector<uint8_t> &p_bytes);
 // Rewrites pointer types, removes access chains, and updates loads.
 Vector<uint8_t> flatten_binding_arrays(const Vector<uint8_t> &p_bytes);
 
+// Remove NonReadable from storage buffer variables and their block members.
+// WGSL does not support write-only storage buffers, so this promotes them to
+// read-write. Storage images are left unchanged.
+Vector<uint8_t> promote_writeonly_storage_buffers(const Vector<uint8_t> &p_bytes);
+
 // Infer read-only storage buffers by analyzing write operations.
 // Adds OpDecorate NonWritable to StorageBuffer variables that are never
 // written to (no OpStore, OpAtomicStore, OpCopyMemory, etc.). This allows

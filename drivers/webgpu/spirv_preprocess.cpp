@@ -50,6 +50,7 @@ static constexpr uint16_t OP_TYPE_FLOAT = 22;
 static constexpr uint16_t OP_TYPE_IMAGE = 25;
 static constexpr uint16_t OP_TYPE_SAMPLER = 26;
 static constexpr uint16_t OP_TYPE_SAMPLED_IMAGE = 27;
+static constexpr uint16_t OP_TYPE_STRUCT = 30;
 static constexpr uint16_t OP_TYPE_POINTER = 32;
 static constexpr uint16_t OP_CONSTANT_TRUE = 41;
 static constexpr uint16_t OP_CONSTANT_FALSE = 42;
@@ -100,6 +101,7 @@ static constexpr uint32_t SC_PUSH_CONSTANT = 9;
 // SPIR-V decoration values.
 static constexpr uint32_t DECO_BUILTIN = 11;
 static constexpr uint32_t DECO_NON_WRITABLE = 24;
+static constexpr uint32_t DECO_NON_READABLE = 25;
 static constexpr uint32_t DECO_SPEC_ID = 1;
 static constexpr uint32_t DECO_BINDING = 33;
 static constexpr uint32_t DECO_DESCRIPTOR_SET = 34;
@@ -2415,6 +2417,126 @@ Vector<uint8_t> flatten_binding_arrays(const Vector<uint8_t> &p_bytes) {
 			append_bytes(out, data, pos * 4, wc * 4);
 		}
 
+		pos += wc;
+	}
+
+	return out;
+}
+
+// ---- promote_writeonly_storage_buffers ----
+
+Vector<uint8_t> promote_writeonly_storage_buffers(const Vector<uint8_t> &p_bytes) {
+	const uint8_t *data = p_bytes.ptr();
+	const int64_t len = p_bytes.size();
+	const uint32_t total_words = (uint32_t)(len / 4);
+
+	if (len < 20 || (len % 4) != 0) {
+		return p_bytes;
+	}
+
+	// Collect struct types and StorageBuffer pointer types.
+	HashSet<uint32_t> struct_types;
+	HashMap<uint32_t, uint32_t> storage_pointer_types;
+	uint32_t pos = 5;
+	while (pos < total_words) {
+		uint32_t w0 = read_word(data, len, pos);
+		uint32_t wc = (w0 >> 16);
+		uint16_t op = (uint16_t)(w0 & 0xFFFF);
+		if (wc == 0 || pos + wc > total_words) {
+			break;
+		}
+
+		if (op == OP_TYPE_STRUCT && wc >= 2) {
+			struct_types.insert(read_word(data, len, pos + 1));
+		} else if (op == OP_TYPE_POINTER && wc >= 4 && read_word(data, len, pos + 2) == SC_STORAGE_BUFFER) {
+			uint32_t pointer_type_id = read_word(data, len, pos + 1);
+			uint32_t base_type_id = read_word(data, len, pos + 3);
+			storage_pointer_types.insert(pointer_type_id, base_type_id);
+		}
+		pos += wc;
+	}
+
+	if (storage_pointer_types.is_empty()) {
+		return p_bytes;
+	}
+
+	// Collect StorageBuffer variables and their block struct types.
+	HashSet<uint32_t> storage_vars;
+	HashSet<uint32_t> storage_block_types;
+	pos = 5;
+	while (pos < total_words) {
+		uint32_t w0 = read_word(data, len, pos);
+		uint32_t wc = (w0 >> 16);
+		uint16_t op = (uint16_t)(w0 & 0xFFFF);
+		if (wc == 0 || pos + wc > total_words) {
+			break;
+		}
+
+		if (op == OP_VARIABLE && wc >= 4 && read_word(data, len, pos + 3) == SC_STORAGE_BUFFER) {
+			uint32_t pointer_type_id = read_word(data, len, pos + 1);
+			const uint32_t *base_type_id = storage_pointer_types.getptr(pointer_type_id);
+			if (base_type_id && struct_types.has(*base_type_id)) {
+				storage_vars.insert(read_word(data, len, pos + 2));
+				storage_block_types.insert(*base_type_id);
+			}
+		}
+		pos += wc;
+	}
+
+	if (storage_vars.is_empty()) {
+		return p_bytes;
+	}
+
+	// Quick scan: find a matching NonReadable decoration.
+	bool found = false;
+	pos = 5;
+	while (pos < total_words) {
+		uint32_t w0 = read_word(data, len, pos);
+		uint32_t wc = (w0 >> 16);
+		uint16_t op = (uint16_t)(w0 & 0xFFFF);
+		if (wc == 0 || pos + wc > total_words) {
+			break;
+		}
+
+		if (op == OP_DECORATE && wc >= 3 && read_word(data, len, pos + 2) == DECO_NON_READABLE && storage_vars.has(read_word(data, len, pos + 1))) {
+			found = true;
+			break;
+		}
+		if (op == OP_MEMBER_DECORATE && wc >= 4 && read_word(data, len, pos + 3) == DECO_NON_READABLE && storage_block_types.has(read_word(data, len, pos + 1))) {
+			found = true;
+			break;
+		}
+		pos += wc;
+	}
+
+	if (!found) {
+		return p_bytes;
+	}
+
+	// Strip matching OpDecorate and OpMemberDecorate instructions.
+	Vector<uint8_t> out;
+	append_bytes(out, data, 0, 20);
+
+	pos = 5;
+	while (pos < total_words) {
+		uint32_t w0 = read_word(data, len, pos);
+		uint32_t wc = (w0 >> 16);
+		uint16_t op = (uint16_t)(w0 & 0xFFFF);
+		if (wc == 0 || pos + wc > total_words) {
+			break;
+		}
+
+		bool skip = false;
+		if (op == OP_DECORATE && wc >= 3 && read_word(data, len, pos + 2) == DECO_NON_READABLE && storage_vars.has(read_word(data, len, pos + 1))) {
+			skip = true;
+		}
+		if (op == OP_MEMBER_DECORATE && wc >= 4 && read_word(data, len, pos + 3) == DECO_NON_READABLE && storage_block_types.has(read_word(data, len, pos + 1))) {
+			skip = true;
+		}
+
+		if (!skip) {
+			append_bytes(out, data, pos * 4, wc * 4);
+		}
 		pos += wc;
 	}
 

@@ -130,7 +130,7 @@ static bool parse_group_binding(const char *p, unsigned int &r_grp, unsigned int
 //
 // emdawnwebgpu only accepts WGSL, so every shader stage must be converted from
 // SPIR-V. Tint (C++, linked directly into the engine WASM) handles the
-// conversion. Twelve SPIR-V preprocessing passes (push constant rewriting,
+// conversion. Thirteen SPIR-V preprocessing passes (push constant rewriting,
 // sampler splitting, Y-flip, etc.) run before Tint's SpirvToWgsl.
 //
 // Cache lives for process lifetime — the SPIR-V → WGSL mapping is independent
@@ -192,6 +192,7 @@ static char *_translate_spirv_to_wgsl(const uint8_t *p_spv_ptr, int p_spv_size) 
 	spv = spirv_preprocess::strip_memory_barrier(spv);
 	spv = spirv_preprocess::fix_nonfinite_literals(spv);
 	spv = spirv_preprocess::flatten_binding_arrays(spv);
+	spv = spirv_preprocess::promote_writeonly_storage_buffers(spv);
 	spv = spirv_preprocess::infer_readonly_storage(spv);
 
 	// Convert to uint32_t words for Tint.

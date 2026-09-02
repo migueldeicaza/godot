@@ -1,6 +1,6 @@
 // tint_convert_cli — Standalone SPIR-V → WGSL converter for build-time precompilation.
 //
-// Runs the same 11 preprocessing passes as the Godot WebGPU runtime driver,
+// Runs the same 13 preprocessing passes as the Godot WebGPU runtime driver,
 // then converts to WGSL via Tint. Produces output identical to what the engine
 // generates at runtime, enabling precompilation of ubershader and specialized
 // shader variants at build time.
@@ -39,6 +39,15 @@ static std::vector<uint8_t> read_file(const char *p_path) {
 	return buf;
 }
 
+// Run only the write-only storage buffer pass and return SPIR-V bytes.
+// This mode supports byte-level preprocessing tests.
+static Vector<uint8_t> preprocess_writeonly_storage_buffers(const std::vector<uint8_t> &p_spv_bytes) {
+	Vector<uint8_t> spv;
+	spv.resize((int64_t)p_spv_bytes.size());
+	memcpy(spv.ptrw(), p_spv_bytes.data(), p_spv_bytes.size());
+	return spirv_preprocess::promote_writeonly_storage_buffers(spv);
+}
+
 // Run the full SPIR-V preprocessing pipeline + Tint conversion.
 // Returns WGSL string on success, empty string on failure (error written to r_error).
 static std::string convert_spirv_to_wgsl(const std::vector<uint8_t> &p_spv_bytes, std::string &r_error) {
@@ -52,7 +61,7 @@ static std::string convert_spirv_to_wgsl(const std::vector<uint8_t> &p_spv_bytes
 	spv.resize((int64_t)p_spv_bytes.size());
 	memcpy(spv.ptrw(), p_spv_bytes.data(), p_spv_bytes.size());
 
-	// 11 preprocessing passes (same order as rendering_device_driver_webgpu.cpp).
+	// 13 preprocessing passes (same order as rendering_device_driver_webgpu.cpp).
 	spv = spirv_preprocess::freeze_spec_constant_ops(spv);
 	spv = spirv_preprocess::rewrite_copy_logical(spv);
 	spv = spirv_preprocess::rewrite_terminate_invocation(spv);
@@ -65,6 +74,7 @@ static std::string convert_spirv_to_wgsl(const std::vector<uint8_t> &p_spv_bytes
 	spv = spirv_preprocess::strip_memory_barrier(spv);
 	spv = spirv_preprocess::fix_nonfinite_literals(spv);
 	spv = spirv_preprocess::flatten_binding_arrays(spv);
+	spv = spirv_preprocess::promote_writeonly_storage_buffers(spv);
 	spv = spirv_preprocess::infer_readonly_storage(spv);
 
 	// Ensure SPIR-V version is at least 1.3 (0x00010300). The preprocessing
@@ -202,6 +212,7 @@ static void print_usage() {
 	fprintf(stderr, "Usage:\n");
 	fprintf(stderr, "  tint_convert_cli <file.spv>                       Single file → WGSL to stdout\n");
 	fprintf(stderr, "  tint_convert_cli --batch <file1.spv> [file2.spv]  Batch → JSON to stdout\n");
+	fprintf(stderr, "  tint_convert_cli --promote-writeonly <file.spv>   Run one pass → SPIR-V to stdout\n");
 }
 
 int main(int argc, char *argv[]) {
@@ -210,9 +221,27 @@ int main(int argc, char *argv[]) {
 		return 1;
 	}
 
-	tint_wrapper_initialize();
-
 	bool batch_mode = (strcmp(argv[1], "--batch") == 0);
+	bool promote_writeonly_mode = (strcmp(argv[1], "--promote-writeonly") == 0);
+
+	if (promote_writeonly_mode) {
+		if (argc != 3) {
+			fprintf(stderr, "Error: --promote-writeonly requires one file argument.\n");
+			return 1;
+		}
+
+		auto spv_bytes = read_file(argv[2]);
+		if (spv_bytes.empty()) {
+			fprintf(stderr, "Error: Failed to read '%s'\n", argv[2]);
+			return 1;
+		}
+
+		Vector<uint8_t> result = preprocess_writeonly_storage_buffers(spv_bytes);
+		std::cout.write(reinterpret_cast<const char *>(result.ptr()), result.size());
+		return 0;
+	}
+
+	tint_wrapper_initialize();
 
 	if (batch_mode) {
 		if (argc < 3) {
