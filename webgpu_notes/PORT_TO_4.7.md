@@ -268,8 +268,8 @@ Stage B — after installing emsdk (>= 4.0.10):
 | 3 | The 24 new pure virtuals; `VSyncMode` rename | **done** `b9729024b6` |
 | 4 | `SHADER_STAGE_MAX`; emdawnwebgpu callback; HDR stub hardening | **done** `b9729024b6`, `1cdb49c4b4` |
 | 5 | Stage A: macOS build green, **web build green** | **done** `1cdb49c4b4` |
-| 6 | GLSL workaround sweep against the 4.7 shader set | next |
-| 7 | SPIR-V -> WGSL fallout; regenerate the precompiled table | open |
+| 6 | GLSL sweep (empty) + precompile registry resync | **done** `579b841bb3` |
+| 7 | 14 SPIR-V -> WGSL failures; regenerate the precompiled table | open, scoped |
 | 8 | Stage B: scene smoketest, screenshots, benchmarks | open |
 
 Both builds now pass:
@@ -281,55 +281,100 @@ scons platform=web webgpu=yes target=template_debug                # 45MB wasm +
 
 ## 7. SPIR-V -> WGSL fallout (the remaining work)
 
-The precompile step reports:
+### Step 6 was not where the work was
 
-```
-Processing 70 shader files...
-Converting 182 SPIR-V modules to WGSL...
-Results: 171 compiled, 11 glsl failures, 11 tint failures
-Unique entries: 143 (from 193 total modules)
-```
+The GLSL workaround sweep the plan budgeted for is essentially empty. Only three
+`isnan`/`isinf` uses remained (`environment/volumetric_fog_process.glsl`, new in
+4.7); `1e20`-scale literals, `modf` and varying arrays are all already clean.
+Rewriting those three changed the conversion results **not at all** (171/11/11
+before and after), because Tint handles `OpIsNan`/`OpIsInf` — the GLSL-level
+workarounds in this branch were written for the older *naga* pipeline and are
+largely obsolete. The change was reverted to avoid pointless divergence from
+upstream.
 
-**171 of 182 modules convert.** The 11 Tint failures, by root cause:
+There is a cleanup opportunity here, not taken: several existing GLSL
+workarounds (`effects/copy.glsl`, `effects/motion_vectors.glsl`, the `1e20` ->
+`1e6` edits) may now be revertible under Tint, which would shrink the branch's
+divergence from upstream. Verify one at a time against the precompiler before
+removing any.
+
+The actual step-6 work was the **stale precompile shader registry** — see below.
+
+### The registry was stale, and the SPIR-V version was wrong
+
+`drivers/webgpu/wgsl_precompile.py` drives precompilation from a hand-written
+`SHADER_REGISTRY`. It was written against 4.6.2 and 4.7 changed shaders to
+require defines it did not supply — e.g. 4.7's `effects/octmap_downsampler.glsl`
+has `layout(OCTMAP_FORMAT, set = 1, binding = 0)` and the engine supplies that
+macro as two variants from `effects/copy_effects.cpp`, while the registry listed
+one variant with no defines. Eleven variants failed to compile as GLSL at all.
+
+Resynced against the engine's own `ShaderRD::initialize()` calls. Also fixed
+two things found on the way:
+
+* The precompiler compiled with glslang's **default** target, i.e. Vulkan 1.0 /
+  SPIR-V 1.0, while the WebGPU shader container declares
+  `SHADER_LANGUAGE_VULKAN_VERSION_1_1` + `SHADER_SPIRV_VERSION_1_3`. It now
+  passes `--target-env vulkan1.1`. This matters: it is why the measured failure
+  set shifted rather than merely shrinking.
+* `compile_glsl_to_spirv()` reported only `stderr` and truncated it, turning
+  every GLSL error into an unusable `ERROR: /var/folders/...`. It now surfaces
+  the full diagnostic.
+* `giprobe_write.glsl` is a dead shader in upstream Godot — tracked in both
+  4.6.2 and 4.7, but with no C++ consumer and not in any SCsub. Dropped from the
+  registry rather than given invented defines.
+
+Result: **195 compiled, 0 GLSL failures, 14 Tint failures** (from 171/11/11).
+
+### The 14 remaining SPIR-V -> WGSL failures
 
 | Cause | Count | Shaders |
 | --- | --- | --- |
-| `TINT_UNIMPLEMENTED` crash | 3 | `forward_mobile/scene_forward_mobile` (`color_pass`, `uber_lightmap`), `environment/volumetric_fog` |
+| `TINT_UNIMPLEMENTED` crash | 5 | `forward_mobile/scene_forward_mobile` (`color_pass`, `uber_color_pass`), `cluster_render` (`SHADER_NORMAL`, `SHADER_USE_ATTACHMENT`), `environment/volumetric_fog` |
 | SPIR-V validation: `OpFunctionCall` argument type mismatch | 3 | `effects/tonemap` (`bicubic`, `bicubic_1d_lut`), `effects/taa_resolve` |
+| write-only var in `storage` address space (WGSL allows only `read`/`read_write`) | 2 | `skeleton`, `particles_copy` |
 | `textureLoad` on `input_attachment<f32>` | 2 | `effects/tonemap_mobile` (`subpass`, `subpass_1d_lut`) |
 | `textureStore` on `texture_storage_2d<undefined, write>` | 1 | `effects/screen_space_reflection_filter` |
-| `read_write` storage var in a vertex stage | 1 | `environment/voxel_gi_debug` |
 | missing `position` on vertex entry point | 1 | `environment/sdfgi_debug_probes` |
 
-`scene_forward_mobile:color_pass` is the one that matters most — it is the main
-3D shader for the mobile renderer, which is what WebGPU uses.
+Priorities: `scene_forward_mobile:color_pass` is the main 3D shader for the
+renderer WebGPU uses. `skeleton` and `particles_copy` are hot-path and their
+failure mode (write-only storage) looks like a missing preprocessing pass rather
+than a shader bug — `infer_readonly_storage` marks read-only SSBOs `NonWritable`,
+but nothing promotes write-only ones to `read_write`. The two `input_attachment`
+failures are expected and harmless: WebGPU has no subpasses, the delta already
+forces `using_subpass_post_process = false`, and those variants are never used at
+runtime — they should be dropped from the registry rather than fixed.
 
-The two `input_attachment` failures are expected: WebGPU has no subpasses, and
-the delta already forces `using_subpass_post_process = false`. Those variants
-are compiled by the precompiler but never used at runtime, so they can be
-excluded from the variant registry rather than fixed.
+These numbers come from `tint_convert_cli`, which runs the **same 11
+preprocessing passes in the same order** as the runtime driver
+(`drivers/webgpu/tint_cli/main.cpp`), so they are representative of the runtime
+path, not of raw Tint.
 
-### An important caveat on these numbers
+### On getting an authoritative measurement
 
-These 11 failures were measured against **system glslangValidator 16.5.0**, not
-against Godot's own bundled glslang 1.4.335. Per
-`webgpu_notes/precompile_naga_spirv_to_wgsl.md` the two emit different SPIR-V,
-which is the whole reason the two-step capture process exists. So this list is
-*indicative, not authoritative* — some entries (particularly the
-`OpFunctionCall` validation failures, which smell like a glslang 16.5 codegen
-quirk) may not reproduce with the engine's own glslang, and there may be
-failures this run does not show.
+`webgpu_tests/shader_corpus/validate_spirv_dump.mjs` plus
+`GODOT_DUMP_SPIRV=<dir>` looks like the authoritative check — it validates the
+engine's *own* compiled SPIR-V — but it **cannot be used from a Metal editor
+build**. Attempting it here produced 333/333 failures, all
+`Invalid SPIR-V binary version 1.6 for target environment`: the Metal container
+requests `SHADER_SPIRV_VERSION_1_6` (in 4.6.2 too — this is not a 4.7 change),
+while Tint targets Vulkan 1.1 / SPIR-V 1.3. That result is a pure measurement
+artifact and says nothing about the port.
 
-Getting an authoritative list requires the capture path: build, run a scene in
-Chrome under Playwright via `webgpu_tests/wgsl_cache/capture_runtime_wgsl.mjs`,
-and let the runtime Tint fallback record `hash -> WGSL` for what the engine
-actually compiles. **4.7's glslang bump invalidates any previously captured
-table**, so this capture must be redone regardless.
+The `expected_failures.json` baseline (32 failures / 309 shaders, 2026-05-05)
+was therefore captured from a **Vulkan** editor build. Reproducing it needs
+`vulkan=yes`, which needs the MoltenVK SDK — not installed on this machine.
+Note also that even with a Vulkan build the baseline is no longer directly
+comparable: **4.7 raised the Vulkan container from SPIR-V 1.3 to 1.4**
+(`drivers/vulkan/rendering_shader_container_vulkan.cpp`), while WebGPU stays
+pinned at 1.3.
 
-Until then the precompiled table's hashes will not match at runtime, every
-lookup misses, and shaders fall back to in-engine Tint conversion — functional
-but slow to start, and it is exactly the ~4.7s startup cost the precompilation
-was built to remove.
+So the precompiler run is currently the best available measurement, and since
+the `--target-env vulkan1.1` fix it emits exactly the SPIR-V version the WebGPU
+container requests. The only remaining discrepancy is the glslang *binary*
+(system 16.5.0 vs Godot's bundled 1.4.335). Closing that gap means either
+building a Vulkan editor, or running the real web build in a browser.
 
 ## 8. Scope decision
 
