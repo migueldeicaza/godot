@@ -139,11 +139,11 @@ struct WGVertexFormat {
 
 struct WGShader {
 	// Per-stage shader modules. Indexed by RDD::ShaderStage enum value.
-	WGPUShaderModule stage_modules[6] = {}; // SHADER_STAGE_MAX = 6 (vertex/frag/tess×2/compute/max)
+	WGPUShaderModule stage_modules[RDD::SHADER_STAGE_MAX] = {};
 	WGPUShaderModule module = nullptr; // Legacy alias — points to first non-null module.
 
 	// Per-stage raw SPIR-V bytes. Stored for deferred specialization constant patching.
-	PackedByteArray stage_spirv[6];
+	PackedByteArray stage_spirv[RDD::SHADER_STAGE_MAX];
 
 	WGPUPipelineLayout pipeline_layout = nullptr;
 	LocalVector<WGPUBindGroupLayout> bind_group_layouts; // One per descriptor set.
@@ -200,7 +200,7 @@ struct WGShader {
 	// Per-stage set of override constant IDs found in the WGSL output.
 	// Used to filter WGPUConstantEntry per stage — WebGPU requires that
 	// every constant key passed to a stage actually exists in that module.
-	HashSet<uint32_t> stage_override_ids[6];
+	HashSet<uint32_t> stage_override_ids[RDD::SHADER_STAGE_MAX];
 };
 
 // =============================================================================
@@ -245,7 +245,7 @@ struct WGPipelineWrapper {
 	WGShader *shader = nullptr;
 	// Specialized shader modules created with pipeline-specific specialization constants.
 	// If non-null, these are owned by this pipeline and must be released.
-	WGPUShaderModule specialized_modules[6] = {};
+	WGPUShaderModule specialized_modules[RDD::SHADER_STAGE_MAX] = {};
 	// WebGPU has no pipeline-level stencil reference — it must be set dynamically
 	// via wgpuRenderPassEncoderSetStencilReference(). Stored here at creation time,
 	// applied when the pipeline is bound.

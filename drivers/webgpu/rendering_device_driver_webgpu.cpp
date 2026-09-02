@@ -3155,6 +3155,16 @@ RDD::DataFormat RenderingDeviceDriverWebGPU::swap_chain_get_format(SwapChainID p
 	return _wgpu_to_data_format(sc->format);
 }
 
+RDD::ColorSpace RenderingDeviceDriverWebGPU::swap_chain_get_color_space(SwapChainID p_swap_chain) {
+	// WebGPU has no HDR swap chain output capability.
+	return COLOR_SPACE_REC709_NONLINEAR_SRGB;
+}
+
+bool RenderingDeviceDriverWebGPU::swap_chain_get_hdr_output_supported(SwapChainID p_swap_chain) {
+	// WebGPU has no HDR swap chain output capability.
+	return false;
+}
+
 void RenderingDeviceDriverWebGPU::swap_chain_free(SwapChainID p_swap_chain) {
 	WGSwapChain *sc = (WGSwapChain *)(p_swap_chain.id);
 	ERR_FAIL_NULL(sc);
@@ -4147,7 +4157,7 @@ RDD::ShaderID RenderingDeviceDriverWebGPU::shader_create_from_container(const Re
 			break;
 		}
 
-		if (s.shader_stage < 6) {
+		if (s.shader_stage < RDD::SHADER_STAGE_MAX) {
 			shader->stage_modules[s.shader_stage] = mod;
 		}
 		// Set the legacy module alias to the first created module.
@@ -4671,7 +4681,7 @@ RDD::ShaderID RenderingDeviceDriverWebGPU::shader_create_from_container(const Re
 
 cleanup:
 	// Clean up partially-constructed shader (mirrors shader_free).
-	for (int i = 0; i < 6; i++) {
+	for (int i = 0; i < RDD::SHADER_STAGE_MAX; i++) {
 		if (shader->stage_modules[i]) {
 			wgpuShaderModuleRelease(shader->stage_modules[i]);
 		}
@@ -4701,7 +4711,7 @@ uint32_t RenderingDeviceDriverWebGPU::shader_get_layout_hash(ShaderID p_shader) 
 void RenderingDeviceDriverWebGPU::shader_free(ShaderID p_shader) {
 	WGShader *shader = (WGShader *)(p_shader.id);
 	ERR_FAIL_NULL(shader);
-	for (int i = 0; i < 6; i++) {
+	for (int i = 0; i < RDD::SHADER_STAGE_MAX; i++) {
 		if (shader->stage_modules[i]) {
 			wgpuShaderModuleRelease(shader->stage_modules[i]);
 			shader->stage_modules[i] = nullptr;
@@ -4724,7 +4734,7 @@ void RenderingDeviceDriverWebGPU::shader_free(ShaderID p_shader) {
 void RenderingDeviceDriverWebGPU::shader_destroy_modules(ShaderID p_shader) {
 	WGShader *shader = (WGShader *)(p_shader.id);
 	ERR_FAIL_NULL(shader);
-	for (int i = 0; i < 6; i++) {
+	for (int i = 0; i < RDD::SHADER_STAGE_MAX; i++) {
 		if (shader->stage_modules[i]) {
 			wgpuShaderModuleRelease(shader->stage_modules[i]);
 			shader->stage_modules[i] = nullptr;
@@ -6236,7 +6246,7 @@ void RenderingDeviceDriverWebGPU::pipeline_free(PipelineID p_pipeline) {
 		wgpuComputePipelineRelease(pw->compute_handle);
 	}
 	// Release any specialized shader modules owned by this pipeline.
-	for (int i = 0; i < 6; i++) {
+	for (int i = 0; i < RDD::SHADER_STAGE_MAX; i++) {
 		if (pw->specialized_modules[i]) {
 			wgpuShaderModuleRelease(pw->specialized_modules[i]);
 		}
@@ -8361,6 +8371,63 @@ RDD::PipelineID RenderingDeviceDriverWebGPU::compute_pipeline_create(ShaderID p_
 }
 
 // =============================================================================
+// RAYTRACING
+// =============================================================================
+
+// WebGPU has no raytracing capability.
+RDD::AccelerationStructureID RenderingDeviceDriverWebGPU::blas_create(VectorView<AccelerationStructureGeometry> p_geometries, BitField<AccelerationStructureFlagBits> p_flags) {
+	ERR_FAIL_V_MSG(AccelerationStructureID(), "WebGPU does not support raytracing.");
+}
+
+RDD::AccelerationStructureID RenderingDeviceDriverWebGPU::tlas_create(uint32_t p_max_instance_count, BitField<AccelerationStructureFlagBits> p_flags) {
+	ERR_FAIL_V_MSG(AccelerationStructureID(), "WebGPU does not support raytracing.");
+}
+
+void RenderingDeviceDriverWebGPU::acceleration_structure_instance_write(uint8_t *r_driver_instance, const AccelerationStructureInstance &p_instance) {
+	ERR_FAIL_MSG("WebGPU does not support raytracing.");
+}
+
+void RenderingDeviceDriverWebGPU::acceleration_structure_free(AccelerationStructureID p_acceleration_structure) {
+	ERR_FAIL_MSG("WebGPU does not support raytracing.");
+}
+
+uint32_t RenderingDeviceDriverWebGPU::acceleration_structure_get_scratch_size_bytes(AccelerationStructureID p_acceleration_structure) {
+	ERR_FAIL_V_MSG(0, "WebGPU does not support raytracing.");
+}
+
+RDD::RaytracingPipelineID RenderingDeviceDriverWebGPU::raytracing_pipeline_create(VectorView<PipelineShader> p_shaders, VectorView<uint32_t> p_raygen_shader_indices, VectorView<uint32_t> p_miss_shader_indices, VectorView<HitGroup> p_hit_groups, uint32_t p_max_trace_recursion_depth, ShaderID p_layout_defining_shader) {
+	ERR_FAIL_V_MSG(RaytracingPipelineID(), "WebGPU does not support raytracing.");
+}
+
+void RenderingDeviceDriverWebGPU::raytracing_pipeline_free(RaytracingPipelineID p_pipeline) {
+	ERR_FAIL_MSG("WebGPU does not support raytracing.");
+}
+
+bool RenderingDeviceDriverWebGPU::raytracing_pipeline_get_shader_group_handles(RaytracingPipelineID p_pipeline, uint32_t p_group_index_offset, VectorView<uint32_t> p_group_indices, uint8_t *r_data, uint32_t p_data_stride_bytes) {
+	ERR_FAIL_V_MSG(false, "WebGPU does not support raytracing.");
+}
+
+void RenderingDeviceDriverWebGPU::command_build_blas(CommandBufferID p_cmd_buffer, AccelerationStructureID p_acceleration_structure, BufferID p_scratch_buffer) {
+	ERR_FAIL_MSG("WebGPU does not support raytracing.");
+}
+
+void RenderingDeviceDriverWebGPU::command_build_tlas(CommandBufferID p_cmd_buffer, AccelerationStructureID p_acceleration_structure, BufferID p_scratch_buffer, BufferID p_instance_buffer, uint32_t p_instance_offset, uint32_t p_instance_count) {
+	ERR_FAIL_MSG("WebGPU does not support raytracing.");
+}
+
+void RenderingDeviceDriverWebGPU::command_bind_raytracing_pipeline(CommandBufferID p_cmd_buffer, RaytracingPipelineID p_pipeline) {
+	ERR_FAIL_MSG("WebGPU does not support raytracing.");
+}
+
+void RenderingDeviceDriverWebGPU::command_bind_raytracing_uniform_set(CommandBufferID p_cmd_buffer, UniformSetID p_uniform_set, ShaderID p_shader, uint32_t p_set_index) {
+	ERR_FAIL_MSG("WebGPU does not support raytracing.");
+}
+
+void RenderingDeviceDriverWebGPU::command_trace_rays(CommandBufferID p_cmd_buffer, const ShaderBindingTable &p_raygen_sbt, const ShaderBindingTable &p_miss_sbt, const ShaderBindingTable &p_hit_sbt, uint32_t p_width, uint32_t p_height, uint32_t p_depth) {
+	ERR_FAIL_MSG("WebGPU does not support raytracing.");
+}
+
+// =============================================================================
 // QUERIES
 // =============================================================================
 
@@ -8670,7 +8737,7 @@ void RenderingDeviceDriverWebGPU::set_object_name(ObjectType p_type, ID p_driver
 			WGShader *shader = (WGShader *)(p_driver_id.id);
 			if (shader) {
 				shader->name = p_name;
-				for (uint32_t i = 0; i < 6; i++) {
+				for (uint32_t i = 0; i < RDD::SHADER_STAGE_MAX; i++) {
 					if (shader->stage_modules[i]) {
 						wgpuShaderModuleSetLabel(shader->stage_modules[i], label);
 					}
@@ -8817,6 +8884,11 @@ bool RenderingDeviceDriverWebGPU::has_feature(Features p_feature) {
 			return false; // Not available in WebGPU.
 		case SUPPORTS_POINT_SIZE:
 			return false; // Point size not controllable in WebGPU.
+		case SUPPORTS_RAY_QUERY:
+		case SUPPORTS_RAYTRACING_PIPELINE:
+			return false; // WebGPU has no raytracing capability.
+		case SUPPORTS_HDR_OUTPUT:
+			return false; // WebGPU has no HDR output capability.
 		default:
 			return false;
 	}

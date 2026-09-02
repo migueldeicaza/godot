@@ -80,7 +80,7 @@ bool DisplayServerWeb::check_size_force_redraw() {
 #ifdef WEBGPU_ENABLED
 		// Also update the rendering context surface so the swap chain resizes correctly.
 		if (rendering_context != nullptr) {
-			rendering_context->window_set_size(MAIN_WINDOW_ID, window_size.x, window_size.y);
+			rendering_context->window_set_size(DisplayServerEnums::MAIN_WINDOW_ID, window_size.x, window_size.y);
 		}
 #endif
 	}
@@ -1159,18 +1159,18 @@ DisplayServerWeb::DisplayServerWeb(const String &p_rendering_driver, DisplayServ
 			r_error = ERR_CANT_CREATE;
 			ERR_FAIL_MSG("WebGPU: Failed to initialize rendering context. Ensure navigator.gpu is available and the device was pre-initialized in the HTML shell.");
 		}
-		Error err = rendering_context->window_create(MAIN_WINDOW_ID, nullptr);
+		Error err = rendering_context->window_create(DisplayServerEnums::MAIN_WINDOW_ID, nullptr);
 		if (err != OK) {
 			memdelete(rendering_context);
 			rendering_context = nullptr;
 			r_error = err;
 			ERR_FAIL_MSG("WebGPU: Failed to create canvas surface.");
 		}
-		rendering_context->window_set_size(MAIN_WINDOW_ID, p_resolution.x, p_resolution.y);
-		rendering_context->window_set_vsync_mode(MAIN_WINDOW_ID, p_vsync_mode);
+		rendering_context->window_set_size(DisplayServerEnums::MAIN_WINDOW_ID, p_resolution.x, p_resolution.y);
+		rendering_context->window_set_vsync_mode(DisplayServerEnums::MAIN_WINDOW_ID, p_vsync_mode);
 
 		rendering_device = memnew(RenderingDevice);
-		err = rendering_device->initialize(rendering_context, MAIN_WINDOW_ID);
+		err = rendering_device->initialize(rendering_context, DisplayServerEnums::MAIN_WINDOW_ID);
 		if (err != OK) {
 			memdelete(rendering_device);
 			rendering_device = nullptr;
@@ -1179,7 +1179,7 @@ DisplayServerWeb::DisplayServerWeb(const String &p_rendering_driver, DisplayServ
 			r_error = err;
 			ERR_FAIL_MSG("WebGPU: Failed to initialize rendering device.");
 		}
-		err = rendering_device->screen_create(MAIN_WINDOW_ID);
+		err = rendering_device->screen_create(DisplayServerEnums::MAIN_WINDOW_ID);
 		if (err != OK) {
 			// Non-fatal: the swapchain may be resized on first frame.
 			WARN_PRINT("WebGPU: screen_create() failed — swapchain will be set up on first frame.");
@@ -1257,7 +1257,7 @@ DisplayServerWeb::~DisplayServerWeb() {
 #endif
 #ifdef WEBGPU_ENABLED
 	if (rendering_device) {
-		rendering_device->screen_free(MAIN_WINDOW_ID);
+		rendering_device->screen_free(DisplayServerEnums::MAIN_WINDOW_ID);
 		memdelete(rendering_device);
 		rendering_device = nullptr;
 	}

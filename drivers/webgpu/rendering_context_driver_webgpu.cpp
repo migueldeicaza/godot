@@ -160,14 +160,53 @@ void RenderingContextDriverWebGPU::surface_set_size(SurfaceID p_surface, uint32_
 	}
 }
 
-void RenderingContextDriverWebGPU::surface_set_vsync_mode(SurfaceID p_surface, DisplayServer::VSyncMode p_vsync_mode) {
+void RenderingContextDriverWebGPU::surface_set_vsync_mode(SurfaceID p_surface, DisplayServerEnums::VSyncMode p_vsync_mode) {
 	ERR_FAIL_COND(!surfaces.has(p_surface));
 	surfaces[p_surface].vsync_mode = p_vsync_mode;
 }
 
-DisplayServer::VSyncMode RenderingContextDriverWebGPU::surface_get_vsync_mode(SurfaceID p_surface) const {
-	ERR_FAIL_COND_V(!surfaces.has(p_surface), DisplayServer::VSYNC_ENABLED);
+DisplayServerEnums::VSyncMode RenderingContextDriverWebGPU::surface_get_vsync_mode(SurfaceID p_surface) const {
+	ERR_FAIL_COND_V(!surfaces.has(p_surface), DisplayServerEnums::VSYNC_ENABLED);
 	return surfaces[p_surface].vsync_mode;
+}
+
+// WebGPU has no HDR output capability.
+void RenderingContextDriverWebGPU::surface_set_hdr_output_enabled(SurfaceID p_surface, bool p_enabled) {
+	if (p_enabled) {
+		ERR_PRINT_ONCE("WebGPU does not support HDR output.");
+	}
+}
+
+bool RenderingContextDriverWebGPU::surface_get_hdr_output_enabled(SurfaceID p_surface) const {
+	return false;
+}
+
+void RenderingContextDriverWebGPU::surface_set_hdr_output_reference_luminance(SurfaceID p_surface, float p_reference_luminance) {
+	ERR_PRINT_ONCE("WebGPU does not support HDR output reference luminance.");
+}
+
+float RenderingContextDriverWebGPU::surface_get_hdr_output_reference_luminance(SurfaceID p_surface) const {
+	return 0.0f;
+}
+
+void RenderingContextDriverWebGPU::surface_set_hdr_output_max_luminance(SurfaceID p_surface, float p_max_luminance) {
+	ERR_PRINT_ONCE("WebGPU does not support HDR output maximum luminance.");
+}
+
+float RenderingContextDriverWebGPU::surface_get_hdr_output_max_luminance(SurfaceID p_surface) const {
+	return 0.0f;
+}
+
+void RenderingContextDriverWebGPU::surface_set_hdr_output_linear_luminance_scale(SurfaceID p_surface, float p_linear_luminance_scale) {
+	ERR_PRINT_ONCE("WebGPU does not support HDR output linear luminance scale.");
+}
+
+float RenderingContextDriverWebGPU::surface_get_hdr_output_linear_luminance_scale(SurfaceID p_surface) const {
+	return 0.0f;
+}
+
+float RenderingContextDriverWebGPU::surface_get_hdr_output_max_value(SurfaceID p_surface) const {
+	return 0.0f;
 }
 
 uint32_t RenderingContextDriverWebGPU::surface_get_width(SurfaceID p_surface) const {
