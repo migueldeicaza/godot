@@ -1,0 +1,12 @@
+{
+  "name": "wgsl-precompile-tests",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "test": "node test_wgsl_cache.mjs",
+    "test:python": "python3 test_wgsl_precompile.py"
+  },
+  "dependencies": {
+    "playwright": "^1.59.1"
+  }
+}

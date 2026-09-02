@@ -1,0 +1,211 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Three.js WebGPU - Scene D: GPU Particles</title>
+<style>
+  body { margin: 0; overflow: hidden; background: #000; }
+  canvas { display: block; }
+  #fps {
+    position: absolute; top: 10px; left: 10px;
+    color: yellow; font: 28px monospace;
+    z-index: 100; pointer-events: none;
+  }
+</style>
+<script type="importmap">
+{
+  "imports": {
+    "three": "./node_modules/three/build/three.webgpu.js",
+    "three/webgpu": "./node_modules/three/build/three.webgpu.js",
+    "three/tsl": "./node_modules/three/build/three.tsl.js"
+  }
+}
+</script>
+</head>
+<body>
+<div id="fps"></div>
+<script type="module">
+import * as THREE from 'three';
+import { Fn, storage, instanceIndex, float, vec3, If, uniform, positionLocal, attribute } from 'three/tsl';
+
+// Match Godot scene_d:
+// - 2,000,000 GPU particles
+// - Fountain-style: direction up, ~45 degree spread, gravity -4
+// - Lifetime 3.0 seconds
+// - Compute shader updates positions/velocities each frame
+// - Rendered as instanced spheres (radius=0.05, 8 segments, 4 rings) — matches Godot's draw pass
+
+const PARTICLE_COUNT = 2000000;
+const LIFETIME = 3.0;
+const GRAVITY = 4.0;
+const BENCHMARK_DURATION = 10;
+const WARMUP = 1;
+
+const fpsEl = document.getElementById('fps');
+
+// Scene
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0.05, 0.05, 0.1);
+
+// Camera — match Godot: (0, 5, 15) looking at (0, 3, 0)
+const camera = new THREE.PerspectiveCamera(75, 1280 / 720, 0.1, 200);
+camera.position.set(0, 5, 15);
+camera.lookAt(0, 3, 0);
+
+// Light — match Godot
+const dirLight = new THREE.DirectionalLight(0xffffff, 1.0);
+dirLight.position.set(5, 10, 5);
+dirLight.target.position.set(0, 0, 0);
+scene.add(dirLight);
+scene.add(dirLight.target);
+
+// Particle storage buffers
+const posArray = new Float32Array(PARTICLE_COUNT * 3);
+const velArray = new Float32Array(PARTICLE_COUNT * 3);
+const ageArray = new Float32Array(PARTICLE_COUNT);
+const initVelArray = new Float32Array(PARTICLE_COUNT * 3);
+
+for (let i = 0; i < PARTICLE_COUNT; i++) {
+  posArray[i * 3] = 0;
+  posArray[i * 3 + 1] = 0;
+  posArray[i * 3 + 2] = 0;
+
+  const angle = Math.random() * Math.PI * 2;
+  const spread = Math.random() * 0.8;
+  const speed = 2 + Math.random() * 4; // initial_velocity_min=2, max=6
+  const vx = Math.sin(angle) * spread * speed;
+  const vy = speed;
+  const vz = Math.cos(angle) * spread * speed;
+
+  velArray[i * 3] = vx;
+  velArray[i * 3 + 1] = vy;
+  velArray[i * 3 + 2] = vz;
+
+  ageArray[i] = Math.random() * LIFETIME; // stagger
+
+  initVelArray[i * 3] = vx;
+  initVelArray[i * 3 + 1] = vy;
+  initVelArray[i * 3 + 2] = vz;
+}
+
+// Position buffer is StorageInstancedBufferAttribute — writable by compute AND readable as instanced vertex attribute
+const positionBuffer = new THREE.StorageInstancedBufferAttribute(posArray, 3);
+const velocityBuffer = new THREE.StorageBufferAttribute(velArray, 3);
+const ageBuffer = new THREE.StorageBufferAttribute(ageArray, 1);
+const initVelBuffer = new THREE.StorageBufferAttribute(initVelArray, 3);
+
+// Delta time uniform
+const dtUniform = uniform(float(0.016));
+
+// Compute shader — updates all 2M particles each frame
+const computeParticles = Fn(() => {
+  const pos = storage(positionBuffer, 'vec3', PARTICLE_COUNT).element(instanceIndex);
+  const vel = storage(velocityBuffer, 'vec3', PARTICLE_COUNT).element(instanceIndex);
+  const age = storage(ageBuffer, 'float', PARTICLE_COUNT).element(instanceIndex);
+  const initVel = storage(initVelBuffer, 'vec3', PARTICLE_COUNT).element(instanceIndex);
+
+  const dt = dtUniform;
+
+  // Update age
+  age.addAssign(dt);
+
+  // Apply gravity to velocity
+  vel.y.subAssign(float(GRAVITY).mul(dt));
+
+  // Update position
+  pos.addAssign(vel.mul(dt));
+
+  // Respawn when age > lifetime
+  If(age.greaterThan(float(LIFETIME)), () => {
+    pos.assign(vec3(0, 0, 0));
+    vel.assign(initVel);
+    age.assign(float(0));
+  });
+})().compute(PARTICLE_COUNT);
+
+// Instanced sphere geometry — matches Godot: SphereMesh(radius=0.05, height=0.1, radial_segments=8, rings=4)
+const sphereGeo = new THREE.SphereGeometry(0.05, 8, 4);
+const instancedGeo = new THREE.InstancedBufferGeometry();
+instancedGeo.index = sphereGeo.index;
+instancedGeo.setAttribute('position', sphereGeo.getAttribute('position'));
+instancedGeo.setAttribute('normal', sphereGeo.getAttribute('normal'));
+instancedGeo.setAttribute('instancePosition', positionBuffer);
+instancedGeo.instanceCount = PARTICLE_COUNT;
+
+// Material — offset each instance's vertex positions by the compute-driven instancePosition
+const material = new THREE.MeshStandardMaterial({
+  color: new THREE.Color(1, 0.6, 0.2),
+  metalness: 0,
+  roughness: 1,
+});
+material.positionNode = positionLocal.add(attribute('instancePosition', 'vec3'));
+
+const particleMesh = new THREE.Mesh(instancedGeo, material);
+scene.add(particleMesh);
+
+// Renderer
+const renderer = new THREE.WebGPURenderer({ antialias: false });
+renderer.setSize(1280, 720);
+renderer.setPixelRatio(1);
+document.body.appendChild(renderer.domElement);
+
+// Benchmark state
+let elapsed = 0;
+let frameCount = 0;
+const fpsSamples = [];
+let lastTime = performance.now();
+let done = false;
+
+async function init() {
+  await renderer.init();
+  console.log('[scene_d] Three.js WebGPU — %d GPU particles (compute + instanced spheres)', PARTICLE_COUNT);
+  renderer.setAnimationLoop(animate);
+}
+
+function animate() {
+  const now = performance.now();
+  const delta = (now - lastTime) / 1000;
+  lastTime = now;
+  if (delta <= 0 || delta > 1) return;
+
+  elapsed += delta;
+  frameCount++;
+
+  // Update delta time
+  dtUniform.value = delta;
+
+  // Run compute shader (submits to GPU, doesn't block)
+  renderer.compute(computeParticles);
+
+  // Render
+  renderer.render(scene, camera);
+
+  // FPS display
+  const liveFps = 1 / delta;
+  fpsEl.textContent = `FPS: ${liveFps.toFixed(0)}  [${PARTICLE_COUNT.toLocaleString()} particles]  t=${elapsed.toFixed(1)}s`;
+
+  // Collect after warmup
+  if (elapsed > WARMUP && !done) {
+    fpsSamples.push(liveFps);
+  }
+
+  if (elapsed >= BENCHMARK_DURATION + WARMUP && !done) {
+    done = true;
+    reportResults();
+  }
+}
+
+function reportResults() {
+  fpsSamples.sort((a, b) => a - b);
+  const avg = fpsSamples.reduce((s, v) => s + v, 0) / fpsSamples.length;
+  const p1 = fpsSamples[Math.floor(fpsSamples.length * 0.01)];
+  const p99 = fpsSamples[Math.floor(fpsSamples.length * 0.99)];
+  const result = `BENCHMARK_RESULT|threejs_scene_d_particles|avg=${avg.toFixed(1)}|p1=${p1.toFixed(1)}|p99=${p99.toFixed(1)}|frames=${frameCount}|duration=${elapsed.toFixed(1)}`;
+  console.log(result);
+  fpsEl.textContent = `DONE  avg=${avg.toFixed(1)}  p1=${p1.toFixed(1)}  p99=${p99.toFixed(1)}  [${PARTICLE_COUNT.toLocaleString()} particles]`;
+}
+
+init();
+</script>
+</body>
+</html>

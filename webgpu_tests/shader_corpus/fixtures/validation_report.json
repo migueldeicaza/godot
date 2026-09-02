@@ -1,0 +1,10 @@
+{
+  "timestamp": "2026-05-07T20:07:30.457Z",
+  "spirv_directory": "fixtures/",
+  "total": 9,
+  "passed": 9,
+  "failed": 0,
+  "expected_failed": 0,
+  "regressions": 0,
+  "failures": []
+}

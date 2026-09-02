@@ -1,0 +1,28 @@
+; Engine configuration file.
+; It's best edited using the editor UI and not directly,
+; since the parameters that go here are not all obvious.
+;
+; Format:
+;   [section]
+;   key=value
+
+config_version=5
+
+[application]
+
+config/name="WebGPU Shader Coverage Test"
+config/description="Exercises 100% of Godot's RD shader paths for WebGPU validation"
+run/main_scene="res://scenes/main.tscn"
+config/features=PackedStringArray("4.6")
+
+[display]
+
+window/size/viewport_width=1280
+window/size/viewport_height=720
+
+[rendering]
+
+renderer/rendering_method="forward_plus"
+anti_aliasing/quality/msaa_2d=0
+anti_aliasing/quality/msaa_3d=0
+environment/defaults/default_clear_color=Color(0.1, 0.1, 0.15, 1)

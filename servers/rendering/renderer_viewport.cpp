@@ -850,6 +850,10 @@ void RendererViewport::draw_viewports(bool p_swap_buffers) {
 
 		visible = visible && vp->size.x > 1 && vp->size.y > 1 && vp->view_count > 0;
 
+		// Diagnostic: log each viewport's visibility on first 3 frames.
+		{
+		}
+
 		if (visible) {
 			vp->last_pass = draw_viewports_pass;
 		}

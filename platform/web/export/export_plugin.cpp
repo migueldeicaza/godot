@@ -153,6 +153,14 @@ void EditorExportPlatformWeb::_fix_html(Vector<uint8_t> &p_html, const Ref<Edito
 	config["fileSizes"] = p_file_sizes;
 	config["ensureCrossOriginIsolationHeaders"] = (bool)p_preset->get("progressive_web_app/ensure_cross_origin_isolation_headers");
 
+	// Pass the rendering driver so the HTML shell can pre-initialize WebGPU if needed.
+	String rendering_method = get_project_setting(p_preset, "rendering/renderer/rendering_method.web");
+	if (rendering_method == "forward_plus" || rendering_method == "mobile") {
+		config["renderingDriver"] = "webgpu";
+	} else {
+		config["renderingDriver"] = "opengl3";
+	}
+
 	config["godotPoolSize"] = p_preset->get("threads/godot_pool_size");
 	config["emscriptenPoolSize"] = p_preset->get("threads/emscripten_pool_size");
 
@@ -472,6 +480,12 @@ bool EditorExportPlatformWeb::has_valid_project_configuration(const Ref<EditorEx
 		if (!ResourceImporterTextureSettings::should_import_etc2_astc()) {
 			valid = false;
 		}
+	}
+
+	// Warn if WebGPU rendering is selected.
+	String rendering_method = get_project_setting(p_preset, "rendering/renderer/rendering_method.web");
+	if (rendering_method == "forward_plus" || rendering_method == "mobile") {
+		err += TTR("WebGPU rendering is experimental. Ensure your target browsers support WebGPU.") + "\n";
 	}
 
 	if (!err.is_empty()) {

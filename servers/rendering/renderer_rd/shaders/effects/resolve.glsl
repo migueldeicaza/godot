@@ -52,7 +52,7 @@ void main() {
 
 #ifdef MODE_RESOLVE_GI
 
-	float best_depth = 1e20;
+	float best_depth = 1e6;
 	vec4 best_normal_roughness = vec4(0.0);
 #ifdef VOXEL_GI_RESOLVE
 	uvec2 best_voxel_gi;

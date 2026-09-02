@@ -5737,6 +5737,7 @@ void TileSetAtlasSource::_update_padded_texture() {
 		Ref<ImageTexture> image_texture = _create_padded_image_texture(texture);
 		padded_texture->set_diffuse_texture(image_texture);
 	}
+
 	padded_texture->connect_changed(callable_mp(this, &TileSetAtlasSource::_queue_update_padded_texture));
 	emit_changed();
 }

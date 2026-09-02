@@ -1,0 +1,7 @@
+# Godot generated files
+.godot/
+export/
+*.import
+
+# OS files
+.DS_Store

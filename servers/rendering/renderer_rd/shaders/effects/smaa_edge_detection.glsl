@@ -30,7 +30,9 @@
 #version 450
 
 layout(location = 0) out vec2 tex_coord;
-layout(location = 1) out vec4 offset[3];
+layout(location = 1) out vec4 offset0;
+layout(location = 2) out vec4 offset1;
+layout(location = 3) out vec4 offset2;
 
 layout(push_constant, std430) uniform Params {
 	vec2 inv_size;
@@ -51,16 +53,18 @@ void main() {
 	gl_Position = vec4(vertex_base, 0.0, 1.0);
 	tex_coord = clamp(vertex_base, vec2(0.0, 0.0), vec2(1.0, 1.0)) * 2.0; // saturate(x) * 2.0
 
-	offset[0] = fma(params.inv_size.xyxy, vec4(-1.0, 0.0, 0.0, -1.0), tex_coord.xyxy);
-	offset[1] = fma(params.inv_size.xyxy, vec4(1.0, 0.0, 0.0, 1.0), tex_coord.xyxy);
-	offset[2] = fma(params.inv_size.xyxy, vec4(-2.0, 0.0, 0.0, -2.0), tex_coord.xyxy);
+	offset0 = fma(params.inv_size.xyxy, vec4(-1.0, 0.0, 0.0, -1.0), tex_coord.xyxy);
+	offset1 = fma(params.inv_size.xyxy, vec4(1.0, 0.0, 0.0, 1.0), tex_coord.xyxy);
+	offset2 = fma(params.inv_size.xyxy, vec4(-2.0, 0.0, 0.0, -2.0), tex_coord.xyxy);
 }
 
 #[fragment]
 #version 450
 
 layout(location = 0) in vec2 tex_coord;
-layout(location = 1) in vec4 offset[3];
+layout(location = 1) in vec4 offset0;
+layout(location = 2) in vec4 offset1;
+layout(location = 3) in vec4 offset2;
 
 layout(set = 0, binding = 0) uniform sampler2D color_tex;
 
@@ -81,11 +85,11 @@ void main() {
 	vec4 delta;
 	vec3 C = texture(color_tex, tex_coord).rgb;
 
-	vec3 Cleft = texture(color_tex, offset[0].xy).rgb;
+	vec3 Cleft = texture(color_tex, offset0.xy).rgb;
 	vec3 t = abs(C - Cleft);
 	delta.x = max(max(t.r, t.g), t.b);
 
-	vec3 Ctop = texture(color_tex, offset[0].zw).rgb;
+	vec3 Ctop = texture(color_tex, offset0.zw).rgb;
 	t = abs(C - Ctop);
 	delta.y = max(max(t.r, t.g), t.b);
 
@@ -95,21 +99,21 @@ void main() {
 		discard;
 	}
 
-	vec3 Cright = texture(color_tex, offset[1].xy).rgb;
+	vec3 Cright = texture(color_tex, offset1.xy).rgb;
 	t = abs(C - Cright);
 	delta.z = max(max(t.r, t.g), t.b);
 
-	vec3 Cbottom = texture(color_tex, offset[1].zw).rgb;
+	vec3 Cbottom = texture(color_tex, offset1.zw).rgb;
 	t = abs(C - Cbottom);
 	delta.w = max(max(t.r, t.g), t.b);
 
 	vec2 max_delta = max(delta.xy, delta.zw);
 
-	vec3 Cleftleft = texture(color_tex, offset[2].xy).rgb;
+	vec3 Cleftleft = texture(color_tex, offset2.xy).rgb;
 	t = abs(Cleft - Cleftleft);
 	delta.z = max(max(t.r, t.g), t.b);
 
-	vec3 Ctoptop = texture(color_tex, offset[2].zw).rgb;
+	vec3 Ctoptop = texture(color_tex, offset2.zw).rgb;
 	t = abs(Ctop - Ctoptop);
 	delta.w = max(max(t.r, t.g), t.b);
 

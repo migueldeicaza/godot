@@ -1,0 +1,144 @@
+{
+  "description": "WebGPU scene smoke test configuration — all scenes verified to run with 0 GPU errors unless noted",
+  "editor_bin": "../../bin/godot.macos.editor.arm64",
+  "scenes": [
+    {
+      "id": "benchmark_sprites",
+      "path": "../benchmark/godot/scene_a_sprites",
+      "preset": "WebGPU",
+      "max_errors": 0,
+      "description": "2D sprites (2000 bouncing circles)"
+    },
+    {
+      "id": "benchmark_pbr",
+      "path": "../benchmark/godot/scene_b_pbr",
+      "preset": "WebGPU",
+      "max_errors": 0,
+      "description": "PBR materials (metallic/rough spheres)"
+    },
+    {
+      "id": "benchmark_instances",
+      "path": "../benchmark/godot/scene_c_instances",
+      "preset": "WebGPU",
+      "max_errors": 0,
+      "description": "3D instanced rendering (5000 cubes)"
+    },
+    {
+      "id": "benchmark_particles",
+      "path": "../benchmark/godot/scene_d_particles",
+      "preset": "WebGPU",
+      "max_errors": 0,
+      "description": "GPU particles (500000 particles)"
+    },
+    {
+      "id": "benchmark_animated",
+      "path": "../benchmark/godot/scene_e_animated",
+      "preset": "WebGPU",
+      "max_errors": 0,
+      "description": "Skeletal animation (20 GPU-skinned meshes)"
+    },
+    {
+      "id": "benchmark_postfx",
+      "path": "../benchmark/godot/scene_f_postfx",
+      "preset": "WebGPU",
+      "max_errors": 2,
+      "description": "Post-processing (SubViewport + SSAO + Bloom) — known texture sync warning"
+    },
+    {
+      "id": "benchmark_shadows",
+      "path": "../benchmark/godot/scene_g_shadows",
+      "preset": "WebGPU",
+      "max_errors": 0,
+      "description": "Shadow rendering (directional + spot + omni)"
+    },
+    {
+      "id": "benchmark_batching",
+      "path": "../benchmark/godot/scene_h_batching",
+      "preset": "WebGPU",
+      "max_errors": 0,
+      "description": "Render batching (60k instances, 10 materials)"
+    },
+    {
+      "id": "demo_2d_particles",
+      "path": "../../../godot-demo-projects/2d/particles",
+      "preset": "Web",
+      "max_errors": 0,
+      "description": "2D GPU particles demo"
+    },
+    {
+      "id": "demo_2d_platformer",
+      "path": "../../../godot-demo-projects/2d/platformer",
+      "preset": "Web",
+      "max_errors": 0,
+      "description": "2D platformer demo"
+    },
+    {
+      "id": "demo_2d_sprite_shaders",
+      "path": "../../../godot-demo-projects/2d/sprite_shaders",
+      "preset": "Web",
+      "max_errors": 0,
+      "description": "2D sprite shader effects"
+    },
+    {
+      "id": "demo_3d_lights_shadows",
+      "path": "../../../godot-demo-projects/3d/lights_and_shadows",
+      "preset": "Web",
+      "max_errors": 2,
+      "description": "3D lights and shadows — known sky update warning"
+    },
+    {
+      "id": "demo_3d_particles",
+      "path": "../../../godot-demo-projects/3d/particles",
+      "preset": "Web",
+      "max_errors": 0,
+      "description": "3D GPU particles"
+    },
+    {
+      "id": "demo_3d_platformer",
+      "path": "../../../godot-demo-projects/3d/platformer",
+      "preset": "Web",
+      "max_errors": 0,
+      "description": "3D platformer (no stress spawner)",
+      "inject_script": "window.stressConfig = { enabled: false };"
+    },
+    {
+      "id": "stress_3d_platformer",
+      "export_id": "demo_3d_platformer",
+      "path": "../../../godot-demo-projects/3d/platformer",
+      "preset": "Web",
+      "max_errors": 0,
+      "description": "3D platformer stress test (~25% load)",
+      "inject_script": "window.stressConfig = { mesh_count: 875, enemy_count: 38, shadow_light_count: 8, nonshadow_light_count: 11, particle_emitter_count: 6, particles_per_emitter: 1500, billboard_count: 150 };"
+    },
+    {
+      "id": "demo_compute_heightmap",
+      "path": "../../../godot-demo-projects/compute/heightmap",
+      "preset": "Web",
+      "max_errors": 0,
+      "description": "Compute shader heightmap",
+      "pass_patterns": ["[HEIGHTMAP-CHECK] PASS"],
+      "pass_patterns_browsers": ["chrome", "firefox"]
+    },
+    {
+      "id": "demo_compute_texture",
+      "path": "../../../godot-demo-projects/compute/texture",
+      "preset": "Web",
+      "max_errors": 0,
+      "description": "Compute shader texture generation"
+    },
+    {
+      "id": "demo_gui_control_gallery",
+      "path": "../../../godot-demo-projects/gui/control_gallery",
+      "preset": "Web",
+      "max_errors": 0,
+      "description": "GUI control gallery"
+    },
+    {
+      "id": "demo_viewport_gui_in_3d",
+      "path": "../../../godot-demo-projects/viewport/gui_in_3d",
+      "preset": "Web",
+      "max_errors": 0,
+      "description": "Viewport GUI rendered in 3D scene"
+    }
+  ]
+}

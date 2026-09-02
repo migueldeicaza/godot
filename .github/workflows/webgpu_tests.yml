@@ -1,0 +1,383 @@
+name: 🧪 WebGPU Tests
+on:
+  workflow_call:
+  workflow_dispatch:
+  push:
+    branches: [webgpu-4.6.2]
+    paths:
+      - 'drivers/webgpu/**'
+      - 'webgpu_tests/**'
+      - 'servers/rendering/**'
+  pull_request:
+    paths:
+      - 'drivers/webgpu/**'
+      - 'webgpu_tests/**'
+      - 'servers/rendering/**'
+
+# Global Settings
+env:
+  SCONS_FLAGS: >-
+    dev_mode=yes
+    tests=no
+    debug_symbols=no
+  EM_VERSION: 4.0.11
+
+jobs:
+  # ═══════════════════════════════════════════════════════════════════════════════
+  # Shader Corpus: Standalone SPIR-V → WGSL validation (fast, no build needed)
+  # ═══════════════════════════════════════════════════════════════════════════════
+  shader-corpus:
+    runs-on: ubuntu-24.04
+    name: Shader Corpus (SPIR-V → WGSL)
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install glslangValidator
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y glslang-tools
+
+      - name: Compile GLSL fixtures to SPIR-V
+        working-directory: webgpu_tests/shader_corpus
+        run: ./compile_fixtures.sh
+
+      - name: Run SPIR-V → WGSL validation
+        working-directory: webgpu_tests/shader_corpus
+        run: node run_tests.mjs
+
+      - name: Upload WGSL results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: shader-corpus-results
+          path: webgpu_tests/shader_corpus/results/
+          retention-days: 7
+
+  # ═══════════════════════════════════════════════════════════════════════════════
+  # Driver Unit Tests: Algorithmic correctness of WebGPU driver subsystems
+  # ═══════════════════════════════════════════════════════════════════════════════
+  driver-unit-tests:
+    runs-on: ubuntu-24.04
+    name: Driver Unit Tests (JS)
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Run driver unit tests
+        working-directory: webgpu_tests/driver_unit_tests
+        run: node run_tests.mjs
+
+  # ═══════════════════════════════════════════════════════════════════════════════
+  # Engine Build: Compile WebGPU export template + dump all SPIR-V
+  # ═══════════════════════════════════════════════════════════════════════════════
+  build-webgpu:
+    runs-on: ubuntu-24.04
+    name: Build WebGPU Template + Dump SPIR-V
+    timeout-minutes: 90
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Set up Emscripten
+        uses: mymindstorm/setup-emsdk@v14
+        with:
+          version: ${{ env.EM_VERSION }}
+          no-cache: true
+
+      - name: Verify Emscripten setup
+        run: emcc -v
+
+      - name: Restore Godot build cache
+        uses: ./.github/actions/godot-cache-restore
+        with:
+          cache-name: web-webgpu-test
+        continue-on-error: true
+
+      - name: Setup Python and SCons
+        uses: ./.github/actions/godot-deps
+
+      - name: Build WebGPU export template
+        uses: ./.github/actions/godot-build
+        with:
+          scons-flags: ${{ env.SCONS_FLAGS }} threads=no dlink_enabled=yes webgpu=yes opengl3=no
+          platform: web
+          target: template_release
+
+      - name: Save Godot build cache
+        uses: ./.github/actions/godot-cache-save
+        with:
+          cache-name: web-webgpu-test
+        continue-on-error: true
+
+      - name: Build Linux editor (for export + SPIR-V dump)
+        run: |
+          scons platform=linuxbsd target=editor dev_mode=yes tests=no debug_symbols=no -j$(nproc)
+
+      - name: Export test project with SPIR-V dump
+        run: |
+          mkdir -p /tmp/spirv_dump
+          mkdir -p webgpu_tests/test_project/export
+
+          # Install WebGPU template (editor looks for web_nothreads_release.zip)
+          mkdir -p ~/.local/share/godot/export_templates/4.6.2.dev
+          cp bin/godot.web.template_release.wasm32.nothreads.dlink.zip \
+             ~/.local/share/godot/export_templates/4.6.2.dev/web_nothreads_release.zip || true
+
+          # Run editor headless to import project and compile all shaders
+          # GODOT_DUMP_SPIRV causes all compiled SPIR-V to be written to disk
+          GODOT_DUMP_SPIRV=/tmp/spirv_dump timeout 120 \
+            bin/godot.linuxbsd.editor.x86_64 \
+              --headless --path webgpu_tests/test_project \
+              --export-release "WebGPU" export/index.html || true
+
+          echo "SPIR-V files dumped:"
+          ls -la /tmp/spirv_dump/ | head -50
+          echo "Total: $(ls /tmp/spirv_dump/*.spv 2>/dev/null | wc -l) files"
+
+      - name: Upload SPIR-V dump
+        uses: actions/upload-artifact@v4
+        with:
+          name: spirv-dump
+          path: /tmp/spirv_dump/
+          retention-days: 7
+
+      - name: Upload WebGPU export
+        uses: actions/upload-artifact@v4
+        with:
+          name: webgpu-export
+          path: webgpu_tests/test_project/export/
+          retention-days: 7
+
+  # ═══════════════════════════════════════════════════════════════════════════════
+  # SPIR-V Validation: Validate ALL engine SPIR-V through Tint
+  # ═══════════════════════════════════════════════════════════════════════════════
+  validate-spirv:
+    runs-on: ubuntu-24.04
+    name: Validate Engine SPIR-V (Tint)
+    needs: [build-webgpu]
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Download SPIR-V dump
+        uses: actions/download-artifact@v4
+        with:
+          name: spirv-dump
+          path: /tmp/spirv_dump/
+
+      - name: Validate all SPIR-V through Tint
+        run: |
+          echo "Validating engine SPIR-V files through Tint..."
+          node webgpu_tests/shader_corpus/validate_spirv_dump.mjs /tmp/spirv_dump/
+
+  # ═══════════════════════════════════════════════════════════════════════════════
+  # Smoke Test: Run exported project in headless Chrome
+  # ═══════════════════════════════════════════════════════════════════════════════
+  smoke-test:
+    runs-on: ubuntu-24.04
+    name: Headless Chrome Smoke Test
+    needs: [build-webgpu]
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Download WebGPU export
+        uses: actions/download-artifact@v4
+        with:
+          name: webgpu-export
+          path: webgpu_tests/test_project/export/
+
+      - name: Install Playwright
+        run: |
+          cd webgpu_tests/test_project
+          npm init -y
+          npm install playwright
+          npx playwright install chromium --with-deps
+
+      - name: Run smoke test
+        working-directory: webgpu_tests/test_project
+        run: node smoke_test.mjs ./export/
+
+  # ═══════════════════════════════════════════════════════════════════════════════
+  # Scene Smoketest: 18 demos/benchmarks across Chrome + Firefox
+  # ═══════════════════════════════════════════════════════════════════════════════
+  scene-smoketest:
+    runs-on: ubuntu-24.04
+    name: Scene Smoketest (Chrome + Firefox)
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install Playwright and browsers
+        run: |
+          cd webgpu_tests/scene_smoketest
+          npm install
+          npx playwright install chromium firefox --with-deps
+
+      - name: Run scene smoketest (Chrome)
+        working-directory: webgpu_tests/scene_smoketest
+        run: node run_scenes.mjs --browser chrome --timeout 30000
+
+      - name: Run scene smoketest (Firefox)
+        working-directory: webgpu_tests/scene_smoketest
+        run: node run_scenes.mjs --browser firefox --timeout 30000
+
+  # ═══════════════════════════════════════════════════════════════════════════════
+  # Resource Lifecycle: Browser-based stress test
+  # ═══════════════════════════════════════════════════════════════════════════════
+  resource-lifecycle:
+    runs-on: ubuntu-24.04
+    name: Resource Lifecycle (Chrome WebGPU)
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install Playwright
+        run: |
+          cd webgpu_tests/resource_lifecycle
+          npm init -y
+          npm install playwright
+          npx playwright install chromium --with-deps
+
+      - name: Run resource lifecycle stress tests
+        working-directory: webgpu_tests/resource_lifecycle
+        run: node run_tests.mjs
+
+  # ═══════════════════════════════════════════════════════════════════════════════
+  # Screenshot Comparison: Multi-browser visual regression
+  # ═══════════════════════════════════════════════════════════════════════════════
+  screenshot-comparison:
+    runs-on: ubuntu-24.04
+    name: Screenshot Comparison (Chrome + Firefox)
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install Playwright and browsers
+        run: |
+          cd webgpu_tests/screenshot_comparison
+          npm init -y
+          npm install playwright
+          npx playwright install chromium firefox --with-deps
+
+      - name: Run screenshot tests
+        working-directory: webgpu_tests/screenshot_comparison
+        run: node screenshot_tests.mjs --update-baselines
+        # First run creates baselines. On subsequent runs after baselines are committed,
+        # change to: node screenshot_tests.mjs
+
+      - name: Upload screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: screenshot-comparison
+          path: webgpu_tests/screenshot_comparison/screenshots/
+          retention-days: 14
+
+  # ═══════════════════════════════════════════════════════════════════════════════
+  # Summary
+  # ═══════════════════════════════════════════════════════════════════════════════
+  test-summary:
+    runs-on: ubuntu-24.04
+    name: Test Summary
+    needs: [shader-corpus, driver-unit-tests, validate-spirv, smoke-test, scene-smoketest, resource-lifecycle, screenshot-comparison]
+    if: always()
+    steps:
+      - name: Check results
+        run: |
+          echo "╔══════════════════════════════════════════════════════════╗"
+          echo "║           WebGPU Test Suite Results                      ║"
+          echo "╚══════════════════════════════════════════════════════════╝"
+          echo ""
+          echo "  Shader Corpus:        ${{ needs.shader-corpus.result }}"
+          echo "  Driver Unit Tests:    ${{ needs.driver-unit-tests.result }}"
+          echo "  SPIR-V Validation:    ${{ needs.validate-spirv.result }}"
+          echo "  Smoke Test:           ${{ needs.smoke-test.result }}"
+          echo "  Scene Smoketest:      ${{ needs.scene-smoketest.result }}"
+          echo "  Resource Lifecycle:   ${{ needs.resource-lifecycle.result }}"
+          echo "  Screenshot Compare:   ${{ needs.screenshot-comparison.result }}"
+          echo ""
+
+          FAILED=0
+
+          if [ "${{ needs.shader-corpus.result }}" = "failure" ]; then
+            echo "::error::Shader corpus tests failed"
+            FAILED=1
+          fi
+          if [ "${{ needs.driver-unit-tests.result }}" = "failure" ]; then
+            echo "::error::Driver unit tests failed"
+            FAILED=1
+          fi
+          if [ "${{ needs.validate-spirv.result }}" = "failure" ]; then
+            echo "::error::Engine SPIR-V validation failed — Tint cannot convert one or more shaders"
+            FAILED=1
+          fi
+          if [ "${{ needs.smoke-test.result }}" = "failure" ]; then
+            echo "::error::Headless smoke test failed — shader compilation or WebGPU errors in browser"
+            FAILED=1
+          fi
+          if [ "${{ needs.scene-smoketest.result }}" = "failure" ]; then
+            echo "::error::Scene smoketest failed — one or more scenes have GPU/shader errors in Chrome or Firefox"
+            FAILED=1
+          fi
+          if [ "${{ needs.resource-lifecycle.result }}" = "failure" ]; then
+            echo "::error::Resource lifecycle tests failed"
+            FAILED=1
+          fi
+          # Screenshot comparison failures are warnings, not blockers
+          if [ "${{ needs.screenshot-comparison.result }}" = "failure" ]; then
+            echo "::warning::Screenshot comparison detected visual differences"
+          fi
+
+          if [ $FAILED -eq 1 ]; then
+            exit 1
+          fi

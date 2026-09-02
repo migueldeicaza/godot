@@ -91,6 +91,7 @@ def get_flags():
         # run-time performance.
         # Note that this overrides the "auto" behavior for target/dev_build.
         "optimize": "size",
+        "supported": ["webgpu"],
     }
 
 
@@ -265,6 +266,13 @@ def configure(env: "SConsEnvironment"):
         # See https://emscripten.org/docs/tools_reference/settings_reference.html#gl-enable-get-proc-address
         env.Append(LINKFLAGS=["-sGL_ENABLE_GET_PROC_ADDRESS=0"])
 
+    if env["webgpu"]:
+        env.AppendUnique(CPPDEFINES=["WEBGPU_ENABLED", "RD_ENABLED"])
+        # Emscripten 4.0.10+ uses the emdawnwebgpu port; -sUSE_WEBGPU=1 was removed in 5.0.
+        # Pass --use-port=emdawnwebgpu to both CCFLAGS (for headers) and LINKFLAGS (for JS glue).
+        env.Append(CCFLAGS=["--use-port=emdawnwebgpu"])
+        env.Append(LINKFLAGS=["--use-port=emdawnwebgpu"])
+
     if env["javascript_eval"]:
         env.Append(CPPDEFINES=["JAVASCRIPT_EVAL_ENABLED"])
 
@@ -330,6 +338,11 @@ def configure(env: "SConsEnvironment"):
     # when using WebAssembly (in comparison to asm.js) and works well for
     # us since we don't know requirements at compile-time.
     env.Append(LINKFLAGS=["-sALLOW_MEMORY_GROWTH=1"])
+
+    # Ensure malloc returns NULL on failure instead of aborting. Emscripten
+    # sets this automatically when ALLOW_MEMORY_GROWTH=1, but being explicit
+    # prevents regressions if the default ever changes and documents intent.
+    env.Append(LINKFLAGS=["-sABORTING_MALLOC=0"])
 
     # Do not call main immediately when the support code is ready.
     env.Append(LINKFLAGS=["-sINVOKE_RUN=0"])

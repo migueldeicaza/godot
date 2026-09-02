@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>WebGPU Resource Lifecycle Stress Test</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: 'SF Mono', 'Monaco', 'Menlo', monospace; background: #1a1a2e; color: #e0e0e0; padding: 20px; }
+        h1 { color: #4fc3f7; margin-bottom: 10px; font-size: 1.4em; }
+        .subtitle { color: #888; margin-bottom: 20px; font-size: 0.85em; }
+        .controls { margin-bottom: 20px; display: flex; gap: 10px; flex-wrap: wrap; }
+        button { background: #2d2d5e; color: #4fc3f7; border: 1px solid #4fc3f7; padding: 8px 16px; cursor: pointer; border-radius: 4px; font-family: inherit; font-size: 0.85em; }
+        button:hover { background: #3d3d7e; }
+        button:disabled { opacity: 0.5; cursor: not-allowed; }
+        button.running { background: #4fc3f7; color: #1a1a2e; }
+        .status { margin-bottom: 15px; padding: 10px; background: #16213e; border-radius: 4px; font-size: 0.85em; }
+        .status.pass { border-left: 3px solid #4caf50; }
+        .status.fail { border-left: 3px solid #f44336; }
+        .status.running { border-left: 3px solid #ff9800; }
+        .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(350px, 1fr)); gap: 15px; margin-bottom: 20px; }
+        .test-card { background: #16213e; border-radius: 6px; padding: 15px; }
+        .test-card h3 { color: #4fc3f7; font-size: 0.95em; margin-bottom: 8px; }
+        .test-card .desc { color: #888; font-size: 0.8em; margin-bottom: 10px; }
+        .test-card .result { font-size: 0.8em; white-space: pre-wrap; max-height: 200px; overflow-y: auto; }
+        .test-card .result.pass { color: #4caf50; }
+        .test-card .result.fail { color: #f44336; }
+        .test-card .result.running { color: #ff9800; }
+        .summary { background: #16213e; padding: 15px; border-radius: 6px; margin-top: 20px; }
+        .summary h3 { color: #4fc3f7; margin-bottom: 10px; }
+        .summary .stats { display: flex; gap: 20px; font-size: 0.9em; }
+        .summary .stat { display: flex; flex-direction: column; align-items: center; }
+        .summary .stat .value { font-size: 1.5em; font-weight: bold; }
+        .summary .stat.pass .value { color: #4caf50; }
+        .summary .stat.fail .value { color: #f44336; }
+        #log { background: #0d1117; padding: 10px; border-radius: 4px; font-size: 0.75em; max-height: 300px; overflow-y: auto; margin-top: 15px; white-space: pre-wrap; }
+    </style>
+</head>
+<body>
+    <h1>WebGPU Resource Lifecycle Stress Test</h1>
+    <p class="subtitle">Validates rapid create/destroy cycles, async cleanup, and resource leak detection</p>
+
+    <div class="controls">
+        <button id="btn-run-all" onclick="runAllTests()">Run All Tests</button>
+        <button id="btn-run-buffers" onclick="runSingle('buffers')">Buffers</button>
+        <button id="btn-run-textures" onclick="runSingle('textures')">Textures</button>
+        <button id="btn-run-bindgroups" onclick="runSingle('bindgroups')">Bind Groups</button>
+        <button id="btn-run-pipelines" onclick="runSingle('pipelines')">Pipelines</button>
+        <button id="btn-run-async" onclick="runSingle('async')">Async Map</button>
+        <button id="btn-run-mixed" onclick="runSingle('mixed')">Mixed Churn</button>
+    </div>
+
+    <div id="status" class="status">Ready. Click "Run All Tests" to begin.</div>
+
+    <div class="grid" id="test-grid"></div>
+
+    <div class="summary" id="summary" style="display:none;">
+        <h3>Results Summary</h3>
+        <div class="stats" id="summary-stats"></div>
+    </div>
+
+    <div id="log"></div>
+
+    <script src="stress_tests.js"></script>
+</body>
+</html>

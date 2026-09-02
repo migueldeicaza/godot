@@ -1049,6 +1049,17 @@ Files extracted from upstream source:
 - `include/spirv/unified1/spirv.{h,hpp,hpp11}` with the same folder structure
 - `LICENSE` (edited to keep only relevant license)
 
+Additional headers required by the vendored spirv-tools (taken from the same
+upstream project, SPIRV-Tools' pinned revision ad9184e76a66b1001c29db9b0a3e87f646c64de0):
+
+- `include/spirv/1.2/GLSL.std.450.h`
+- `include/spirv/unified1/{DebugInfo,GLSL.std.450,NonSemanticClspvReflection,NonSemanticShaderDebugInfo,OpenCL.std,OpenCLDebugInfo100}.h`
+
+The core `spirv.{h,hpp,hpp11}` headers are kept at the newer vulkan-sdk-1.4.335.0
+revision, which is a strict superset of the one SPIRV-Tools was pinned against.
+
+Note: Version updated and additional headers added for spirv-tools dependency.
+
 
 ## spirv-reflect
 
@@ -1070,6 +1081,22 @@ Patches:
 - `0002-spirv-headers.patch` ([GH-111452](https://github.com/godotengine/godot/pull/111452))
 
 
+## spirv-tools
+
+- Upstream: https://github.com/KhronosGroup/SPIRV-Tools
+- Version: git (3605cce5b11f6a085107fd400f1721cd2a59c49e, 2026)
+- License: Apache 2.0
+
+Files extracted from upstream source:
+
+- `source/` folder
+- `include/` folder
+- `generated/` folder (pre-generated from upstream build)
+- `LICENSE`
+
+Required by Tint for SPIR-V parsing and validation. Version pinned by Dawn DEPS.
+
+
 ## swappy-frame-pacing
 
 - Upstream: https://android.googlesource.com/platform/frameworks/opt/gamesdk/ via https://github.com/godotengine/godot-swappy
@@ -1081,6 +1108,30 @@ Files extracted from upstream source:
 - `include/common/`
 - `include/swappy/{swappy_common.h,swappyVk.h}`
 - `LICENSE`
+
+
+## tint
+
+- Upstream: https://dawn.googlesource.com/dawn (src/tint/)
+- Version: git (db49a5496374b1f7284e0b9c8f2964c01d4bb20a, 2026)
+- License: BSD-3-Clause
+
+Files extracted from upstream source:
+
+- `src/tint/` folder (extracted via `extract_tint.sh`)
+- `LICENSE`
+
+Patches:
+
+- `0001-skip-block-layout-validation.patch` — `SetSkipBlockLayout(true)` for Godot UBO layout
+- `0002-allow-struct-member-size-mismatch.patch` — `kAllowStructMemberSizeMismatch` for specialization constants
+- `0003-decompose-strided-array-stride-guard.patch` — Skip padding when stride < element size
+- `0004-accept-non-constant-point-size.patch` — Accept non-constant `point_size` stores
+- `0005-size-emission-and-capability.patch` — `@size` emission guard for specialization constants
+- `0006-remove-abseil-dependency.patch` — Replace `absl::from_chars` with `std::from_chars`
+
+Used for SPIR-V to WGSL translation in the WebGPU rendering backend.
+Requires spirv-tools and spirv-headers.
 
 
 ## thorvg

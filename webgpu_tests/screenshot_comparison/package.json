@@ -1,0 +1,15 @@
+{
+  "name": "screenshot_comparison",
+  "version": "1.0.0",
+  "description": "Automated visual regression testing for the WebGPU rendering backend. Captures screenshots of deterministic WebGPU scenes across Chrome and Firefox, then compares against baselines.",
+  "main": "render_scene.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "playwright": "^1.59.1"
+  }
+}

@@ -170,14 +170,14 @@ uint sc_directional_penumbra_shadow_samples() {
 #define SHADER_COUNT_MULTIPLE 2
 
 uint option_to_count(uint option, uint bound) {
-	switch (option) {
-		case SHADER_COUNT_NONE:
-			return 0;
-		case SHADER_COUNT_SINGLE:
-			return 1;
-		case SHADER_COUNT_MULTIPLE:
-			return bound;
+	// Single-return pattern to avoid SPIR-V phi/emit scoping issues in Tint.
+	uint result = bound;
+	if (option == SHADER_COUNT_NONE) {
+		result = 0u;
+	} else if (option == SHADER_COUNT_SINGLE) {
+		result = 1u;
 	}
+	return result;
 }
 
 uint sc_omni_lights(uint bound) {

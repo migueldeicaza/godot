@@ -59,6 +59,11 @@ if env["metal"]:
         print_error("Target platform '{}' does not support the Metal rendering driver".format(env["platform"]))
         Exit(255)
     SConscript("metal/SCsub")
+if env["webgpu"]:
+    if "webgpu" not in supported:
+        print_error("Target platform '{}' does not support the WebGPU rendering driver".format(env["platform"]))
+        Exit(255)
+    SConscript("webgpu/SCsub")
 
 # Input drivers
 if env["sdl"] and env["platform"] in ["linuxbsd", "macos", "windows", "ios", "visionos"]:

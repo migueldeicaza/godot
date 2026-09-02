@@ -1109,7 +1109,8 @@ vec4 fog_process(vec3 vertex) {
 		float mip_level = mix(1.0 / MAX_ROUGHNESS_LOD, 1.0, 1.0 - (abs(vertex.z) - scene_data_block.data.z_near) / (scene_data_block.data.z_far - scene_data_block.data.z_near));
 #ifdef USE_RADIANCE_OCTMAP_ARRAY
 		float roughness_lod, blend;
-		blend = modf(mip_level * MAX_ROUGHNESS_LOD, roughness_lod);
+		roughness_lod = floor(mip_level * MAX_ROUGHNESS_LOD);
+		blend = mip_level * MAX_ROUGHNESS_LOD - roughness_lod;
 		float cube_lod = vec3_to_oct_lod(dFdx(cube_view), dFdy(cube_view), scene_data_block.data.radiance_pixel_size);
 		vec2 cube_uv = vec3_to_oct_with_border(cube_view, vec2(scene_data_block.data.radiance_border_size, 1.0 - scene_data_block.data.radiance_border_size * 2.0));
 		vec3 sky_sample_a = textureLod(sampler2DArray(radiance_octmap, DEFAULT_SAMPLER_LINEAR_WITH_MIPMAPS_CLAMP), vec3(cube_uv, roughness_lod), cube_lod).rgb;
@@ -1713,7 +1714,8 @@ void fragment_shader(in SceneData scene_data) {
 
 		float roughness_lod, blend;
 
-		blend = modf(sqrt(roughness) * MAX_ROUGHNESS_LOD, roughness_lod);
+		roughness_lod = floor(sqrt(roughness) * MAX_ROUGHNESS_LOD);
+		blend = sqrt(roughness) * MAX_ROUGHNESS_LOD - roughness_lod;
 
 		float ref_lod = vec3_to_oct_lod(dFdx(ref_vec), dFdy(ref_vec), scene_data_block.data.radiance_pixel_size);
 		vec2 ref_uv = vec3_to_oct_with_border(ref_vec, vec2(scene_data_block.data.radiance_border_size, 1.0 - scene_data_block.data.radiance_border_size * 2.0));
@@ -1774,7 +1776,8 @@ void fragment_shader(in SceneData scene_data) {
 #ifdef USE_RADIANCE_OCTMAP_ARRAY
 
 		float lod, blend;
-		blend = modf(roughness_lod, lod);
+		lod = floor(roughness_lod);
+		blend = roughness_lod - lod;
 
 		float ref_lod = vec3_to_oct_lod(dFdx(cc_radiance_ref_vec), dFdy(cc_radiance_ref_vec), scene_data_block.data.radiance_pixel_size);
 		vec2 ref_uv = vec3_to_oct_with_border(cc_radiance_ref_vec, vec2(scene_data_block.data.radiance_border_size, 1.0 - scene_data_block.data.radiance_border_size * 2.0));
@@ -2927,7 +2930,7 @@ void fragment_shader(in SceneData scene_data) {
 
 		vec3 cam_normal = mat3(inv_view_matrix) * normalize(normal_interp);
 
-		float closest_dist = -1e20;
+		float closest_dist = -1e6;
 
 		for (uint i = 0; i < 6; i++) {
 			float d = dot(cam_normal, aniso_dir[i]);

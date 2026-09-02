@@ -1,0 +1,90 @@
+{
+  "description": "Expected SPIR-V validation failures — Vulkan-only shader variants not used by WebGPU runtime",
+  "updated": "2026-05-05T01:26:54.038Z",
+  "expected_failures": [
+    "ClusterRenderShaderRD:0.frag.spv",
+    "ClusterRenderShaderRD:1.frag.spv",
+    "ClusterStoreShaderRD:0.comp.spv",
+    "FsrUpscaleShaderRD:0.comp.spv",
+    "SceneForwardClusteredShaderRD:17.frag.spv",
+    "SceneForwardClusteredShaderRD:18.frag.spv",
+    "SceneForwardClusteredShaderRD:19.frag.spv",
+    "SceneForwardClusteredShaderRD:20.frag.spv",
+    "SceneForwardClusteredShaderRD:21.frag.spv",
+    "SceneForwardClusteredShaderRD:22.frag.spv",
+    "SceneForwardClusteredShaderRD:23.frag.spv",
+    "SceneForwardClusteredShaderRD:24.frag.spv",
+    "SceneForwardClusteredShaderRD:25.frag.spv",
+    "SceneForwardClusteredShaderRD:34.frag.spv",
+    "SceneForwardClusteredShaderRD:35.frag.spv",
+    "SceneForwardClusteredShaderRD:36.frag.spv",
+    "SceneForwardClusteredShaderRD:37.frag.spv",
+    "SceneForwardClusteredShaderRD:38.frag.spv",
+    "SceneForwardClusteredShaderRD:39.frag.spv",
+    "SceneForwardClusteredShaderRD:40.frag.spv",
+    "SceneForwardClusteredShaderRD:41.frag.spv",
+    "SceneForwardClusteredShaderRD:8.frag.spv",
+    "ScreenSpaceReflectionFilterShaderRD:0.comp.spv",
+    "SdfgiIntegrateShaderRD:1.comp.spv",
+    "SdfgiPreprocessShaderRD:1.comp.spv",
+    "SdfgiPreprocessShaderRD:5.comp.spv",
+    "SdfgiPreprocessShaderRD:7.comp.spv",
+    "SdfgiPreprocessShaderRD:8.comp.spv",
+    "TaaResolveShaderRD:0.comp.spv",
+    "TonemapShaderRD:1.frag.spv",
+    "TonemapShaderRD:3.frag.spv",
+    "VolumetricFogShaderRD:2.comp.spv"
+  ],
+  "failure_categories": {
+    "UnsupportedBuiltIn (e.g. PointSize)": [
+      "ClusterRenderShaderRD:0.frag.spv",
+      "ClusterRenderShaderRD:1.frag.spv"
+    ],
+    "InvalidBinaryOperandTypes (type width mismatch)": [
+      "ClusterStoreShaderRD:0.comp.spv",
+      "SdfgiIntegrateShaderRD:1.comp.spv"
+    ],
+    "InvalidTypeWidth (16-bit types)": [
+      "FsrUpscaleShaderRD:0.comp.spv"
+    ],
+    "UnsupportedStorageClass (Vulkan-only)": [
+      "SceneForwardClusteredShaderRD:17.frag.spv",
+      "SceneForwardClusteredShaderRD:8.frag.spv",
+      "VolumetricFogShaderRD:2.comp.spv"
+    ],
+    "ComparisonSamplingMismatch (depth texture)": [
+      "SceneForwardClusteredShaderRD:18.frag.spv",
+      "SceneForwardClusteredShaderRD:19.frag.spv",
+      "SceneForwardClusteredShaderRD:20.frag.spv",
+      "SceneForwardClusteredShaderRD:21.frag.spv",
+      "SceneForwardClusteredShaderRD:22.frag.spv",
+      "SceneForwardClusteredShaderRD:23.frag.spv",
+      "SceneForwardClusteredShaderRD:24.frag.spv",
+      "SceneForwardClusteredShaderRD:25.frag.spv",
+      "SceneForwardClusteredShaderRD:34.frag.spv",
+      "SceneForwardClusteredShaderRD:35.frag.spv",
+      "SceneForwardClusteredShaderRD:36.frag.spv",
+      "SceneForwardClusteredShaderRD:37.frag.spv",
+      "SceneForwardClusteredShaderRD:38.frag.spv",
+      "SceneForwardClusteredShaderRD:39.frag.spv",
+      "SceneForwardClusteredShaderRD:40.frag.spv"
+    ],
+    "IncompleteData (truncated SPIR-V)": [
+      "SceneForwardClusteredShaderRD:41.frag.spv"
+    ],
+    "InvalidImage (image type mismatch)": [
+      "ScreenSpaceReflectionFilterShaderRD:0.comp.spv",
+      "SdfgiPreprocessShaderRD:1.comp.spv",
+      "SdfgiPreprocessShaderRD:7.comp.spv",
+      "SdfgiPreprocessShaderRD:8.comp.spv"
+    ],
+    "BuiltinArgumentsInvalid": [
+      "SdfgiPreprocessShaderRD:5.comp.spv"
+    ],
+    "InvalidId (spec constant cascade)": [
+      "TaaResolveShaderRD:0.comp.spv",
+      "TonemapShaderRD:1.frag.spv",
+      "TonemapShaderRD:3.frag.spv"
+    ]
+  }
+}

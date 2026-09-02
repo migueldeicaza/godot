@@ -1,0 +1,12 @@
+{
+  "name": "driver_unit_tests",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Unit tests for WebGPU driver subsystems: ring buffer, format mapping, alignment, pipeline hashing, bind group layouts, std140 packing.",
+  "scripts": {
+    "test": "node run_tests.mjs"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC"
+}

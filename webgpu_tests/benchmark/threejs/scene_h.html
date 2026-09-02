@@ -1,0 +1,171 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Three.js WebGPU - Scene H: Render Batching (Individual Mesh)</title>
+<style>
+  body { margin: 0; overflow: hidden; background: #000; }
+  canvas { display: block; }
+  #fps {
+    position: absolute; top: 10px; left: 10px;
+    color: yellow; font: 28px monospace;
+    z-index: 100; pointer-events: none;
+  }
+</style>
+<script type="importmap">
+{
+  "imports": {
+    "three": "./node_modules/three/build/three.webgpu.js",
+    "three/tsl": "./node_modules/three/build/three.tsl.js"
+  }
+}
+</script>
+</head>
+<body>
+<div id="fps"></div>
+<script type="module">
+import * as THREE from 'three';
+
+// Match Godot scene_h exactly:
+// - 35,000 cubes in a grid (100 cols)
+// - 10 shared materials (cycle i % 10), distinct HSV colors, metallic=0.3, roughness=0.5
+// - 1 directional light with shadow
+// - Camera at (0, 40, 70) looking at origin
+// - All cubes rotate_y(delta * 0.5) every frame
+// - Individual Mesh objects (no BatchedMesh) — tests automatic batching (Three.js has none)
+
+const MESH_COUNT = 35000;
+const MATERIAL_COUNT = 10;
+const COLS = 100;
+const ROWS = Math.floor(MESH_COUNT / COLS);
+const BENCHMARK_DURATION = 10;
+const WARMUP = 1;
+
+const fpsEl = document.getElementById('fps');
+
+// Scene
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x000000);
+
+// Camera — match Godot
+const camera = new THREE.PerspectiveCamera(75, 1280 / 720, 0.1, 500);
+camera.position.set(0, 40, 70);
+camera.lookAt(0, 0, 0);
+
+// Directional light with shadow — match Godot
+const dirLight = new THREE.DirectionalLight(0xffffff, 1.0);
+dirLight.position.set(0, 10, 0);
+dirLight.target.position.set(0, 0, 1);
+dirLight.castShadow = true;
+dirLight.shadow.mapSize.set(2048, 2048);
+dirLight.shadow.camera.left = -120;
+dirLight.shadow.camera.right = 120;
+dirLight.shadow.camera.top = 120;
+dirLight.shadow.camera.bottom = -120;
+dirLight.shadow.camera.near = 0.1;
+dirLight.shadow.camera.far = 200;
+scene.add(dirLight);
+scene.add(dirLight.target);
+
+// Ambient
+scene.add(new THREE.AmbientLight(0x404040, 0.5));
+
+// 10 shared materials — match Godot: HSV colors with hue = i/10, saturation=0.7, value=0.9
+const materials = [];
+for (let m = 0; m < MATERIAL_COUNT; m++) {
+  const hue = m / MATERIAL_COUNT;
+  const color = new THREE.Color().setHSL(hue, 0.7, 0.45);
+  materials.push(new THREE.MeshStandardMaterial({
+    color: color,
+    metalness: 0.3,
+    roughness: 0.5,
+  }));
+}
+
+// Shared geometry
+const boxGeometry = new THREE.BoxGeometry(1, 1, 1);
+
+// Spawn 35,000 cubes — each gets one of 10 shared materials
+const meshes = [];
+for (let i = 0; i < MESH_COUNT; i++) {
+  const mesh = new THREE.Mesh(boxGeometry, materials[i % MATERIAL_COUNT]);
+  mesh.castShadow = true;
+  mesh.receiveShadow = true;
+
+  const row = Math.floor(i / COLS);
+  const col = i % COLS;
+  mesh.position.set(
+    (col - COLS / 2) * 2.0,
+    0.5,
+    (row - ROWS / 2) * 2.0
+  );
+  scene.add(mesh);
+  meshes.push(mesh);
+}
+
+// Renderer
+const renderer = new THREE.WebGPURenderer({ antialias: false });
+renderer.setSize(1280, 720);
+renderer.setPixelRatio(1);
+renderer.shadowMap.enabled = true;
+document.body.appendChild(renderer.domElement);
+
+// Benchmark state
+let elapsed = 0;
+let frameCount = 0;
+const fpsSamples = [];
+let lastTime = performance.now();
+let done = false;
+
+async function init() {
+  await renderer.init();
+  console.log('[scene_h] Three.js WebGPU (individual Mesh) — %d cubes, %d shared materials', MESH_COUNT, MATERIAL_COUNT);
+  renderer.setAnimationLoop(animate);
+}
+
+function animate() {
+  const now = performance.now();
+  const delta = (now - lastTime) / 1000;
+  lastTime = now;
+  if (delta <= 0 || delta > 1) return;
+
+  elapsed += delta;
+  frameCount++;
+
+  // Rotate all cubes — match Godot: rotate_y(delta * 0.5)
+  for (let i = 0; i < meshes.length; i++) {
+    meshes[i].rotation.y += delta * 0.5;
+  }
+
+  // Render
+  renderer.render(scene, camera);
+
+  // FPS display
+  const liveFps = 1 / delta;
+  fpsEl.textContent = `FPS: ${liveFps.toFixed(0)}  [${MESH_COUNT} cubes, ${MATERIAL_COUNT} materials]  t=${elapsed.toFixed(1)}s`;
+
+  // Collect after warmup
+  if (elapsed > WARMUP && !done) {
+    fpsSamples.push(liveFps);
+  }
+
+  if (elapsed >= BENCHMARK_DURATION + WARMUP && !done) {
+    done = true;
+    reportResults();
+  }
+}
+
+function reportResults() {
+  fpsSamples.sort((a, b) => a - b);
+  const avg = fpsSamples.reduce((s, v) => s + v, 0) / fpsSamples.length;
+  const p1 = fpsSamples[Math.floor(fpsSamples.length * 0.01)];
+  const p99 = fpsSamples[Math.floor(fpsSamples.length * 0.99)];
+  const result = `BENCHMARK_RESULT|threejs_scene_h_batching|avg=${avg.toFixed(1)}|p1=${p1.toFixed(1)}|p99=${p99.toFixed(1)}|frames=${frameCount}|duration=${elapsed.toFixed(1)}`;
+  console.log(result);
+  fpsEl.textContent = `DONE  avg=${avg.toFixed(1)}  p1=${p1.toFixed(1)}  p99=${p99.toFixed(1)}  [${MESH_COUNT} cubes]`;
+}
+
+init();
+</script>
+</body>
+</html>

@@ -42,7 +42,7 @@ void main() {
 	ivec2 center = base + ivec2(params.shift);
 
 	ivec2 rel = ivec2(32767);
-	float d = 1e20;
+	float d = 1e6;
 	int found = 0;
 	int solid_found = 0;
 	for (int i = 0; i < s; i++) {

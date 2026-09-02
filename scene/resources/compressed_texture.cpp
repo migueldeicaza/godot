@@ -241,11 +241,35 @@ bool CompressedTexture2D::has_alpha() const {
 }
 
 Ref<Image> CompressedTexture2D::get_image() const {
+	// Reload image from disk when path is available.
+	// On WebGPU (single-threaded WASM), RS::texture_2d_get() triggers an async
+	// GPU readback that returns zeros and never completes synchronously.
+	// Loading from disk is always correct and avoids the GPU round-trip.
+	if (!path_to_file.is_empty()) {
+		Ref<FileAccess> f = FileAccess::open(path_to_file, FileAccess::READ);
+		if (f.is_valid()) {
+			uint8_t header[4];
+			f->get_buffer(header, 4);
+			if (header[0] == 'G' && header[1] == 'S' && header[2] == 'T' && header[3] == '2') {
+				f->get_32(); // version
+				f->get_32(); // width
+				f->get_32(); // height
+				f->get_32(); // data format
+				f->get_32(); // mipmap limit
+				f->get_32(); // reserved
+				f->get_32(); // reserved
+				f->get_32(); // reserved
+				Ref<Image> img = load_image_from_file(f, 0);
+				if (img.is_valid() && !img->is_empty()) {
+					return img;
+				}
+			}
+		}
+	}
 	if (texture.is_valid()) {
 		return RS::get_singleton()->texture_2d_get(texture);
-	} else {
-		return Ref<Image>();
 	}
+	return Ref<Image>();
 }
 
 bool CompressedTexture2D::is_pixel_opaque(int p_x, int p_y) const {

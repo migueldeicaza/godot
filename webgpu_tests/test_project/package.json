@@ -1,0 +1,15 @@
+{
+  "name": "test_project",
+  "version": "1.0.0",
+  "description": "A Godot 4.6 project that programmatically creates a scene exercising **100% of RenderingDevice shader paths**. When exported with the WebGPU template and run in a browser, it forces compilation of all shader variants through the SPIR-V → WGSL pipeline.",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "playwright": "^1.59.1"
+  }
+}

@@ -1,0 +1,182 @@
+#!/usr/bin/env node
+/**
+ * capture_runtime_wgsl.mjs — Captures runtime SPIR-V hash → WGSL mappings
+ * from a live Godot WebGPU engine run, then generates wgsl_precompiled.gen.h.
+ *
+ * This is the correct way to generate the precompiled table: by running the
+ * engine and capturing the actual SPIR-V hashes that Godot's built-in glslang
+ * produces (which differ from the system glslangValidator).
+ *
+ * Usage:
+ *   node capture_runtime_wgsl.mjs [export_dir] [--output path/to/gen.h]
+ */
+
+import { createServer } from 'http';
+import { readFileSync, writeFileSync, existsSync, statSync } from 'fs';
+import { join, dirname, extname } from 'path';
+import { fileURLToPath } from 'url';
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const REPO_ROOT = join(__dirname, '..', '..');
+
+// Parse args.
+const args = process.argv.slice(2);
+let exportDir = join(__dirname, '..', 'scene_smoketest', 'exports', 'benchmark_pbr');
+let outputPath = join(REPO_ROOT, 'drivers', 'webgpu', 'wgsl_precompiled.gen.h');
+
+for (let i = 0; i < args.length; i++) {
+	if (args[i] === '--output' && args[i + 1]) {
+		outputPath = args[++i];
+	} else if (!args[i].startsWith('-')) {
+		exportDir = args[i];
+	}
+}
+
+if (!existsSync(join(exportDir, 'index.html'))) {
+	console.error('ERROR: No export found at', exportDir);
+	process.exit(1);
+}
+
+const MIME_TYPES = {
+	'.html': 'text/html', '.js': 'text/javascript', '.mjs': 'text/javascript',
+	'.wasm': 'application/wasm', '.pck': 'application/octet-stream',
+	'.png': 'image/png', '.json': 'application/json',
+};
+
+const server = createServer((req, res) => {
+	let urlPath = req.url.split('?')[0];
+	if (urlPath === '/') urlPath = '/index.html';
+	const filePath = join(exportDir, urlPath);
+
+	if (!existsSync(filePath) || !statSync(filePath).isFile()) {
+		res.writeHead(404);
+		res.end('Not found');
+		return;
+	}
+	const ext = extname(filePath);
+	res.setHeader('Cross-Origin-Opener-Policy', 'same-origin');
+	res.setHeader('Cross-Origin-Embedder-Policy', 'require-corp');
+	res.writeHead(200, { 'Content-Type': MIME_TYPES[ext] || 'application/octet-stream' });
+	res.end(readFileSync(filePath));
+});
+
+server.listen(0, async () => {
+	const port = server.address().port;
+	console.log(`Serving ${exportDir} on http://localhost:${port}/`);
+
+	let browser;
+	try {
+		const pw = await import('playwright');
+		const executablePath = process.platform === 'darwin'
+			? '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'
+			: process.platform === 'win32'
+				? 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe'
+				: '/usr/bin/google-chrome';
+		browser = await pw.chromium.launch({ headless: false, executablePath });
+		const context = await browser.newContext();
+		const page = await context.newPage();
+
+		// Inject the dump object before page loads.
+		await page.addInitScript(() => {
+			window._wgslDump = {};
+		});
+
+		let statsLine = '';
+		page.on('console', (msg) => {
+			const text = msg.text();
+			if (text.includes('[SHADER] WGSL stats:')) {
+				statsLine = text;
+			}
+		});
+
+		console.log('Loading engine and waiting for shader compilation...');
+		await page.goto(`http://localhost:${port}/`, { waitUntil: 'domcontentloaded', timeout: 60000 });
+
+		// Wait for Tint to finish (no new dump entries for 5 seconds).
+		let lastCount = 0;
+		let stableCount = 0;
+		for (let i = 0; i < 120; i++) {
+			await new Promise(r => setTimeout(r, 1000));
+			const count = await page.evaluate(() => Object.keys(window._wgslDump || {}).length);
+			if (count > 0 && count === lastCount) {
+				stableCount++;
+				if (stableCount >= 8) break;
+			} else {
+				stableCount = 0;
+			}
+			lastCount = count;
+			if (i > 0 && i % 10 === 0) {
+				console.log(`  ... ${i}s elapsed, ${count} unique WGSL entries captured`);
+			}
+		}
+
+		// Extract the dump.
+		const dump = await page.evaluate(() => window._wgslDump || {});
+		const entries = Object.entries(dump);
+
+		console.log(`\nCaptured ${entries.length} unique hash → WGSL mappings.`);
+		if (statsLine) console.log(`Engine stats: ${statsLine}`);
+
+		if (entries.length === 0) {
+			console.error('ERROR: No WGSL entries captured. Engine may not have started properly.');
+			await browser.close();
+			server.close();
+			process.exit(1);
+		}
+
+		// Generate the precompiled header.
+		console.log(`\nGenerating ${outputPath}...`);
+		generateHeader(entries, outputPath);
+		console.log(`Done. ${entries.length} entries written.`);
+
+		await browser.close();
+		server.close();
+		process.exit(0);
+
+	} catch (e) {
+		console.error('Error:', e.message);
+		if (browser) await browser.close();
+		server.close();
+		process.exit(1);
+	}
+});
+
+
+function generateHeader(entries, outPath) {
+	// entries: [[hashKey, wgsl], ...]  where hashKey is "0x" + 16 hex digits
+	// Sort by hash value for binary search.
+	entries.sort((a, b) => {
+		const ha = BigInt(a[0]);
+		const hb = BigInt(b[0]);
+		return ha < hb ? -1 : ha > hb ? 1 : 0;
+	});
+
+	let out = '// Auto-generated by capture_runtime_wgsl.mjs — do not edit.\n';
+	out += '// Contains pre-compiled SPIR-V → WGSL translations for ubershaders.\n';
+	out += '// Hashes captured from a live Godot engine run to match runtime glslang output.\n';
+	out += '#pragma once\n\n';
+	out += '#include <cstdint>\n\n';
+	out += 'struct WgslPrecompiledEntry {\n';
+	out += '\tuint64_t spv_hash;\n';
+	out += '\tconst char *wgsl;\n';
+	out += '};\n\n';
+
+	if (entries.length === 0) {
+		out += 'static const WgslPrecompiledEntry _wgsl_precompiled[] = { {0, nullptr} };\n';
+		out += 'static const uint32_t _wgsl_precompiled_count = 0;\n';
+	} else {
+		out += 'static const WgslPrecompiledEntry _wgsl_precompiled[] = {\n';
+		for (const [hashKey, wgsl] of entries) {
+			// Choose a delimiter that doesn't appear in the WGSL.
+			let delim = 'wgsl';
+			while (wgsl.includes(`)${delim}"`)) {
+				delim += '_';
+			}
+			out += `\t{ ${hashKey}ULL, R"${delim}(${wgsl})${delim}" },\n`;
+		}
+		out += '};\n\n';
+		out += `static const uint32_t _wgsl_precompiled_count = ${entries.length};\n`;
+	}
+
+	writeFileSync(outPath, out, 'utf-8');
+}

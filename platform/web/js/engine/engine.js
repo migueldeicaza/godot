@@ -201,11 +201,26 @@ const Engine = (function () {
 				this.config.args = ['--main-pack', pack].concat(this.config.args);
 				// Start and init with execName as loadPath if not inited.
 				const me = this;
-				return Promise.all([
-					this.init(exe),
-					this.preloadFile(pack, pack),
-				]).then(function () {
-					return me.start.apply(me);
+
+				// If WebGPU rendering is requested, pre-initialize a GPUDevice
+				// before the WASM module starts (the C++ side expects it in
+				// Module.preinitializedWebGPUDevice).
+				// SPIR-V→WGSL conversion is handled by Tint, compiled directly
+				// into the engine WASM — no separate translator module needed.
+				let webgpuReady = Promise.resolve();
+				if (me.config.renderingDriver === 'webgpu' && !me.config.preinitializedWebGPUDevice) {
+					webgpuReady = Engine.requestWebGPUDevice().then(function (device) {
+						me.config.preinitializedWebGPUDevice = device;
+					});
+				}
+
+				return webgpuReady.then(function () {
+					return Promise.all([
+						me.init(exe),
+						me.preloadFile(pack, pack),
+					]).then(function () {
+						return me.start.apply(me);
+					});
 				});
 			},
 
@@ -266,9 +281,110 @@ const Engine = (function () {
 		return new Engine(initConfig);
 	}
 
+	/**
+	 * Request a WebGPU device from the browser. Returns a Promise that resolves
+	 * to a ``GPUDevice``, or rejects if WebGPU is not available.
+	 *
+	 * This is called automatically by :js:meth:`startGame <Engine.prototype.startGame>`
+	 * when ``renderingDriver`` is ``'webgpu'``.
+	 *
+	 * @param {Object=} adapterOptions Optional ``GPURequestAdapterOptions``.
+	 * @param {Object=} deviceDescriptor Optional ``GPUDeviceDescriptor``.
+	 * @returns {Promise<GPUDevice>} A promise resolving to the GPU device.
+	 *
+	 * @function Engine.requestWebGPUDevice
+	 */
+	Engine.requestWebGPUDevice = function (adapterOptions, deviceDescriptor) {
+		if (typeof navigator === 'undefined' || !navigator.gpu) {
+			return Promise.reject(new Error(
+				'WebGPU is not supported in this browser.\n'
+				+ 'Try using a recent version of Chrome, Edge, or Firefox.'
+			));
+		}
+		return navigator.gpu.requestAdapter(adapterOptions || {
+			powerPreference: 'high-performance',
+		}).then(function (adapter) {
+			if (!adapter) {
+				return Promise.reject(new Error(
+					'WebGPU adapter not found. Your GPU may not support WebGPU.'
+				));
+			}
+			const desc = deviceDescriptor || {
+				requiredFeatures: [],
+			};
+			// Request timestamp-query if available.
+			if (adapter.features.has('timestamp-query')) {
+				desc.requiredFeatures = (desc.requiredFeatures || []).concat(['timestamp-query']);
+			}
+			// Request optional texture format tiers used by Godot (r16snorm, rg16snorm, etc.).
+			var optionalFeatures = [
+				'readonly-and-readwrite-storage-textures',
+				'texture-formats-tier1',
+				'texture-formats-tier2',
+				'float32-filterable',
+				'float32-blendable',
+				'rg11b10ufloat-renderable',
+				'clip-distances',
+				'dual-source-blending',
+				// Texture compression families — without these, Godot's DXT5/ETC2/ASTC
+				// assets get decompressed on the CPU to RGBA8, which triggers a warning
+				// and wastes VRAM. The driver only reports the formats as supported
+				// when the corresponding feature is actually enabled here.
+				'texture-compression-bc',
+				'texture-compression-etc2',
+				'texture-compression-astc',
+			];
+			for (var i = 0; i < optionalFeatures.length; i++) {
+				if (adapter.features.has(optionalFeatures[i])) {
+					desc.requiredFeatures = (desc.requiredFeatures || []).concat([optionalFeatures[i]]);
+				}
+			}
+			// Request higher limits that Godot's renderer needs.
+			// The adapter may support more than the default; request what it offers.
+			var adapterLimits = adapter.limits || {};
+			desc.requiredLimits = desc.requiredLimits || {};
+			var limitsToMax = [
+				'maxStorageBuffersPerShaderStage',
+				'maxStorageBufferBindingSize',
+				'maxBufferSize',
+				'maxUniformBufferBindingSize',
+				'maxUniformBuffersPerShaderStage',
+				'maxSampledTexturesPerShaderStage',
+				'maxSamplersPerShaderStage',
+				'maxColorAttachments',
+				'maxBindGroups',
+			];
+			for (var li = 0; li < limitsToMax.length; li++) {
+				var key = limitsToMax[li];
+				if (adapterLimits[key] !== undefined) {
+					desc.requiredLimits[key] = adapterLimits[key];
+				}
+			}
+			return adapter.requestDevice(desc).then(function (device) {
+				// Monitor device loss (non-blocking — just log).
+				device.lost.then(function (info) {
+					const reason = info.reason || 'unknown';
+					const msg = info.message || '';
+					console.error(`[Godot] WebGPU device lost (reason: ${reason}): ${msg}`);
+				});
+				device.addEventListener('uncapturederror', function (event) {
+					// Include the full error message — `event.error` alone only
+					// serializes to the constructor name ("GPUValidationError"),
+					// hiding the detail. `.message` contains the Dawn error text.
+					const err = event.error;
+					const kind = (err && err.constructor && err.constructor.name) || 'UnknownError';
+					const msg = (err && err.message) ? err.message : String(err);
+					console.error(`[Godot] WebGPU uncaptured error: ${kind}: ${msg}`);
+				});
+				return device;
+			});
+		});
+	};
+
 	// Closure compiler exported static methods.
 	SafeEngine['load'] = Engine.load;
 	SafeEngine['unload'] = Engine.unload;
+	SafeEngine['requestWebGPUDevice'] = Engine.requestWebGPUDevice;
 
 	// Feature-detection utilities.
 	SafeEngine['isWebGLAvailable'] = Features.isWebGLAvailable;

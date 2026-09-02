@@ -1,0 +1,180 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Three.js WebGPU - Scene A Optimized: InstancedMesh Sprites</title>
+<style>
+  body { margin: 0; overflow: hidden; background: #000; }
+  canvas { display: block; }
+  #fps {
+    position: absolute; top: 10px; left: 10px;
+    color: yellow; font: 28px monospace;
+    z-index: 100; pointer-events: none;
+  }
+</style>
+<script type="importmap">
+{
+  "imports": {
+    "three": "./node_modules/three/build/three.webgpu.js",
+    "three/tsl": "./node_modules/three/build/three.tsl.js"
+  }
+}
+</script>
+</head>
+<body>
+<div id="fps"></div>
+<script type="module">
+import * as THREE from 'three';
+
+// Optimized Scene A: InstancedMesh instead of individual Sprite objects.
+// - 40,000 bouncing circles using a single InstancedMesh (1 draw call)
+// - Matches Godot scene_a_optimized (MultiMeshInstance2D)
+// - Circle texture on a PlaneGeometry quad, orthographic camera
+
+const SPRITE_COUNT = 350000;
+const WIDTH = 1280;
+const HEIGHT = 720;
+const BENCHMARK_DURATION = 10;
+const WARMUP = 1;
+const SPRITE_SIZE = 16; // 32 * 0.5
+
+const fpsEl = document.getElementById('fps');
+
+// Create circle texture
+function createCircleTexture() {
+  const size = 32;
+  const canvas = document.createElement('canvas');
+  canvas.width = size;
+  canvas.height = size;
+  const ctx = canvas.getContext('2d');
+  ctx.clearRect(0, 0, size, size);
+  ctx.beginPath();
+  ctx.arc(size / 2, size / 2, 14, 0, Math.PI * 2);
+  ctx.fillStyle = 'white';
+  ctx.fill();
+  const tex = new THREE.CanvasTexture(canvas);
+  tex.needsUpdate = true;
+  return tex;
+}
+
+// Orthographic camera matching 1280x720
+const camera = new THREE.OrthographicCamera(0, WIDTH, 0, -HEIGHT, -1, 1);
+camera.position.z = 1;
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x000000);
+
+const circleTexture = createCircleTexture();
+
+// Use a PlaneGeometry as the sprite quad
+const planeGeo = new THREE.PlaneGeometry(SPRITE_SIZE, SPRITE_SIZE);
+
+// Material with circle texture, transparent, no depth
+const material = new THREE.MeshBasicMaterial({
+  map: circleTexture,
+  transparent: true,
+  depthTest: false,
+});
+
+// InstancedMesh — 1 draw call for all 40K sprites
+const mesh = new THREE.InstancedMesh(planeGeo, material, SPRITE_COUNT);
+mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+
+// Per-instance color
+const colorAttr = new THREE.InstancedBufferAttribute(
+  new Float32Array(SPRITE_COUNT * 3), 3
+);
+mesh.instanceColor = colorAttr;
+
+// Position and velocity arrays
+const positions = new Float32Array(SPRITE_COUNT * 2);
+const velocities = new Float32Array(SPRITE_COUNT * 2);
+const tempMatrix = new THREE.Matrix4();
+
+for (let i = 0; i < SPRITE_COUNT; i++) {
+  const px = Math.random() * WIDTH;
+  const py = Math.random() * HEIGHT;
+  positions[i * 2] = px;
+  positions[i * 2 + 1] = py;
+  velocities[i * 2] = (Math.random() - 0.5) * 400;
+  velocities[i * 2 + 1] = (Math.random() - 0.5) * 400;
+
+  tempMatrix.makeTranslation(px, -py, 0);
+  mesh.setMatrixAt(i, tempMatrix);
+
+  mesh.setColorAt(i, new THREE.Color(Math.random(), Math.random(), Math.random()));
+}
+
+scene.add(mesh);
+
+// Renderer
+const renderer = new THREE.WebGPURenderer({ antialias: false });
+renderer.setSize(WIDTH, HEIGHT);
+renderer.setPixelRatio(1);
+document.body.appendChild(renderer.domElement);
+
+// Benchmark state
+let elapsed = 0;
+let frameCount = 0;
+const fpsSamples = [];
+let lastTime = performance.now();
+let done = false;
+
+async function init() {
+  await renderer.init();
+  console.log('[scene_a_optimized] Three.js WebGPU (InstancedMesh) — %d sprites', SPRITE_COUNT);
+  renderer.setAnimationLoop(animate);
+}
+
+function animate() {
+  const now = performance.now();
+  const delta = (now - lastTime) / 1000;
+  lastTime = now;
+  if (delta <= 0 || delta > 1) return;
+
+  elapsed += delta;
+  frameCount++;
+
+  // Update positions (bounce off edges)
+  for (let i = 0; i < SPRITE_COUNT; i++) {
+    const ix = i * 2;
+    const iy = i * 2 + 1;
+    positions[ix] += velocities[ix] * delta;
+    positions[iy] += velocities[iy] * delta;
+    if (positions[ix] < 0 || positions[ix] > WIDTH) velocities[ix] *= -1;
+    if (positions[iy] < 0 || positions[iy] > HEIGHT) velocities[iy] *= -1;
+
+    tempMatrix.makeTranslation(positions[ix], -positions[iy], 0);
+    mesh.setMatrixAt(i, tempMatrix);
+  }
+  mesh.instanceMatrix.needsUpdate = true;
+
+  renderer.render(scene, camera);
+
+  const liveFps = 1 / delta;
+  fpsEl.textContent = `FPS: ${liveFps.toFixed(0)}  [${SPRITE_COUNT} InstancedMesh]  t=${elapsed.toFixed(1)}s`;
+
+  if (elapsed > WARMUP && !done) {
+    fpsSamples.push(liveFps);
+  }
+
+  if (elapsed >= BENCHMARK_DURATION + WARMUP && !done) {
+    done = true;
+    reportResults();
+  }
+}
+
+function reportResults() {
+  fpsSamples.sort((a, b) => a - b);
+  const avg = fpsSamples.reduce((s, v) => s + v, 0) / fpsSamples.length;
+  const p1 = fpsSamples[Math.floor(fpsSamples.length * 0.01)];
+  const p99 = fpsSamples[Math.floor(fpsSamples.length * 0.99)];
+  const result = `BENCHMARK_RESULT|threejs_scene_a_optimized|avg=${avg.toFixed(1)}|p1=${p1.toFixed(1)}|p99=${p99.toFixed(1)}|frames=${frameCount}|duration=${elapsed.toFixed(1)}`;
+  console.log(result);
+  fpsEl.textContent = `DONE  avg=${avg.toFixed(1)}  p1=${p1.toFixed(1)}  p99=${p99.toFixed(1)}  [${SPRITE_COUNT} InstancedMesh]`;
+}
+
+init();
+</script>
+</body>
+</html>

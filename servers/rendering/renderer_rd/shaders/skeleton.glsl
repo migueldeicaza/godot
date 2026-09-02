@@ -50,7 +50,7 @@ layout(push_constant, std430) uniform Params {
 	uint blend_shape_count;
 	bool normalized_blend_shapes;
 	uint normal_tangent_stride;
-	uint pad1;
+	uint bone_offset; // vec4 offset into atlas buffer
 
 	vec2 skeleton_transform_x;
 	vec2 skeleton_transform_y;
@@ -159,8 +159,8 @@ void main() {
 		uint skin_offset = params.skin_stride * index;
 
 		uvec2 bones = uvec2(src_bone_weights.data[skin_offset + 0], src_bone_weights.data[skin_offset + 1]);
-		uvec2 bones_01 = uvec2(bones.x & 0xFFFF, bones.x >> 16) * 2; //pre-add xform offset
-		uvec2 bones_23 = uvec2(bones.y & 0xFFFF, bones.y >> 16) * 2;
+		uvec2 bones_01 = uvec2(bones.x & 0xFFFF, bones.x >> 16) * 2 + params.bone_offset; //pre-add xform offset + atlas offset
+		uvec2 bones_23 = uvec2(bones.y & 0xFFFF, bones.y >> 16) * 2 + params.bone_offset;
 
 		skin_offset += params.skin_weight_offset;
 
@@ -249,8 +249,8 @@ void main() {
 		uint skin_offset = params.skin_stride * index;
 
 		uvec2 bones = uvec2(src_bone_weights.data[skin_offset + 0], src_bone_weights.data[skin_offset + 1]);
-		uvec2 bones_01 = uvec2(bones.x & 0xFFFF, bones.x >> 16) * 3; //pre-add xform offset
-		uvec2 bones_23 = uvec2(bones.y & 0xFFFF, bones.y >> 16) * 3;
+		uvec2 bones_01 = uvec2(bones.x & 0xFFFF, bones.x >> 16) * 3 + params.bone_offset; //pre-add xform offset + atlas offset
+		uvec2 bones_23 = uvec2(bones.y & 0xFFFF, bones.y >> 16) * 3 + params.bone_offset;
 
 		skin_offset += params.skin_weight_offset;
 
@@ -269,8 +269,8 @@ void main() {
 			skin_offset = params.skin_stride * index + 2;
 
 			bones = uvec2(src_bone_weights.data[skin_offset + 0], src_bone_weights.data[skin_offset + 1]);
-			bones_01 = uvec2(bones.x & 0xFFFF, bones.x >> 16) * 3; //pre-add xform offset
-			bones_23 = uvec2(bones.y & 0xFFFF, bones.y >> 16) * 3;
+			bones_01 = uvec2(bones.x & 0xFFFF, bones.x >> 16) * 3 + params.bone_offset; //pre-add xform offset + atlas offset
+			bones_23 = uvec2(bones.y & 0xFFFF, bones.y >> 16) * 3 + params.bone_offset;
 
 			skin_offset += params.skin_weight_offset;
 

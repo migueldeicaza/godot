@@ -42,13 +42,12 @@
 void RendererCompositorRD::blit_render_targets_to_screen(DisplayServerEnums::WindowID p_screen, const RenderingServerTypes::BlitToScreen *p_render_targets, int p_amount) {
 	Error err = RD::get_singleton()->screen_prepare_for_drawing(p_screen);
 	if (err != OK) {
-		// Window is minimized and does not have valid swapchain, skip drawing without printing errors.
 		return;
 	}
 
 	BlitPipelines blit_pipelines = _get_blit_pipelines_for_format(RD::get_singleton()->screen_get_framebuffer_format(p_screen));
 
-	RD::DrawListID draw_list = RD::get_singleton()->draw_list_begin_for_screen(p_screen);
+	RD::DrawListID draw_list = RD::get_singleton()->draw_list_begin_for_screen(p_screen, Color(0, 0, 0, 1));
 	ERR_FAIL_COND(draw_list == RD::INVALID_ID);
 
 	const RD::ColorSpace color_space = RD::get_singleton()->screen_get_color_space(p_screen);

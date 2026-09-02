@@ -1,0 +1,162 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Three.js WebGPU - Scene A: Sprites</title>
+<style>
+  body { margin: 0; overflow: hidden; background: #000; }
+  canvas { display: block; }
+  #fps {
+    position: absolute; top: 10px; left: 10px;
+    color: yellow; font: 28px monospace;
+    z-index: 100; pointer-events: none;
+  }
+</style>
+<script type="importmap">
+{
+  "imports": {
+    "three": "./node_modules/three/build/three.webgpu.js",
+    "three/tsl": "./node_modules/three/build/three.tsl.js"
+  }
+}
+</script>
+</head>
+<body>
+<div id="fps"></div>
+<script type="module">
+import * as THREE from 'three';
+
+const SPRITE_COUNT = 40000;
+const WIDTH = 1280;
+const HEIGHT = 720;
+const BENCHMARK_DURATION = 10; // seconds
+const WARMUP = 1; // seconds
+
+const fpsEl = document.getElementById('fps');
+
+// Create circle texture (32x32, like the Godot version)
+function createCircleTexture() {
+  const size = 32;
+  const canvas = document.createElement('canvas');
+  canvas.width = size;
+  canvas.height = size;
+  const ctx = canvas.getContext('2d');
+  ctx.clearRect(0, 0, size, size);
+  ctx.beginPath();
+  ctx.arc(size / 2, size / 2, 14, 0, Math.PI * 2);
+  ctx.fillStyle = 'white';
+  ctx.fill();
+  const tex = new THREE.CanvasTexture(canvas);
+  tex.needsUpdate = true;
+  return tex;
+}
+
+// Orthographic camera matching 1280x720 viewport
+const camera = new THREE.OrthographicCamera(0, WIDTH, 0, -HEIGHT, -1, 1);
+camera.position.z = 1;
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x000000);
+
+// Circle texture (shared)
+const circleTexture = createCircleTexture();
+
+// Individual Sprite objects — direct equivalent of Godot Sprite2D nodes
+const sprites = [];
+const velocities = new Float32Array(SPRITE_COUNT * 2);
+
+for (let i = 0; i < SPRITE_COUNT; i++) {
+  const mat = new THREE.SpriteMaterial({
+    map: circleTexture,
+    color: new THREE.Color(Math.random(), Math.random(), Math.random()),
+    depthTest: false,
+  });
+  const sprite = new THREE.Sprite(mat);
+  sprite.scale.set(16, 16, 1); // 32 * 0.5 like Godot
+  sprite.position.set(
+    Math.random() * WIDTH,
+    -(Math.random() * HEIGHT),
+    0
+  );
+  scene.add(sprite);
+  sprites.push(sprite);
+  velocities[i * 2 + 0] = (Math.random() - 0.5) * 400;
+  velocities[i * 2 + 1] = (Math.random() - 0.5) * 400;
+}
+
+// Renderer (WebGPU)
+const renderer = new THREE.WebGPURenderer({ antialias: false });
+renderer.setSize(WIDTH, HEIGHT);
+renderer.setPixelRatio(1);
+document.body.appendChild(renderer.domElement);
+
+// Benchmark state
+let elapsed = 0;
+let frameCount = 0;
+const fpsSamples = [];
+let lastTime = performance.now();
+let done = false;
+
+async function init() {
+  await renderer.init();
+  console.log('[scene_a] Three.js WebGPU — %d sprites', SPRITE_COUNT);
+  renderer.setAnimationLoop(animate);
+}
+
+function animate() {
+  const now = performance.now();
+  const delta = (now - lastTime) / 1000;
+  lastTime = now;
+
+  if (delta <= 0 || delta > 1) return; // skip bad frames
+
+  elapsed += delta;
+  frameCount++;
+
+  // Update sprite positions (bounce off edges)
+  for (let i = 0; i < SPRITE_COUNT; i++) {
+    const ix = i * 2;
+    const iy = i * 2 + 1;
+    const s = sprites[i];
+    s.position.x += velocities[ix] * delta;
+    s.position.y -= velocities[iy] * delta;
+    // Convert back to 0..WIDTH / 0..HEIGHT for bounce check
+    const px = s.position.x;
+    const py = -s.position.y;
+    if (px < 0 || px > WIDTH) velocities[ix] *= -1;
+    if (py < 0 || py > HEIGHT) velocities[iy] *= -1;
+  }
+
+  // Render
+  renderer.render(scene, camera);
+
+  // FPS display
+  const liveFps = 1 / delta;
+  fpsEl.textContent = `FPS: ${liveFps.toFixed(0)}  [${SPRITE_COUNT} sprites]  t=${elapsed.toFixed(1)}s`;
+
+  // Collect samples after warmup
+  if (elapsed > WARMUP && !done) {
+    fpsSamples.push(liveFps);
+  }
+
+  // Report after benchmark duration
+  if (elapsed >= BENCHMARK_DURATION + WARMUP && !done) {
+    done = true;
+    reportResults();
+  }
+}
+
+function reportResults() {
+  fpsSamples.sort((a, b) => a - b);
+  const avg = fpsSamples.reduce((s, v) => s + v, 0) / fpsSamples.length;
+  const p1 = fpsSamples[Math.floor(fpsSamples.length * 0.01)];
+  const p99 = fpsSamples[Math.floor(fpsSamples.length * 0.99)];
+  const result = `BENCHMARK_RESULT|threejs_scene_a_sprites|avg=${avg.toFixed(1)}|p1=${p1.toFixed(1)}|p99=${p99.toFixed(1)}|frames=${frameCount}|duration=${elapsed.toFixed(1)}`;
+  console.log(result);
+  fpsEl.textContent = `DONE  avg=${avg.toFixed(1)}  p1=${p1.toFixed(1)}  p99=${p99.toFixed(1)}  [${SPRITE_COUNT} sprites]`;
+}
+
+init();
+</script>
+</body>
+</html>

@@ -1,0 +1,16 @@
+{
+  "name": "scene_smoketest",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "test": "node run_scenes.mjs",
+    "test:chrome": "node run_scenes.mjs --browser chrome",
+    "test:firefox": "node run_scenes.mjs --browser firefox",
+    "test:safari": "node run_scenes.mjs --browser safari",
+    "test:all": "node run_scenes.mjs --browser all",
+    "test:export": "node run_scenes.mjs --export"
+  },
+  "dependencies": {
+    "playwright": "^1.59.1"
+  }
+}

@@ -1,0 +1,174 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Three.js WebGPU - Scene B: PBR Spheres</title>
+<style>
+  body { margin: 0; overflow: hidden; background: #000; }
+  canvas { display: block; }
+  #fps {
+    position: absolute; top: 10px; left: 10px;
+    color: yellow; font: 28px monospace;
+    z-index: 100; pointer-events: none;
+  }
+</style>
+<script type="importmap">
+{
+  "imports": {
+    "three": "./node_modules/three/build/three.webgpu.js",
+    "three/tsl": "./node_modules/three/build/three.tsl.js"
+  }
+}
+</script>
+</head>
+<body>
+<div id="fps"></div>
+<script type="module">
+import * as THREE from 'three';
+
+// Match Godot scene_b exactly:
+// - 102x102 = 10,404 PBR spheres in a grid
+// - Each sphere: SphereGeometry(0.5, 48, 24), unique MeshStandardMaterial
+//   - metallic varies by column (0 to 1), roughness varies by row (0 to 1)
+//   - random albedo color
+// - 1 directional light with shadow
+// - Ground plane
+// - Camera positioned based on grid extent
+// - Static scene (no rotation)
+
+const GRID_ROWS = 102;
+const GRID_COLS = 102;
+const MESH_COUNT = GRID_ROWS * GRID_COLS;
+const BENCHMARK_DURATION = 10;
+const WARMUP = 1;
+
+const fpsEl = document.getElementById('fps');
+
+// Scene
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0.3, 0.4, 0.6);
+
+// Camera — match Godot: extent-based positioning
+const extent = Math.max(GRID_ROWS, GRID_COLS) * 1.5;
+const camera = new THREE.PerspectiveCamera(75, 1280 / 720, 0.1, extent * 5.0);
+camera.position.set(0, extent * 0.5, extent * 0.8);
+camera.lookAt(0, 0, 0);
+
+// Directional light with shadow — match Godot
+const dirLight = new THREE.DirectionalLight(0xffffff, 1.0);
+dirLight.position.set(5, 8, 5);
+dirLight.target.position.set(0, 0, 0);
+dirLight.castShadow = true;
+dirLight.shadow.mapSize.set(2048, 2048);
+dirLight.shadow.camera.left = -extent;
+dirLight.shadow.camera.right = extent;
+dirLight.shadow.camera.top = extent;
+dirLight.shadow.camera.bottom = -extent;
+dirLight.shadow.camera.near = 0.1;
+dirLight.shadow.camera.far = extent * 2;
+scene.add(dirLight);
+scene.add(dirLight.target);
+
+// Ambient light — match Godot: ambient_light_color = (0.4, 0.4, 0.5)
+scene.add(new THREE.AmbientLight(new THREE.Color(0.4, 0.4, 0.5), 1.0));
+
+// Shared geometry — single SphereGeometry like Godot's shared SphereMesh
+const sphereGeometry = new THREE.SphereGeometry(0.5, 48, 24);
+
+// Spawn 10,404 spheres with unique materials
+for (let row = 0; row < GRID_ROWS; row++) {
+  for (let col = 0; col < GRID_COLS; col++) {
+    const mat = new THREE.MeshStandardMaterial({
+      color: new THREE.Color(
+        0.3 + Math.random() * 0.7,
+        0.1 + Math.random() * 0.5,
+        0.1 + Math.random() * 0.4
+      ),
+      metalness: col / (GRID_COLS - 1),
+      roughness: row / (GRID_ROWS - 1),
+    });
+    const mesh = new THREE.Mesh(sphereGeometry, mat);
+    mesh.castShadow = true;
+    mesh.receiveShadow = true;
+    mesh.position.set(
+      (col - GRID_COLS / 2) * 1.5,
+      0.5,
+      (row - GRID_ROWS / 2) * 1.5
+    );
+    scene.add(mesh);
+  }
+}
+
+// Ground plane — match Godot: 40x40 plane
+const groundGeometry = new THREE.PlaneGeometry(40, 40);
+const groundMaterial = new THREE.MeshStandardMaterial({
+  color: new THREE.Color(0.6, 0.6, 0.55),
+});
+const ground = new THREE.Mesh(groundGeometry, groundMaterial);
+ground.rotation.x = -Math.PI / 2; // Three.js planes face +Z, rotate to face +Y
+ground.receiveShadow = true;
+scene.add(ground);
+
+// Renderer
+const renderer = new THREE.WebGPURenderer({ antialias: false });
+renderer.setSize(1280, 720);
+renderer.setPixelRatio(1);
+renderer.shadowMap.enabled = true;
+document.body.appendChild(renderer.domElement);
+
+// Benchmark state
+let elapsed = 0;
+let frameCount = 0;
+const fpsSamples = [];
+let lastTime = performance.now();
+let done = false;
+
+async function init() {
+  await renderer.init();
+  console.log('[scene_b] Three.js WebGPU — %d PBR spheres (%dx%d grid)', MESH_COUNT, GRID_ROWS, GRID_COLS);
+  renderer.setAnimationLoop(animate);
+}
+
+function animate() {
+  const now = performance.now();
+  const delta = (now - lastTime) / 1000;
+  lastTime = now;
+  if (delta <= 0 || delta > 1) return;
+
+  elapsed += delta;
+  frameCount++;
+
+  // Static scene — no per-frame updates needed (matches Godot scene_b)
+
+  // Render
+  renderer.render(scene, camera);
+
+  // FPS display
+  const liveFps = 1 / delta;
+  fpsEl.textContent = `FPS: ${liveFps.toFixed(0)}  [${MESH_COUNT} PBR spheres]  t=${elapsed.toFixed(1)}s`;
+
+  // Collect after warmup
+  if (elapsed > WARMUP && !done) {
+    fpsSamples.push(liveFps);
+  }
+
+  if (elapsed >= BENCHMARK_DURATION + WARMUP && !done) {
+    done = true;
+    reportResults();
+  }
+}
+
+function reportResults() {
+  fpsSamples.sort((a, b) => a - b);
+  const avg = fpsSamples.reduce((s, v) => s + v, 0) / fpsSamples.length;
+  const p1 = fpsSamples[Math.floor(fpsSamples.length * 0.01)];
+  const p99 = fpsSamples[Math.floor(fpsSamples.length * 0.99)];
+  const result = `BENCHMARK_RESULT|threejs_scene_b_pbr|avg=${avg.toFixed(1)}|p1=${p1.toFixed(1)}|p99=${p99.toFixed(1)}|frames=${frameCount}|duration=${elapsed.toFixed(1)}`;
+  console.log(result);
+  fpsEl.textContent = `DONE  avg=${avg.toFixed(1)}  p1=${p1.toFixed(1)}  p99=${p99.toFixed(1)}  [${MESH_COUNT} PBR spheres]`;
+}
+
+init();
+</script>
+</body>
+</html>

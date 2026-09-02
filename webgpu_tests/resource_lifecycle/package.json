@@ -1,0 +1,15 @@
+{
+  "name": "resource_lifecycle",
+  "version": "1.0.0",
+  "description": "Browser-based WebGPU stress test that validates the driver handles rapid resource creation/destruction without leaks, crashes, or use-after-free errors.",
+  "main": "stress_tests.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "playwright": "^1.59.1"
+  }
+}

@@ -195,9 +195,10 @@ layout(set = 2, binding = 0, std430) restrict readonly buffer Transforms {
 }
 transforms;
 
-/* SET3: Texture */
+/* SET3: Texture. Binding 0 is reserved for the WebGPU push-constant ring buffer.
+   Textures start at binding 1 so that binding 0 is free for the PC emulation UBO. */
 
-layout(set = 3, binding = 0) uniform texture2D color_texture;
-layout(set = 3, binding = 1) uniform texture2D normal_texture;
-layout(set = 3, binding = 2) uniform texture2D specular_texture;
-layout(set = 3, binding = 3) uniform sampler texture_sampler;
+layout(set = 3, binding = 1) uniform texture2D color_texture;
+layout(set = 3, binding = 2) uniform texture2D normal_texture;
+layout(set = 3, binding = 3) uniform texture2D specular_texture;
+layout(set = 3, binding = 4) uniform sampler texture_sampler;
