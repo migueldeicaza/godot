@@ -269,7 +269,7 @@ Stage B — after installing emsdk (>= 4.0.10):
 | 4 | `SHADER_STAGE_MAX`; emdawnwebgpu callback; HDR stub hardening | **done** `b9729024b6`, `1cdb49c4b4` |
 | 5 | Stage A: macOS build green, **web build green** | **done** `1cdb49c4b4` |
 | 6 | GLSL sweep (empty) + precompile registry resync | **done** `579b841bb3` |
-| 7 | 14 SPIR-V -> WGSL failures; regenerate the precompiled table | open, scoped |
+| 7 | SPIR-V -> WGSL failures: 14 -> **10**; regenerate the precompiled table | in progress `7ebe73ccdd` |
 | 8 | Stage B: scene smoketest, screenshots, benchmarks | open |
 
 Both builds now pass:
@@ -326,30 +326,69 @@ two things found on the way:
 
 Result: **195 compiled, 0 GLSL failures, 14 Tint failures** (from 171/11/11).
 
-### The 14 remaining SPIR-V -> WGSL failures
+### Remaining SPIR-V -> WGSL failures: 10
+
+Two of the original 14 were fixed and two were reclassified as not-applicable.
+
+**Fixed — write-only storage buffers** (`7ebe73ccdd`). `skeleton.glsl` and
+`particles_copy.glsl` each declare one `writeonly buffer`, which glslang emits
+as a SPIR-V `NonReadable` (decoration 25) and Tint maps to a write-only storage
+var — which WGSL forbids, as storage buffers may only be `read` or
+`read_write`. Both are hot-path (skeletal animation, particle transform copy).
+
+New pass `promote_writeonly_storage_buffers()` strips `NonReadable` from
+StorageBuffer variables and their block members, yielding `read_write`. Widening
+a write-only buffer to read-write is safe: it only permits more than the shader
+does. The pass deliberately does **not** touch storage *images* — WGSL storage
+textures legitimately support `write` access, so stripping `NonReadable` there
+would be a regression. It filters on two conditions together: storage class
+`StorageBuffer` *and* a base type that is an `OpTypeStruct`; storage images are
+`UniformConstant` over `OpTypeImage` and fail both. There is a test asserting a
+write-only storage image comes back byte-identical.
+
+Wired into both pass lists — `rendering_device_driver_webgpu.cpp` and
+`tint_cli/main.cpp` — which must stay in lockstep or the precompiled table stops
+matching runtime behaviour. Now 13 passes.
+
+**Reclassified — subpass input attachments.** `effects/tonemap_mobile.glsl`
+variants `subpass` and `subpass_1d_lut` fail on
+`textureLoad(input_attachment<f32>, ...)`. WebGPU has no subpasses and the port
+already forces `using_subpass_post_process = false` under `WEB_ENABLED`, so the
+engine never compiles these at runtime. They are now on a documented exclusion
+list in `wgsl_precompile.py` and reported as `Skipped: 2 (unsupported on
+WebGPU)` rather than counted as failures — an explicit list rather than deleted
+registry entries, so the reason survives in the code.
+
+Current state: **195 compiled, 0 GLSL failures, 10 Tint failures, 2 skipped.**
 
 | Cause | Count | Shaders |
 | --- | --- | --- |
 | `TINT_UNIMPLEMENTED` crash | 5 | `forward_mobile/scene_forward_mobile` (`color_pass`, `uber_color_pass`), `cluster_render` (`SHADER_NORMAL`, `SHADER_USE_ATTACHMENT`), `environment/volumetric_fog` |
 | SPIR-V validation: `OpFunctionCall` argument type mismatch | 3 | `effects/tonemap` (`bicubic`, `bicubic_1d_lut`), `effects/taa_resolve` |
-| write-only var in `storage` address space (WGSL allows only `read`/`read_write`) | 2 | `skeleton`, `particles_copy` |
-| `textureLoad` on `input_attachment<f32>` | 2 | `effects/tonemap_mobile` (`subpass`, `subpass_1d_lut`) |
 | `textureStore` on `texture_storage_2d<undefined, write>` | 1 | `effects/screen_space_reflection_filter` |
 | missing `position` on vertex entry point | 1 | `environment/sdfgi_debug_probes` |
 
-Priorities: `scene_forward_mobile:color_pass` is the main 3D shader for the
-renderer WebGPU uses. `skeleton` and `particles_copy` are hot-path and their
-failure mode (write-only storage) looks like a missing preprocessing pass rather
-than a shader bug — `infer_readonly_storage` marks read-only SSBOs `NonWritable`,
-but nothing promotes write-only ones to `read_write`. The two `input_attachment`
-failures are expected and harmless: WebGPU has no subpasses, the delta already
-forces `using_subpass_post_process = false`, and those variants are never used at
-runtime — they should be dropped from the registry rather than fixed.
+`scene_forward_mobile:color_pass` remains the priority — it is the main 3D
+shader for the renderer WebGPU uses.
 
-These numbers come from `tint_convert_cli`, which runs the **same 11
-preprocessing passes in the same order** as the runtime driver
-(`drivers/webgpu/tint_cli/main.cpp`), so they are representative of the runtime
-path, not of raw Tint.
+### How to debug the TINT_UNIMPLEMENTED crashes
+
+The batch converter reports only a generic "Tint crashed" because
+`tint_cli/main.cpp` runs each conversion in a forked child with stdout and
+stderr redirected to `/dev/null`, so an `abort()` cannot corrupt the parent's
+JSON output. **Single-file mode does not fork or redirect**, so:
+
+```
+bin/tint_convert_cli <file.spv>
+```
+
+prints the real `TINT_ASSERT` / `TINT_UNIMPLEMENTED` message and source location
+to stderr before aborting. Use that per shader.
+
+There is prior art: `webgpu_notes/naga_to_tint_debugging.md` Issue 3 documents a
+crash at Tint's `parser.cc:3147` (`EmitSampledImage` on a multisampled image),
+fixed by changing `split_combined_samplers` to rewrite the `OpVariable` type.
+These crashes have historically been tractable preprocessing-pass problems.
 
 ### On getting an authoritative measurement
 
