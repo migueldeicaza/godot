@@ -63,7 +63,9 @@
 static void _timestamp_readback_callback(WGPUMapAsyncStatus p_status, WGPUStringView p_message, void *p_userdata1, void *p_userdata2);
 
 // Fence work-done callback: fires when wgpuQueueSubmit work completes on GPU.
-static void _fence_work_done_callback(WGPUQueueWorkDoneStatus p_status, void *p_userdata1, void *p_userdata2) {
+// Note: newer emdawnwebgpu/Dawn added the WGPUStringView message parameter to
+// WGPUQueueWorkDoneCallback; it is unused here but must be in the signature.
+static void _fence_work_done_callback(WGPUQueueWorkDoneStatus p_status, WGPUStringView p_message, void *p_userdata1, void *p_userdata2) {
 	WGFence *fence = (WGFence *)p_userdata1;
 	if (!fence) {
 		return;
@@ -8716,6 +8718,10 @@ void RenderingDeviceDriverWebGPU::set_object_name(ObjectType p_type, ID p_driver
 	const CharString name_utf8 = p_name.utf8();
 	const WGPUStringView label = { name_utf8.get_data(), WGPU_STRLEN };
 	switch (p_type) {
+		case OBJECT_TYPE_ACCELERATION_STRUCTURE:
+		case OBJECT_TYPE_RAYTRACING_PIPELINE: {
+			// WebGPU has no raytracing capability; these objects are never created.
+		} break;
 		case OBJECT_TYPE_TEXTURE: {
 			WGTexture *tex = (WGTexture *)(p_driver_id.id);
 			if (tex && tex->handle) {

@@ -186,7 +186,10 @@ void RenderingContextDriverWebGPU::surface_set_hdr_output_reference_luminance(Su
 }
 
 float RenderingContextDriverWebGPU::surface_get_hdr_output_reference_luminance(SurfaceID p_surface) const {
-	return 0.0f;
+	// SDR defaults, matching the Vulkan backend's non-HDR surface values. Returning
+	// 0.0 here would make RendererCompositorRD::_compute_reference_multiplier()
+	// divide by zero on the REC709_LINEAR path.
+	return 200.0f;
 }
 
 void RenderingContextDriverWebGPU::surface_set_hdr_output_max_luminance(SurfaceID p_surface, float p_max_luminance) {
@@ -194,7 +197,7 @@ void RenderingContextDriverWebGPU::surface_set_hdr_output_max_luminance(SurfaceI
 }
 
 float RenderingContextDriverWebGPU::surface_get_hdr_output_max_luminance(SurfaceID p_surface) const {
-	return 0.0f;
+	return 1000.0f; // SDR default, matching the Vulkan backend.
 }
 
 void RenderingContextDriverWebGPU::surface_set_hdr_output_linear_luminance_scale(SurfaceID p_surface, float p_linear_luminance_scale) {
@@ -202,11 +205,11 @@ void RenderingContextDriverWebGPU::surface_set_hdr_output_linear_luminance_scale
 }
 
 float RenderingContextDriverWebGPU::surface_get_hdr_output_linear_luminance_scale(SurfaceID p_surface) const {
-	return 0.0f;
+	return 100.0f; // SDR default, matching the Vulkan backend. Never zero: it is a divisor.
 }
 
 float RenderingContextDriverWebGPU::surface_get_hdr_output_max_value(SurfaceID p_surface) const {
-	return 0.0f;
+	return 1.0f; // SDR: the maximum linear output value is 1.0.
 }
 
 uint32_t RenderingContextDriverWebGPU::surface_get_width(SurfaceID p_surface) const {
