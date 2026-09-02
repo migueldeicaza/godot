@@ -48,8 +48,9 @@ keeping both sides.
 | `servers/rendering/renderer_rd/storage_rd/light_storage.h` | 1 | Keep `is_force_omni_dual_paraboloid()`, then 4.7's `RSE::LightType light_get_type`. |
 | `servers/rendering/renderer_rd/renderer_compositor_rd.cpp` | 1 | Take 4.7's `BlitPipelines` lines, and carry WebGPU's `Color(0, 0, 0, 1)` clear argument onto 4.7's `draw_list_begin_for_screen` call. |
 | `servers/rendering/renderer_rd/shaders/environment/sdfgi_direct_light.glsl` | 1 | `1e20` -> `1e6`, keep 4.7's `texture_color` line. |
-| `platform/web/detect.py` | 2 | 4.7 already landed `use_assertions` as an `EnumVariable` upstream — take HEAD for the option declaration, and re-add WebGPU's auto/yes/extra `configure()` block. |
-| `README.md`, `thirdparty/README.md` | 1 each | Keep both; merge the thirdparty entries for spirv-headers/spirv-tools/tint. |
+| `platform/web/detect.py` | 2 | 4.7 has already landed **both** halves of this change upstream, verbatim — the `EnumVariable` option *and* the auto/yes/extra `configure()` block. Both hunks take HEAD; the WebGPU copy is redundant and was dropped. |
+| `README.md` | 1 | Took the WebGPU project README; Godot's is preserved as `GODOT_README.md` by the delta. |
+| `thirdparty/README.md` | 1 | Rewrote the `## spirv-headers` entry to describe the actual hybrid (see 3.5); kept the new `## spirv-tools` and `## tint` entries. |
 | `thirdparty/spirv-headers/include/spirv/unified1/spirv.hpp11` | add/add | See section 3.5. |
 
 ## 3. The real work: 4.7 semantic drift
@@ -107,13 +108,25 @@ the branch ships 157 SPIR-V preprocessing tests plus cargo/libFuzzer targets
 under `webgpu_tests/preprocessing_tests` — run them first; they localize
 failures quickly.
 
-### 3.5 spirv-headers collision
+### 3.5 spirv-headers collision — RESOLVED, and the opposite of expected
 
 4.7 vendors 4 files (`vulkan-sdk-1.4.335.0`, `b824a462`, 2025). The WebGPU
-branch vendors 11 (git `ad9184e7`, 2026) because SPIRV-Tools needs
-`DebugInfo.h`, `NonSemantic*.h`, `OpenCL*.h` and `GLSL.std.450.h`. Take the
-WebGPU superset (it is the newer snapshot), then re-verify that `glslang` and
-`spirv-reflect` still build against it.
+branch vendors 11 (git `ad9184e7`, labelled 2026) because SPIRV-Tools needs
+`DebugInfo.h`, `NonSemantic*.h`, `OpenCL*.h` and `GLSL.std.450.h`.
+
+The first draft of this plan assumed the WebGPU snapshot was newer and should be
+taken wholesale. That is wrong. Comparing the two `spirv.h` copies:
+
+* 169 enumerants exist only in 4.7's copy; **zero** exist only in the WebGPU
+  branch's copy.
+* The 145 lines that differ in the other direction are the INTEL -> ALTERA
+  vendor rename, and 4.7's copy retains all 985 `INTEL` aliases.
+* The vendored SPIRV-Tools sources reference none of those names directly.
+
+So 4.7's `spirv.{h,hpp,hpp11}` and `LICENSE` are kept, and only the 7 extra
+headers are taken from the WebGPU branch. Taking the WebGPU copy wholesale would
+have silently downgraded the headers that `glslang` 1.4.335 and `spirv-reflect`
+compile against.
 
 ### 3.6 GLSL workaround sweep
 
@@ -180,9 +193,9 @@ Stage B — after installing emsdk (>= 4.0.10):
 
 | Step | Work | Estimate |
 | --- | --- | --- |
-| 0 | Branch `webgpu-4.7` from the 4.7 tip; fetch `refs/wgpu/webgpu-4.6.2` | done |
-| 1 | Apply the `4.6.2-stable..webgpu-4.6.2` delta 3-way; resolve the 12 conflicts | ~1h |
-| 2 | Reconcile `thirdparty/spirv-headers`; confirm glslang + spirv-reflect build | ~1h |
+| 0 | Branch `webgpu-4.7` from the 4.7 tip; fetch `refs/wgpu/webgpu-4.6.2` | **done** |
+| 1 | Apply the `4.6.2-stable..webgpu-4.6.2` delta 3-way; resolve the 12 conflicts | **done** (`5e065e95cf`) |
+| 2 | Reconcile `thirdparty/spirv-headers`; confirm glslang + spirv-reflect build | **done** (`5e065e95cf`); build confirmation pending step 5 |
 | 3 | Stub the 25 new pure virtuals; `VSyncMode` rename | ~4h |
 | 4 | `SHADER_STAGE_MAX`, `pipeline_type`, container fixups, `RS::`->`RSE::` | ~2h |
 | 5 | Stage A verification (macOS build green) | ~2h |
