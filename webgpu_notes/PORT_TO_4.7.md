@@ -371,6 +371,87 @@ Current state: **195 compiled, 0 GLSL failures, 10 Tint failures, 2 skipped.**
 `scene_forward_mobile:color_pass` remains the priority — it is the main 3D
 shader for the renderer WebGPU uses.
 
+### Most of the 10 are NOT 4.7 regressions
+
+Cross-referencing against `expected_failures.json` (the 4.6.2 baseline, 32
+failures over 309 shaders) shows **7 of the 10 were already failing on 4.6.2**
+and are accepted as Vulkan-only variants the WebGPU runtime never uses:
+
+| Failure | 4.6.2 baseline entry |
+| --- | --- |
+| `cluster_render:SHADER_NORMAL` | `ClusterRenderShaderRD:0.frag.spv` |
+| `cluster_render:SHADER_USE_ATTACHMENT` | `ClusterRenderShaderRD:1.frag.spv` |
+| `effects/tonemap:bicubic` | `TonemapShaderRD:1.frag.spv` |
+| `effects/tonemap:bicubic_1d_lut` | `TonemapShaderRD:3.frag.spv` |
+| `effects/taa_resolve:default` | `TaaResolveShaderRD:0.comp.spv` |
+| `effects/screen_space_reflection_filter:default` | `ScreenSpaceReflectionFilterShaderRD:0.comp.spv` |
+| `environment/volumetric_fog:default` | `VolumetricFogShaderRD:2.comp.spv` |
+
+Not in the baseline, i.e. genuinely needing attention:
+
+* `forward_mobile/scene_forward_mobile` — `color_pass` and `uber_color_pass`
+* `environment/sdfgi_debug_probes:default:vert` — status unclear; the baseline
+  contains no `SdfgiDebug` entry at all, which may simply mean the capture scene
+  never compiled this debug shader.
+
+The baseline contains **zero** `Mobile` entries and 18 `SceneForwardClustered`
+ones, so it was evidently captured from a Forward+ session. That raised the
+possibility that mobile had always failed and simply was not covered — but see
+below: it is a real regression.
+
+### scene_forward_mobile: confirmed a 4.7 regression, cause not yet found
+
+Direct A/B, same toolchain and same preprocessing passes, `color_pass` fragment:
+
+* 4.6.2's `scene_forward_mobile.glsl` (from `refs/wgpu/webgpu-4.6.2`) converts —
+  `tint_convert_cli` exits 0.
+* 4.7's crashes — `TINT_ASSERT(tex_ty)` at
+  `tint/lang/spirv/reader/lower/texture.cc:606`.
+
+That assert is in `ProcessCoords()`, reached from the image-sample handlers via
+`GetTextureSampler()` returning a value whose type is not a
+`core::type::Texture`.
+
+Comparing the two SPIR-V modules, 4.7 introduces three op kinds absent in 4.6.2:
+`OpImageSampleImplicitLod` (2), `OpImageQuerySizeLod` (1) and `OpImage` (1).
+
+**Three hypotheses were tested and all disproved.** Each was neutralised in the
+GLSL and the shader recompiled; the crash was byte-for-byte identical every
+time:
+
+1. Combined image-sampler passed as a function parameter
+   (`ltc_evaluate_specular`'s two `sampler2D` params, new with 4.7's area
+   lights). Fixed anyway in `12d4ca6447` — the pipeline genuinely cannot
+   represent it — but it is not the cause.
+2. `textureSize(sampler2D(decal_atlas_srgb, light_projector_sampler), 0)` at
+   `scene_forward_lights_inc.glsl:689`, new in 4.7 (4.6.2 used a precomputed
+   `shadow_atlas_pixel_size` uniform). This is what produces the `OpImage` +
+   `OpImageQuerySizeLod` pair. Replacing it with a constant did not help.
+3. The two `texture()` calls on the LTC LUTs, which produce the
+   `OpImageSampleImplicitLod` pair. Switching them to `textureLod()` did not
+   help.
+
+**Recommended next step: a mechanical bisect rather than more hypotheses.** The
+4.6.2 shader tree is easy to obtain in isolation:
+
+```
+git archive refs/wgpu/webgpu-4.6.2 servers/rendering/renderer_rd/shaders \
+    | tar -x -C <tmpdir>
+```
+
+Then swap 4.7's include files for their 4.6.2 counterparts one at a time —
+`scene_forward_mobile_inc.glsl`, `scene_forward_lights_inc.glsl`,
+`area_lights_inc.glsl`, `decal_data_inc.glsl`, `light_data_inc.glsl`,
+`samplers_inc.glsl` — recompiling and re-running `tint_convert_cli` after each,
+until the crash disappears. That identifies the file, after which the same
+technique narrows to the construct. Note some 4.6.2 files will not compile
+against 4.7's, so expect to interpret GLSL errors as "inconclusive" rather than
+as results.
+
+Useful context: `scene_forward_clustered` is **not** in the precompile registry
+at all (WebGPU uses the mobile renderer), and 18 of its variants are in the
+4.6.2 failure baseline — so the clustered shader is not a useful comparison.
+
 ### How to debug the TINT_UNIMPLEMENTED crashes
 
 The batch converter reports only a generic "Tint crashed" because
