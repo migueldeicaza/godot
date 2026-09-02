@@ -322,7 +322,17 @@ void ltc_evaluate(vec3 normal, vec3 eye_vec, mat3 M_inv, vec3 points[4], vec4 te
 	integral = I / (2.0 * M_PI);
 }
 
-void ltc_evaluate_specular(vec3 normal, vec3 eye_vec, float roughness, vec3 points[4], vec4 texture_rect, float max_mipmap, texture2D area_light_atlas, sampler texture_sampler, sampler2D ltc_lut1, sampler2D ltc_lut2, out float ltc_specular, out vec2 fresnel, out vec3 ltc_specular_tex_color) {
+// WebGPU/WGSL cannot take a combined image-sampler (sampler2D) as a function
+// parameter: the SPIR-V split_combined_samplers pass can rewrite the parameter
+// type but cannot thread the matching sampler through the signature, and this
+// function is called with two different LUTs, so no single global substitution
+// is correct. Tint then aborts in its texture lowering (TINT_ASSERT(tex_ty)).
+// The ltc_lut1/ltc_lut2 uniforms are globals in every shader that calls this,
+// so read them directly instead of passing them in. Guarded because the other
+// includers of this file (voxel_gi, volumetric_fog_process, sdfgi_direct_light)
+// do not declare those uniforms and never call this function.
+#ifdef LTC_LUTS_AVAILABLE
+void ltc_evaluate_specular(vec3 normal, vec3 eye_vec, float roughness, vec3 points[4], vec4 texture_rect, float max_mipmap, texture2D area_light_atlas, sampler texture_sampler, out float ltc_specular, out vec2 fresnel, out vec3 ltc_specular_tex_color) {
 	float theta = acos_approx(dot(normal, eye_vec));
 	const float LTC_LUT_SIZE = float(64.0);
 	vec2 lut_pos = vec2(max(roughness, float(0.02)), theta / float(0.5 * M_PI));
@@ -339,6 +349,7 @@ void ltc_evaluate_specular(vec3 normal, vec3 eye_vec, float roughness, vec3 poin
 	ltc_evaluate(normal, eye_vec, M_inv, points, texture_rect, max_mipmap, area_light_atlas, texture_sampler, ltc_specular, ltc_specular_tex_color);
 	fresnel = vec2(M_brdf_e_mag_fres.yz);
 }
+#endif // LTC_LUTS_AVAILABLE
 
 void ltc_evaluate_diff(vec3 normal, vec3 points[4], vec4 texture_rect, float max_mipmap, texture2D area_light_atlas, sampler texture_sampler, out float integral, out vec3 tex_color) {
 	// default is white
