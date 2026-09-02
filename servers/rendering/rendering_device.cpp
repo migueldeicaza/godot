@@ -2440,7 +2440,7 @@ Error RenderingDevice::_texture_initialize_layered(RID p_texture, const Vector<V
 		tb.subresources.mipmap_count = texture->mipmaps;
 		tb.subresources.base_layer = 0;
 		tb.subresources.layer_count = layer_count;
-		driver->command_pipeline_barrier(transfer_worker->command_buffer, RDD::PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, RDD::PIPELINE_STAGE_COPY_BIT, {}, {}, tb);
+		driver->command_pipeline_barrier(transfer_worker->command_buffer, RDD::PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, RDD::PIPELINE_STAGE_COPY_BIT, {}, {}, tb, {});
 	}
 
 	// Pack each layer into the shared staging buffer at its own stride.

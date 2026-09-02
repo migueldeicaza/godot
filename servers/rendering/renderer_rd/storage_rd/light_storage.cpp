@@ -382,7 +382,7 @@ RSE::LightOmniShadowMode LightStorage::light_omni_get_shadow_mode(RID p_light) {
 	ERR_FAIL_NULL_V(light, RSE::LIGHT_OMNI_SHADOW_CUBE);
 
 	if (force_omni_dual_paraboloid) {
-		return RS::LIGHT_OMNI_SHADOW_DUAL_PARABOLOID;
+		return RSE::LIGHT_OMNI_SHADOW_DUAL_PARABOLOID;
 	}
 	return light->omni_shadow_mode;
 }

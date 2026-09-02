@@ -57,7 +57,8 @@ keeping both sides.
 
 ### 3.1 New pure virtuals (blocking; link errors)
 
-4.7 added raytracing and HDR output as **pure virtual** members. The WebGPU
+4.7 added raytracing and HDR output as **pure virtual** members (24 in
+total: 15 + 9). The WebGPU
 driver must implement all of them; WebGPU supports neither feature, so every one
 is a stub returning an invalid ID / `false` / `ERR_FAIL`.
 
@@ -69,7 +70,7 @@ is a stub returning an invalid ID / `false` / `ERR_FAIL`.
   `command_build_tlas`, `command_bind_raytracing_pipeline`,
   `command_bind_raytracing_uniform_set`, `command_trace_rays`,
   `swap_chain_get_color_space`, `swap_chain_get_hdr_output_supported`.
-* `RenderingContextDriver` — 10 new `= 0` methods: the
+* `RenderingContextDriver` — 9 new `= 0` methods: the
   `surface_{set,get}_hdr_output_*` family plus
   `surface_get_hdr_output_max_value`.
 * `DisplayServer::VSyncMode` was renamed to `DisplayServerEnums::VSyncMode`
@@ -141,6 +142,37 @@ to be re-swept. Known classes and current 4.7 counts:
 | `modf()` | `side = floor(v); v = v - side;` | 7 |
 | Varying arrays `out vec4 offset[3]` | scalarize to `offset0/1/2` | 4 |
 | `set = 3, binding = 0` | reserved for the push-constant emulation UBO; textures start at binding 1 | see `canvas_uniforms_inc.glsl` |
+
+### 3.6b Silent auto-merge casualties (found by building, not by merging)
+
+Two changes merged *cleanly* and were still wrong. Both are the same shape: 4.7
+changed a signature, and the WebGPU delta added a **new call site or override**
+using the old one, so there was no textual conflict to resolve.
+
+1. `command_pipeline_barrier` gained a 7th parameter in 4.7
+   (`VectorView<AccelerationStructureBarrier>`). The WebGPU delta added a call
+   in `RenderingDevice::_texture_initialize_layered` with the old 6-argument
+   form, and `RenderingDeviceDriverWebGPU` declares/defines its override with
+   6 parameters. Both fixed.
+2. `RS::LIGHT_OMNI_SHADOW_DUAL_PARABOLOID` in `light_storage.cpp` — the single
+   `RS::`-namespaced enum reference the delta adds (see 3.7).
+
+The macOS build catches the first kind only where non-WebGPU code is involved.
+For `drivers/webgpu/` itself there is no compiler available without emscripten,
+so signatures there must be checked statically: parse every `virtual ...
+override` in the WebGPU driver headers and compare its arity against the
+matching declaration in `servers/rendering/rendering_device_driver.h`,
+`rendering_context_driver.h` and `rendering_shader_container.h`. Doing that
+found the `command_pipeline_barrier` override and confirmed the context driver
+and shader container have **no** arity drift — only the missing methods of 3.1.
+Re-run that check after every rebase onto a newer 4.7.
+
+### 3.3 addendum
+
+The WebGPU shader container never references `is_compute` or `pipeline_type`
+directly, so the `RDC::PipelineType` change costs nothing there. Only
+`_set_code_from_spirv(const ReflectShader &)` sees the new field, and WebGPU is
+never handed raytracing stages.
 
 ### 3.7 `RS::` -> `RSE::` enum namespace split
 
