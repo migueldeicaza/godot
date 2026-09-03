@@ -48,6 +48,50 @@ static Vector<uint8_t> preprocess_writeonly_storage_buffers(const std::vector<ui
 	return spirv_preprocess::promote_writeonly_storage_buffers(spv);
 }
 
+
+// Debug aid: when GODOT_WEBGPU_DUMP_PASSES names a directory, write the SPIR-V
+// after every preprocessing pass as <dir>/NN_<pass>.spv. Run spirv-val over the
+// results to find which pass first produces invalid SPIR-V. Off unless set.
+static void dump_pass(const char *p_name, int p_index, const Vector<uint8_t> &p_spv) {
+	const char *dir = getenv("GODOT_WEBGPU_DUMP_PASSES");
+	if (dir == nullptr || *dir == '\0') {
+		return;
+	}
+	char path[1024];
+	snprintf(path, sizeof(path), "%s/%02d_%s.spv", dir, p_index, p_name);
+	FILE *f = fopen(path, "wb");
+	if (f == nullptr) {
+		fprintf(stderr, "dump_pass: cannot open %s\n", path);
+		return;
+	}
+	fwrite(p_spv.ptr(), 1, (size_t)p_spv.size(), f);
+	fclose(f);
+	fprintf(stderr, "dump_pass: wrote %s (%lld bytes)\n", path, (long long)p_spv.size());
+}
+
+// Debug aid: convert already-preprocessed SPIR-V straight through Tint with no
+// preprocessing at all. Combined with GODOT_WEBGPU_DUMP_PASSES this identifies
+// which pass first produces SPIR-V that Tint cannot model.
+static std::string convert_spirv_to_wgsl_raw(const std::vector<uint8_t> &p_spv_bytes, std::string &r_error) {
+	if (p_spv_bytes.size() < 20 || (p_spv_bytes.size() % 4) != 0) {
+		r_error = "Invalid SPIR-V: too small or not aligned to 4 bytes";
+		return {};
+	}
+	std::vector<uint32_t> words(p_spv_bytes.size() / 4);
+	memcpy(words.data(), p_spv_bytes.data(), p_spv_bytes.size());
+
+	char *error_msg = nullptr;
+	char *wgsl = tint_wrapper_spirv_to_wgsl(words.data(), words.size(), &error_msg);
+	if (!wgsl) {
+		r_error = error_msg ? error_msg : "Tint conversion failed (unknown error)";
+		free(error_msg);
+		return {};
+	}
+	std::string result(wgsl);
+	free(wgsl);
+	return result;
+}
+
 // Run the full SPIR-V preprocessing pipeline + Tint conversion.
 // Returns WGSL string on success, empty string on failure (error written to r_error).
 static std::string convert_spirv_to_wgsl(const std::vector<uint8_t> &p_spv_bytes, std::string &r_error) {
@@ -62,20 +106,34 @@ static std::string convert_spirv_to_wgsl(const std::vector<uint8_t> &p_spv_bytes
 	memcpy(spv.ptrw(), p_spv_bytes.data(), p_spv_bytes.size());
 
 	// 13 preprocessing passes (same order as rendering_device_driver_webgpu.cpp).
+	dump_pass("input", 0, spv);
 	spv = spirv_preprocess::freeze_spec_constant_ops(spv);
+	dump_pass("freeze_spec_constant_ops", 1, spv);
 	spv = spirv_preprocess::rewrite_copy_logical(spv);
+	dump_pass("rewrite_copy_logical", 2, spv);
 	spv = spirv_preprocess::rewrite_terminate_invocation(spv);
+	dump_pass("rewrite_terminate_invocation", 3, spv);
 	spv = spirv_preprocess::convert_push_constants_to_uniforms(spv);
+	dump_pass("convert_push_constants_to_uniforms", 4, spv);
 	spv = spirv_preprocess::split_combined_samplers(spv);
+	dump_pass("split_combined_samplers", 5, spv);
 	auto depth_result = spirv_preprocess::fix_depth2_images(spv);
 	spv = depth_result.bytes;
+	dump_pass("fix_depth2_images", 6, spv);
 	spv = spirv_preprocess::negate_position_y(spv);
+	dump_pass("negate_position_y", 7, spv);
 	spv = spirv_preprocess::strip_restrict_decoration(spv);
+	dump_pass("strip_restrict_decoration", 8, spv);
 	spv = spirv_preprocess::strip_memory_barrier(spv);
+	dump_pass("strip_memory_barrier", 9, spv);
 	spv = spirv_preprocess::fix_nonfinite_literals(spv);
+	dump_pass("fix_nonfinite_literals", 10, spv);
 	spv = spirv_preprocess::flatten_binding_arrays(spv);
+	dump_pass("flatten_binding_arrays", 11, spv);
 	spv = spirv_preprocess::promote_writeonly_storage_buffers(spv);
+	dump_pass("promote_writeonly_storage_buffers", 12, spv);
 	spv = spirv_preprocess::infer_readonly_storage(spv);
+	dump_pass("infer_readonly_storage", 13, spv);
 
 	// Ensure SPIR-V version is at least 1.3 (0x00010300). The preprocessing
 	// passes produce constructs (StorageBuffer storage class) that require 1.3,
@@ -223,6 +281,7 @@ int main(int argc, char *argv[]) {
 
 	bool batch_mode = (strcmp(argv[1], "--batch") == 0);
 	bool promote_writeonly_mode = (strcmp(argv[1], "--promote-writeonly") == 0);
+	bool raw_mode = (strcmp(argv[1], "--raw") == 0);
 
 	if (promote_writeonly_mode) {
 		if (argc != 3) {
@@ -275,6 +334,26 @@ int main(int argc, char *argv[]) {
 			std::cout << std::endl;
 		}
 		std::cout << "}" << std::endl;
+		return 0;
+
+	} else if (raw_mode) {
+		// Debug mode: skip all preprocessing, hand the SPIR-V straight to Tint.
+		if (argc < 3) {
+			fprintf(stderr, "Error: --raw requires a file argument.\n");
+			return 1;
+		}
+		auto spv_bytes = read_file(argv[2]);
+		if (spv_bytes.empty()) {
+			fprintf(stderr, "Error: Failed to read '%s'\n", argv[2]);
+			return 1;
+		}
+		std::string error;
+		std::string wgsl = convert_spirv_to_wgsl_raw(spv_bytes, error);
+		if (wgsl.empty()) {
+			fprintf(stderr, "Error: %s\n", error.c_str());
+			return 1;
+		}
+		std::cout << wgsl;
 		return 0;
 
 	} else {
