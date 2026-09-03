@@ -621,18 +621,34 @@ mobile variants affected, not two. **Always run
 `bash drivers/webgpu/tint_cli/build.sh` before trusting a precompile
 measurement.**
 
-### Suggested fix
+### Fix applied (`4393996266`)
 
-Stop threading handles through these signatures. Every caller already passes a
-global: `area_light_atlas` is a global `texture2D` in
-`scene_forward_mobile_inc.glsl` (binding 17) and
-`scene_forward_clustered_inc.glsl` (binding 20), and each of the four including
-shaders has a global sampler, though under different names
-(`SAMPLER_LINEAR_WITH_MIPMAPS_CLAMP`, `texture_sampler`,
-`linear_sampler_with_mipmaps`). So drop the two parameters from `fetch_ltc_lod`,
-`ltc_evaluate`, `ltc_evaluate_diff` and `ltc_evaluate_specular`, reference
-`area_light_atlas` directly, and have each includer `#define` a sampler alias
-before the include, in the same way `LTC_LUTS_AVAILABLE` is already handled.
+The two handle parameters were dropped from all five functions, which now read
+the `area_light_atlas` global directly and take the sampler through a new
+`AREA_LIGHT_SAMPLER` macro that each including shader defines to its own sampler
+global. `area_lights_inc.glsl` `#error`s if the macro is missing.
+
+Two wrinkles worth knowing for similar fixes:
+
+* `voxel_gi`, `volumetric_fog_process` and `sdfgi_direct_light` included
+  `area_lights_inc.glsl` *before* declaring those globals, so the include had to
+  move below them.
+* In `voxel_gi` the include also needed the same
+  `#if defined(MODE_COMPUTE_LIGHT) || defined(MODE_DYNAMIC_LIGHTING)` guard that
+  declares `area_light_atlas`, and that in turn exposed a second stale registry
+  entry (a bare `default` variant with no `MODE_`), now replaced with the eight
+  variants from `gi.cpp:3589-3596`.
+
+Result: **204 compiled, 0 GLSL failures, 8 Tint failures, 2 skipped**, up from
+193 / 12. All four affected `scene_forward_mobile` variants convert.
+
+### No known 4.7 shader regressions remain
+
+Of the eight remaining conversion failures, seven are in the 4.6.2
+expected-failures baseline (`cluster_render` x2, `tonemap` x2, `taa_resolve`,
+`screen_space_reflection_filter`, `volumetric_fog`) and the eighth is
+`sdfgi_debug_probes`, which is the registry defect described above rather than
+anything to do with 4.7.
 
 Note `modules/lightmapper_rd/lm_area_lights_inc.glsl` is a separate copy and
 would need the same treatment if the lightmapper is ever run through WebGPU.
