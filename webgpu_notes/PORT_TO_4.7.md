@@ -559,6 +559,84 @@ Note: delegating this to Codex failed twice. Its provider-side classifier
 rejected the task ("flagged for possible cybersecurity risk"), almost certainly
 a false positive on writing SPIR-V binaries and analysing a compiler abort.
 
+### ROOT CAUSE FOUND: handle-typed GLSL function parameters
+
+`scene_forward_mobile`'s crash is caused by **passing `texture2D` and `sampler`
+as GLSL function parameters and combining them into a sampled image inside the
+callee.** The specific site is `area_lights_inc.glsl:13`:
+
+```glsl
+vec3 fetch_ltc_lod(vec2 uv, vec4 texture_rect, float lod, float max_mipmap,
+                   texture2D area_light_atlas, sampler texture_sampler) {
+    ...
+    vec4 sample_col_low  = textureLod(sampler2D(area_light_atlas, texture_sampler), sample_pos, low);
+    vec4 sample_col_high = textureLod(sampler2D(area_light_atlas, texture_sampler), sample_pos, high);
+```
+
+This emits `OpSampledImage` whose operands are loads of `UniformConstant`
+*function parameters*. Tint's SPIR-V reader cannot model that: `GetTextureSampler`
+returns operand 0, whose IR type is not a `core::type::Texture`, and
+`ProcessCoords` asserts. Replacing just those two `textureLod` calls with
+constants removes the crash — it becomes a clean
+`non-core types not allowed in core IR` error from the now-unused handle
+parameters, which is the same limitation stated less violently.
+
+Area lights are new in 4.7, which is why 4.6.2 converts.
+
+The same pattern runs through `ltc_evaluate` (line 261) and
+`ltc_evaluate_diff`, and `modules/lightmapper_rd/lm_area_lights_inc.glsl` holds
+a second copy of all of it.
+
+### How it was found
+
+The GLSL-level bisect that eventually worked, after several false starts:
+
+1. `#if 0` around the three `!defined(MODE_UNSHADED)` regions -> region 3
+   (LIGHTING, lines 1939-2281) is the one that matters.
+2. `#if 0` around each `light_process_*` call -> only `light_process_area`.
+3. Neutralise the two `textureLod` calls inside `fetch_ltc_lod` -> crash gone.
+
+**Methodological warning.** An earlier round of probes set the light *counts* to
+zero (`sc_area_lights(8)` -> `0u`) and concluded area lights were not involved.
+That was wrong: zeroing a loop bound does not remove the loop body from the
+SPIR-V, it only stops it executing. Only `#if 0` actually removes code. Several
+hours were lost to that mistake — use preprocessor removal, never runtime
+values, when bisecting what reaches the compiler.
+
+### Corrected failure counts
+
+`bin/tint_convert_cli` had gone **stale**: scons only rebuilds it when
+`wgsl_precompiled.gen.h` is out of date, so measurements can be taken against an
+old binary. The previously reported "195 compiled / 10 tint failures" was such a
+measurement. Rebuilt from current source (verified by rebuilding *without* the
+new instrumentation and reproducing the same result), the true figure is:
+
+```
+193 compiled, 0 glsl failures, 12 tint failures, 2 skipped
+```
+
+The two extra failures are `scene_forward_mobile` `lightmap_color` and
+`uber_lightmap` — the same area-light root cause, so the real tally is four
+mobile variants affected, not two. **Always run
+`bash drivers/webgpu/tint_cli/build.sh` before trusting a precompile
+measurement.**
+
+### Suggested fix
+
+Stop threading handles through these signatures. Every caller already passes a
+global: `area_light_atlas` is a global `texture2D` in
+`scene_forward_mobile_inc.glsl` (binding 17) and
+`scene_forward_clustered_inc.glsl` (binding 20), and each of the four including
+shaders has a global sampler, though under different names
+(`SAMPLER_LINEAR_WITH_MIPMAPS_CLAMP`, `texture_sampler`,
+`linear_sampler_with_mipmaps`). So drop the two parameters from `fetch_ltc_lod`,
+`ltc_evaluate`, `ltc_evaluate_diff` and `ltc_evaluate_specular`, reference
+`area_light_atlas` directly, and have each includer `#define` a sampler alias
+before the include, in the same way `LTC_LUTS_AVAILABLE` is already handled.
+
+Note `modules/lightmapper_rd/lm_area_lights_inc.glsl` is a separate copy and
+would need the same treatment if the lightmapper is ever run through WebGPU.
+
 ### How to debug the TINT_UNIMPLEMENTED crashes
 
 The batch converter reports only a generic "Tint crashed" because
