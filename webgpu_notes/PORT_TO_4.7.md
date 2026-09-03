@@ -399,6 +399,51 @@ ones, so it was evidently captured from a Forward+ session. That raised the
 possibility that mobile had always failed and simply was not covered — but see
 below: it is a real regression.
 
+### sdfgi_debug_probes is a registry defect, not a 4.7 regression
+
+The shader is byte-identical between 4.6.2 and 4.7. Its vertex `main()` writes
+`gl_Position` in exactly two places, one under `#ifdef MODE_PROBES` and one
+under `#ifdef MODE_VISIBILITY`. The registry lists a single `default` variant
+with **no defines**, so `main()` compiles to an empty function that writes no
+position — precisely the error Tint reports.
+
+The engine never compiles it that way. `environment/gi.cpp:3782-3788` pushes
+four versions: `MODE_PROBES`, `MODE_PROBES + USE_MULTIVIEW`, `MODE_VISIBILITY`,
+`MODE_VISIBILITY + USE_MULTIVIEW`.
+
+This is the same class as the `octmap_downsampler` bug. The earlier resync fixed
+the eleven shaders that failed *GLSL* compilation; this one compiles fine as
+GLSL and only fails at the Tint stage, so it fell outside that sweep.
+
+### The registry likely under-covers MODE_-based variants generally
+
+A heuristic scan (shaders that branch on `MODE_*` vs. the `MODE_*` defines any
+registry variant supplies) flags **19 entries**. That number is an upper bound
+and must not be quoted as-is — `MODE_*` in Godot shaders is used both for
+`ShaderRD` version defines (real variants) and for material/render-mode defines
+set elsewhere, and the heuristic cannot tell them apart.
+
+Verified by reading the C++ so far:
+
+* **Genuine** — `environment/sdfgi_debug_probes.glsl` (4 versions, `gi.cpp`),
+  `environment/voxel_gi.glsl` (`MODE_COMPUTE_LIGHT`, `MODE_SECOND_BOUNCE`,
+  `MODE_UPDATE_MIPMAPS`, `MODE_WRITE_TEXTURE`, `MODE_DYNAMIC_*`),
+  `environment/voxel_gi_debug.glsl` (`MODE_DEBUG_{COLOR,LIGHT,EMISSION,LIGHT_FULL}`).
+  All three have **no** `MODE_` defines in the registry.
+* **False positive** — `canvas.glsl`. Its `MODE_LIGHT_ONLY` / `MODE_UNSHADED`
+  are material-level modes; the registry's `USE_NINEPATCH` / `USE_PRIMITIVE` /
+  `USE_ATTRIBUTES` variants are correct.
+
+The rest need per-shader verification against the `ShaderRD::initialize()` call.
+
+Why this matters beyond the failure count: where the registry supplies the wrong
+defines, the precompiler emits WGSL for **variants the engine never asks for**
+while omitting the ones it does. Those entries can never match at runtime, so
+the affected shaders silently fall back to in-engine Tint conversion. It also
+means "195 compiled" overstates readiness — some of those 195 are phantom
+variants. The right fix is to derive the whole registry from the engine's
+`initialize()` calls rather than patching the entries that happen to fail.
+
 ### scene_forward_mobile: confirmed a 4.7 regression, cause not yet found
 
 Direct A/B, same toolchain and same preprocessing passes, `color_pass` fragment:
