@@ -59,7 +59,6 @@ cascades;
 #define LIGHT_TYPE_SPOT 2
 #define LIGHT_TYPE_AREA 3
 
-#include "../area_lights_inc.glsl"
 
 struct Light {
 	vec3 color;
@@ -90,6 +89,11 @@ layout(set = 0, binding = 11) uniform texture2DArray lightprobe_texture;
 layout(set = 0, binding = 12) uniform texture3D occlusion_texture;
 
 layout(set = 1, binding = 0) uniform texture2D area_light_atlas;
+
+// area_lights_inc.glsl reads area_light_atlas and AREA_LIGHT_SAMPLER as globals,
+// so it must be included after they are declared.
+#define AREA_LIGHT_SAMPLER linear_sampler_with_mipmaps
+#include "../area_lights_inc.glsl"
 
 layout(push_constant, std430) uniform Params {
 	vec3 grid_size;
@@ -172,7 +176,7 @@ void compute_area_light(uint index, vec3 position, out float attenuation, out ve
 	attenuation = get_omni_attenuation(light_distance, 1.0 / lights.data[index].radius, lights.data[index].attenuation - 2.0);
 	float ltc_diffuse = 0.0;
 	vec3 normal = light_vec;
-	ltc_evaluate_diff(normal, light_points, lights.data[index].area_projector_rect, max_mipmap, area_light_atlas, linear_sampler_with_mipmaps, ltc_diffuse, texture_color);
+	ltc_evaluate_diff(normal, light_points, lights.data[index].area_projector_rect, max_mipmap, ltc_diffuse, texture_color);
 	attenuation *= ltc_diffuse;
 }
 

@@ -1,3 +1,14 @@
+// WebGPU/WGSL note: handle types (texture2D, sampler) must NOT be passed as GLSL
+// function parameters here. Doing so makes glslang emit OpSampledImage over loads
+// of UniformConstant function parameters, which Tint's SPIR-V reader cannot model
+// (it asserts in ProcessCoords, and unused handle params raise "non-core types not
+// allowed in core IR"). Every caller already has `area_light_atlas` as a global, so
+// these functions read it directly and take the sampler through AREA_LIGHT_SAMPLER,
+// which each including shader defines to its own sampler global before the include.
+#ifndef AREA_LIGHT_SAMPLER
+#error "area_lights_inc.glsl requires AREA_LIGHT_SAMPLER to be defined before inclusion."
+#endif
+
 // Functions related to area lights
 
 #define M_PI 3.14159265359
@@ -10,12 +21,12 @@ float acos_approx(float p_x) {
 	return (p_x >= 0) ? res : M_PI - res;
 }
 
-vec3 fetch_ltc_lod(vec2 uv, vec4 texture_rect, float lod, float max_mipmap, texture2D area_light_atlas, sampler texture_sampler) {
+vec3 fetch_ltc_lod(vec2 uv, vec4 texture_rect, float lod, float max_mipmap) {
 	float low = min(max(floor(lod), 0.0), max_mipmap - 1.0);
 	float high = min(max(floor(lod + 1.0), 1.0), max_mipmap);
 	vec2 sample_pos = texture_rect.xy + clamp(uv, 0.0, 1.0) * texture_rect.zw; // take border into account
-	vec4 sample_col_low = textureLod(sampler2D(area_light_atlas, texture_sampler), sample_pos, low);
-	vec4 sample_col_high = textureLod(sampler2D(area_light_atlas, texture_sampler), sample_pos, high);
+	vec4 sample_col_low = textureLod(sampler2D(area_light_atlas, AREA_LIGHT_SAMPLER), sample_pos, low);
+	vec4 sample_col_high = textureLod(sampler2D(area_light_atlas, AREA_LIGHT_SAMPLER), sample_pos, high);
 
 	float blend = high - clamp(lod, high - 1.0, high);
 	vec4 sample_col = mix(sample_col_high, sample_col_low, blend);
@@ -93,7 +104,7 @@ float integrate_edge(vec3 p_proj0, vec3 p_proj1, vec3 p0, vec3 p1) {
 	}
 }
 
-vec3 fetch_ltc_filtered_texture_with_form_factor(vec4 texture_rect, vec3 L[4], float max_mipmap, texture2D area_light_atlas, sampler texture_sampler) {
+vec3 fetch_ltc_filtered_texture_with_form_factor(vec4 texture_rect, vec3 L[4], float max_mipmap) {
 	vec3 L0 = normalize(L[0]);
 	vec3 L1 = normalize(L[1]);
 	vec3 L2 = normalize(L[2]);
@@ -130,7 +141,7 @@ vec3 fetch_ltc_filtered_texture_with_form_factor(vec4 texture_rect, vec3 L[4], f
 		lod = abs(dist_x_area) / pow(dot(ln, ln), 0.75);
 		lod = log(2048.0 * lod) / log(3.0);
 	}
-	return fetch_ltc_lod(vec2(1.0) - uv, texture_rect, lod, max_mipmap, area_light_atlas, texture_sampler);
+	return fetch_ltc_lod(vec2(1.0) - uv, texture_rect, lod, max_mipmap);
 }
 
 // Form factor function for area light, taken from Urena, Fajardo, et.al. (2013): An Area-Preserving Parametrization for Spherical Rectangles
@@ -258,7 +269,7 @@ float ltc_integrate_clipped_quad(vec3 L[5], vec3 L_proj[5], int vertices_above_h
 	return abs(I);
 }
 
-void ltc_evaluate(vec3 normal, vec3 eye_vec, mat3 M_inv, vec3 points[4], vec4 texture_rect, float max_mipmap, texture2D area_light_atlas, sampler texture_sampler, out float integral, out vec3 tex_color) {
+void ltc_evaluate(vec3 normal, vec3 eye_vec, mat3 M_inv, vec3 points[4], vec4 texture_rect, float max_mipmap, out float integral, out vec3 tex_color) {
 	// default is white
 	tex_color = vec3(1.0);
 	// construct the orthonormal basis around the normal vector
@@ -297,7 +308,7 @@ void ltc_evaluate(vec3 normal, vec3 eye_vec, mat3 M_inv, vec3 points[4], vec4 te
 	L_proj[4] = normalize(L[4]);
 
 	if (texture_rect != vec4(0.0)) {
-		tex_color = vec3(fetch_ltc_filtered_texture_with_form_factor(texture_rect, L_unclipped, max_mipmap, area_light_atlas, texture_sampler));
+		tex_color = vec3(fetch_ltc_filtered_texture_with_form_factor(texture_rect, L_unclipped, max_mipmap));
 	}
 
 	// Prevent abnormal values when the light goes through (or close to) the fragment
@@ -332,7 +343,7 @@ void ltc_evaluate(vec3 normal, vec3 eye_vec, mat3 M_inv, vec3 points[4], vec4 te
 // includers of this file (voxel_gi, volumetric_fog_process, sdfgi_direct_light)
 // do not declare those uniforms and never call this function.
 #ifdef LTC_LUTS_AVAILABLE
-void ltc_evaluate_specular(vec3 normal, vec3 eye_vec, float roughness, vec3 points[4], vec4 texture_rect, float max_mipmap, texture2D area_light_atlas, sampler texture_sampler, out float ltc_specular, out vec2 fresnel, out vec3 ltc_specular_tex_color) {
+void ltc_evaluate_specular(vec3 normal, vec3 eye_vec, float roughness, vec3 points[4], vec4 texture_rect, float max_mipmap, out float ltc_specular, out vec2 fresnel, out vec3 ltc_specular_tex_color) {
 	float theta = acos_approx(dot(normal, eye_vec));
 	const float LTC_LUT_SIZE = float(64.0);
 	vec2 lut_pos = vec2(max(roughness, float(0.02)), theta / float(0.5 * M_PI));
@@ -346,12 +357,12 @@ void ltc_evaluate_specular(vec3 normal, vec3 eye_vec, float roughness, vec3 poin
 			vec3(-M_brdf_abcd.w * scale, M_brdf_abcd.x * scale, 0),
 			vec3(-M_brdf_e_mag_fres.x * scale, M_brdf_abcd.y * scale, 0));
 
-	ltc_evaluate(normal, eye_vec, M_inv, points, texture_rect, max_mipmap, area_light_atlas, texture_sampler, ltc_specular, ltc_specular_tex_color);
+	ltc_evaluate(normal, eye_vec, M_inv, points, texture_rect, max_mipmap, ltc_specular, ltc_specular_tex_color);
 	fresnel = vec2(M_brdf_e_mag_fres.yz);
 }
 #endif // LTC_LUTS_AVAILABLE
 
-void ltc_evaluate_diff(vec3 normal, vec3 points[4], vec4 texture_rect, float max_mipmap, texture2D area_light_atlas, sampler texture_sampler, out float integral, out vec3 tex_color) {
+void ltc_evaluate_diff(vec3 normal, vec3 points[4], vec4 texture_rect, float max_mipmap, out float integral, out vec3 tex_color) {
 	// default is white
 	tex_color = vec3(1.0);
 	// construct the orthonormal basis around the normal vector
@@ -400,7 +411,7 @@ void ltc_evaluate_diff(vec3 normal, vec3 points[4], vec4 texture_rect, float max
 	}
 
 	if (texture_rect != vec4(0.0)) {
-		tex_color = fetch_ltc_filtered_texture_with_form_factor(texture_rect, L_unclipped, max_mipmap, area_light_atlas, texture_sampler);
+		tex_color = fetch_ltc_filtered_texture_with_form_factor(texture_rect, L_unclipped, max_mipmap);
 	}
 
 	float I = ltc_integrate_clipped_quad(L, L_proj, n);

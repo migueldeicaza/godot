@@ -42,7 +42,6 @@ cell_data;
 #define LIGHT_TYPE_SPOT 2
 #define LIGHT_TYPE_AREA 3
 
-#include "../area_lights_inc.glsl"
 
 #if defined(MODE_COMPUTE_LIGHT) || defined(MODE_DYNAMIC_LIGHTING)
 
@@ -108,6 +107,14 @@ outputs;
 
 layout(set = 0, binding = 9) uniform texture3D texture_sdf;
 layout(set = 0, binding = 10) uniform sampler texture_sampler;
+
+// area_lights_inc.glsl reads area_light_atlas and AREA_LIGHT_SAMPLER as globals,
+// so it must be included after they are declared. area_light_atlas only exists
+// under the same guard, and ltc_evaluate_diff is only called there, so match it.
+#if defined(MODE_COMPUTE_LIGHT) || defined(MODE_DYNAMIC_LIGHTING)
+#define AREA_LIGHT_SAMPLER texture_sampler
+#include "../area_lights_inc.glsl"
+#endif
 
 #ifdef MODE_WRITE_TEXTURE
 
@@ -394,7 +401,7 @@ bool compute_area_light(uint index, vec3 pos, vec3 normal, inout vec3 light) {
 	}
 	vec3 light_tex_color = vec3(1.0);
 	float ltc;
-	ltc_evaluate_diff(normal, points, lights.data[index].area_projector_rect, lights.data[index].cos_spot_angle, area_light_atlas, texture_sampler, ltc, light_tex_color);
+	ltc_evaluate_diff(normal, points, lights.data[index].area_projector_rect, lights.data[index].cos_spot_angle, ltc, light_tex_color);
 	vec3 ltc_diffuse = ltc * light_tex_color;
 
 	light = lights.data[index].color * ltc_diffuse * attenuation * lights.data[index].energy;

@@ -596,8 +596,21 @@ SHADER_REGISTRY = [
      GENERAL_DEFINES_FOG_PROCESS, [("default", "", [COMP])]),
 
     # ── Voxel GI (gi.cpp:3445) ─────────────────────────────────────
+    # Variants mirror gi.cpp:3589-3596 (VOXEL_GI_SHADER_VERSION_*). A bare
+    # "default" with no MODE_ define is never compiled by the engine, and does
+    # not even build: area_light_atlas is declared inside
+    # "#if defined(MODE_COMPUTE_LIGHT) || defined(MODE_DYNAMIC_LIGHTING)".
     ("servers/rendering/renderer_rd/shaders/environment/voxel_gi.glsl",
-     GENERAL_DEFINES_VOXEL_GI, [("default", "", [COMP])]),
+     GENERAL_DEFINES_VOXEL_GI, [
+         ("compute_light", "\n#define MODE_COMPUTE_LIGHT\n", [COMP]),
+         ("second_bounce", "\n#define MODE_SECOND_BOUNCE\n", [COMP]),
+         ("update_mipmaps", "\n#define MODE_UPDATE_MIPMAPS\n", [COMP]),
+         ("write_texture", "\n#define MODE_WRITE_TEXTURE\n", [COMP]),
+         ("dynamic_lighting", "\n#define MODE_DYNAMIC\n#define MODE_DYNAMIC_LIGHTING\n", [COMP]),
+         ("dynamic_shrink_write", "\n#define MODE_DYNAMIC\n#define MODE_DYNAMIC_SHRINK\n#define MODE_DYNAMIC_SHRINK_WRITE\n", [COMP]),
+         ("dynamic_shrink_plot", "\n#define MODE_DYNAMIC\n#define MODE_DYNAMIC_SHRINK\n#define MODE_DYNAMIC_SHRINK_PLOT\n", [COMP]),
+         ("dynamic_shrink_plot_write", "\n#define MODE_DYNAMIC\n#define MODE_DYNAMIC_SHRINK\n#define MODE_DYNAMIC_SHRINK_PLOT\n#define MODE_DYNAMIC_SHRINK_WRITE\n", [COMP]),
+     ]),
     ("servers/rendering/renderer_rd/shaders/environment/voxel_gi_debug.glsl",
      GENERAL_DEFINES_NONE, [("default", "", [VERT, FRAG])]),
     ("servers/rendering/renderer_rd/shaders/environment/voxel_gi_sdf.glsl",

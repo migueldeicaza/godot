@@ -18,7 +18,6 @@ layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
 #include "../light_data_inc.glsl"
 #include "../oct_inc.glsl"
 
-#include "../area_lights_inc.glsl"
 
 #define M_TAU 6.28318530718
 #define M_PI 3.14159265359
@@ -221,6 +220,11 @@ layout(set = 0, binding = 20) uniform texture2D sky_texture;
 #endif // MODE_COPY
 
 layout(set = 0, binding = 21) uniform texture2D area_light_atlas;
+
+// area_lights_inc.glsl reads area_light_atlas and AREA_LIGHT_SAMPLER as globals,
+// so it must be included after they are declared.
+#define AREA_LIGHT_SAMPLER linear_sampler_with_mipmaps
+#include "../area_lights_inc.glsl"
 
 float get_depth_at_pos(float cell_depth_size, int z) {
 	float d = float(z) * cell_depth_size + cell_depth_size * 0.5; //center of voxels
@@ -664,7 +668,7 @@ void main() {
 							vec3 normal = light_vec;
 							float max_mipmap = area_lights.data[light_index].cone_angle;
 							vec3 texture_color = vec3(1.0);
-							ltc_evaluate_diff(normal, light_points, area_lights.data[light_index].projector_rect, max_mipmap, area_light_atlas, linear_sampler_with_mipmaps, ltc_diffuse, texture_color);
+							ltc_evaluate_diff(normal, light_points, area_lights.data[light_index].projector_rect, max_mipmap, ltc_diffuse, texture_color);
 							attenuation *= ltc_diffuse * cutoff;
 							vec3 light_color = area_lights.data[light_index].color * texture_color;
 
