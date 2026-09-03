@@ -497,6 +497,68 @@ Useful context: `scene_forward_clustered` is **not** in the precompile registry
 at all (WebGPU uses the mobile renderer), and 18 of its variants are in the
 4.6.2 failure baseline — so the clustered shader is not a useful comparison.
 
+### scene_forward_mobile bisect: narrowed, not yet solved
+
+A reproducible harness exists (see the recipe below). Controls verified every
+run: the 4.6.2 shader converts (`tint_exit=0`), the 4.7 one crashes.
+
+**Ruled out.** Each was neutralised and produced the identical crash:
+
+| Probe | Result |
+| --- | --- |
+| Combined sampler as function parameter (LTC LUTs) | still crashes |
+| `textureSize(sampler2D(decal_atlas_srgb, ...))`, new in 4.7 | still crashes |
+| `texture()` on the LTC LUTs (`OpImageSampleImplicitLod`) | still crashes |
+| Area-light loop disabled (`sc_area_lights = 0`) | still crashes |
+| Decal loop disabled | still crashes |
+| Omni / spot / directional fragment loops, individually | still crashes |
+| **All** light loops + decals + area lights disabled together | still crashes |
+| Swapping `decal_data_inc`, `scene_data_inc`, `oct_inc`, `half_inc`, `scene_forward_aa_inc`, `scene_forward_vertex_lights_inc` to their 4.6.2 versions | still crashes |
+
+**Inconclusive** (the 4.6.2 file does not compile against 4.7, so these say
+nothing): `scene_forward_mobile_inc.glsl`, `scene_forward_lights_inc.glsl`,
+`light_data_inc.glsl`. `area_lights_inc.glsl` does not exist in 4.6.2.
+
+**Narrowed by.** These all convert cleanly:
+
+* `#define MODE_UNSHADED`
+* `#define USE_LIGHTMAP`
+* `#define MODE_RENDER_DEPTH`
+
+Since disabling every light loop does *not* help but `MODE_UNSHADED` does, the
+culprit is code guarded by `!defined(MODE_UNSHADED)` that is **outside** the
+light loops — i.e. the reflection-probe / GI / octmap-ambient block, roughly
+lines 1589-1936 of the fragment stage. Candidates in that block worth examining
+first: the `radiance_octmap` sampling (used as both `sampler2DArray` and
+`sampler2D` under `USE_RADIANCE_OCTMAP_ARRAY`, though that arrangement is
+identical in 4.6.2) and `textureArray_bicubic(lightmap_textures[ofs], ...)`,
+which indexes an array of textures by a non-constant and therefore interacts
+with the `flatten_binding_arrays` preprocessing pass.
+
+Given `GetTextureSampler()` simply returns the two operands of the recorded
+`OpSampledImage`, the assert means some `OpSampledImage` reaching Tint has a
+non-texture as operand 0. That points at one of the preprocessing passes
+producing a malformed instruction rather than at the GLSL itself.
+
+### Reproduction harness
+
+```bash
+SP=<scratch>
+git archive HEAD servers/rendering/renderer_rd/shaders | tar -x -C $SP/bisect
+git archive refs/wgpu/webgpu-4.6.2 servers/rendering/renderer_rd/shaders \
+    | tar -x -C $SP/bisect_old
+```
+
+Then, against either tree, assemble the variant with `wgsl_precompile`'s
+`parse_glsl_file` / `assemble_glsl` / `compile_glsl_to_spirv`, write the SPIR-V
+to a file, and run `bin/tint_convert_cli <file>.spv` in **single-file** mode —
+`--batch` forks with stderr to `/dev/null` and hides the assert. Exit 0 means it
+converted; exit 133 plus the `TINT_ASSERT` line means it still crashes.
+
+Note: delegating this to Codex failed twice. Its provider-side classifier
+rejected the task ("flagged for possible cybersecurity risk"), almost certainly
+a false positive on writing SPIR-V binaries and analysing a compiler abort.
+
 ### How to debug the TINT_UNIMPLEMENTED crashes
 
 The batch converter reports only a generic "Tint crashed" because
