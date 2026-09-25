@@ -52,7 +52,11 @@
 #endif // RD_ENABLED
 
 #import "embedded_debugger.h"
+#ifdef TOOLS_ENABLED
 #import "macos_quartz_core_spi.h"
+#else
+#import <QuartzCore/QuartzCore.h>
+#endif
 
 #import "core/config/project_settings.h"
 #import "core/debugger/engine_debugger.h"
@@ -241,6 +245,9 @@ DisplayServerEmbedded::DisplayServerEmbedded(const String &p_rendering_driver, W
 	bounds = CGRectApplyAffineTransform(bounds, CGAffineTransformInvert(CGAffineTransformMakeScale(scale, scale)));
 	layer.bounds = bounds;
 
+#ifdef TOOLS_ENABLED
+	// CAContext is private CoreAnimation API; App Review rejects any binary that references it.
+	// Only the editor hosts an embedded game through it, so keep it out of library builds.
 	if (!native_layer) {
 		CGSConnectionID connection_id = CGSMainConnectionID();
 		ca_context = [CAContext contextWithCGSConnection:connection_id options:@{ kCAContextCIFilterBehavior : @"ignore" }];
@@ -251,6 +258,7 @@ DisplayServerEmbedded::DisplayServerEmbedded(const String &p_rendering_driver, W
 			EngineDebugger::get_singleton()->send_message("game_view:set_context_id", arr);
 		}
 	}
+#endif
 }
 
 DisplayServerEmbedded::~DisplayServerEmbedded() {
