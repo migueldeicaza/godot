@@ -56,10 +56,10 @@ jobs:
         run: |
           set -euo pipefail
 
-          mkdir -p dist/staging dist/ios dist/macos dist/apple
-          cp artifacts/ios/core/extension/libgodot.h dist/staging/libgodot.h
+          mkdir -p dist/staging/headers dist/ios dist/macos dist/apple
+          cp artifacts/ios/core/extension/libgodot.h dist/staging/headers/libgodot.h
           if [ -f artifacts/ios/core/extension/gdextension_interface.gen.h ]; then
-            cp artifacts/ios/core/extension/gdextension_interface.gen.h dist/staging/gdextension_interface.gen.h
+            cp artifacts/ios/core/extension/gdextension_interface.gen.h dist/staging/headers/gdextension_interface.gen.h
           fi
 
           lipo -create \
@@ -74,21 +74,21 @@ jobs:
 
           xcodebuild -create-xcframework \
             -library dist/staging/libgodotkit.ios.device.a \
-            -headers dist/staging \
+            -headers dist/staging/headers \
             -library dist/staging/libgodotkit.ios.simulator.a \
-            -headers dist/staging \
+            -headers dist/staging/headers \
             -output dist/ios/libgodot.xcframework
 
           xcodebuild -create-xcframework \
             -library dist/staging/libgodotkit.dylib \
-            -headers dist/staging \
+            -headers dist/staging/headers \
             -output dist/macos/libgodot.xcframework
 
           cp -R dist/ios/libgodot.xcframework dist/apple/libgodot-ios.xcframework
           cp -R dist/macos/libgodot.xcframework dist/apple/libgodot-macos.xcframework
-          cp dist/staging/libgodot.h dist/apple/
-          if [ -f dist/staging/gdextension_interface.gen.h ]; then
-            cp dist/staging/gdextension_interface.gen.h dist/apple/
+          cp dist/staging/headers/libgodot.h dist/apple/
+          if [ -f dist/staging/headers/gdextension_interface.gen.h ]; then
+            cp dist/staging/headers/gdextension_interface.gen.h dist/apple/
           fi
 
           ditto -c -k --sequesterRsrc --keepParent dist/ios/libgodot.xcframework dist/libgodot-ios.xcframework.zip

@@ -10,6 +10,7 @@ env:
     module_text_server_fb_enabled=yes
     tests=no
     debug_symbols=no
+    library_type=static_library
     vulkan=no
     metal=yes
     disable_path_overrides=no
@@ -58,6 +59,47 @@ jobs:
           scons-flags: ${{ env.SCONS_FLAGS }} arch=x86_64 simulator=yes
           platform: ios
           target: template_release
+
+      - name: Verify embeddable archives
+        run: |
+          set -euo pipefail
+
+          for archive in \
+            bin/libgodot.ios.template_release.arm64.a \
+            bin/libgodot.ios.template_release.arm64.simulator.a \
+            bin/libgodot.ios.template_release.x86_64.simulator.a
+          do
+            if ! nm -gjU "$archive" 2>/dev/null > symbols.txt; then
+              echo "Could not inspect symbols in: $archive" >&2
+              exit 1
+            fi
+            if grep -qx _main symbols.txt; then
+              echo "The embeddable archive exports _main: $archive" >&2
+              exit 1
+            fi
+            for symbol in \
+              _libgodot_create_godot_instance \
+              _libgodot_destroy_godot_instance \
+              _libgodot_ios_create_rendering_layer \
+              _libgodot_ios_initialize_rendering_layer \
+              _libgodot_ios_layout_rendering_layer \
+              _libgodot_ios_start_rendering_layer \
+              _libgodot_ios_stop_rendering_layer
+            do
+              if ! grep -qx "$symbol" symbols.txt; then
+                echo "The embeddable archive is missing $symbol: $archive" >&2
+                exit 1
+              fi
+            done
+            if ! ar -t "$archive" > archive_members.txt; then
+              echo "Could not inspect members in: $archive" >&2
+              exit 1
+            fi
+            if grep -Eq '(^|/)app\..*\.o$' archive_members.txt; then
+              echo "The embeddable archive contains the standalone app object: $archive" >&2
+              exit 1
+            fi
+          done
 
       - name: Save Godot build cache
         uses: ./.github/actions/godot-cache-save

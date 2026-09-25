@@ -69,6 +69,8 @@ GDExtensionObjectPtr libgodot_create_godot_instance(int p_argc, char *p_argv[], 
 	@autoreleasepool {
 		Error err = Main::setup(p_argv[0], remaining_args, remaining_args > 0 ? &p_argv[1] : nullptr, false);
 		if (err != OK) {
+			memdelete(os);
+			os = nullptr;
 			return nullptr;
 		}
 
@@ -81,6 +83,9 @@ GDExtensionObjectPtr libgodot_create_godot_instance(int p_argc, char *p_argv[], 
 		if (!instance->initialize(p_init_func)) {
 			memdelete(instance);
 			instance = nullptr;
+			Main::cleanup();
+			memdelete(os);
+			os = nullptr;
 			return nullptr;
 		}
 
