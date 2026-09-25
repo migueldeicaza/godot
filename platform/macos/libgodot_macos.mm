@@ -28,14 +28,14 @@
 /* SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.                 */
 /**************************************************************************/
 
+#include "display_server_macos_embedded.h"
 #include "os_macos.h"
 
-#include "core/object/class_db.h"
 #include "core/extension/godot_instance.h"
 #include "core/extension/libgodot.h"
+#include "core/object/class_db.h"
 #include "main/main.h"
 
-#include "display_server_macos_embedded.h"
 static OS_MacOS *os = nullptr;
 
 static GodotInstance *instance = nullptr;
