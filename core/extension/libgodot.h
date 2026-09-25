@@ -70,6 +70,38 @@ LIBGODOT_API GDExtensionObjectPtr libgodot_create_godot_instance(int p_argc, cha
  */
 LIBGODOT_API void libgodot_destroy_godot_instance(GDExtensionObjectPtr p_godot_instance);
 
+/**
+ * Creates an iOS rendering layer for a libgodot host.
+ *
+ * Call this function on the main thread. The returned Objective-C object has a
+ * +1 retain count. Consume it with `__bridge_transfer` in Objective-C ARC,
+ * `takeRetainedValue()` in Swift, or an equivalent ownership transfer. Keep
+ * the layer alive until the Godot instance and its native surface are gone.
+ *
+ * @param p_rendering_driver The rendering driver name, such as `metal` or `opengl3`.
+ *
+ * @return An opaque pointer to a CALayer, or nullptr if the driver is not supported.
+ */
+LIBGODOT_API void *libgodot_ios_create_rendering_layer(const char *p_rendering_driver);
+
+/**
+ * Initializes an iOS rendering layer after the host adds it to its view.
+ * Call this function on the main thread before the Godot instance starts.
+ */
+LIBGODOT_API void libgodot_ios_initialize_rendering_layer(void *p_rendering_layer);
+
+/** Updates an iOS rendering layer on the main thread after its bounds change. */
+LIBGODOT_API void libgodot_ios_layout_rendering_layer(void *p_rendering_layer);
+
+/**
+ * Makes an iOS rendering layer current before a Godot iteration. Call this and
+ * the matching stop function on the same thread that performs the iteration.
+ */
+LIBGODOT_API void libgodot_ios_start_rendering_layer(void *p_rendering_layer);
+
+/** Presents an iOS rendering layer after a Godot iteration. */
+LIBGODOT_API void libgodot_ios_stop_rendering_layer(void *p_rendering_layer);
+
 #ifdef __cplusplus
 }
 #endif // __cplusplus

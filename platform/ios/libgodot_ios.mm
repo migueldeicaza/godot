@@ -35,11 +35,62 @@
 #include "drivers/apple_embedded/display_server_apple_embedded.h"
 #include "main/main.h"
 
+#import "display_layer_ios.h"
 #include "os_ios.h"
 
 static OS_IOS *os = nullptr;
 static GodotInstance *instance = nullptr;
 static bool apple_embedded_class_registered = false;
+
+static CALayer<GDTDisplayLayer> *_get_rendering_layer(void *p_rendering_layer) {
+	ERR_FAIL_NULL_V(p_rendering_layer, nullptr);
+	id object = (__bridge id)p_rendering_layer;
+	ERR_FAIL_COND_V_MSG(![object conformsToProtocol:@protocol(GDTDisplayLayer)], nullptr, "The rendering layer does not implement GDTDisplayLayer.");
+	return (CALayer<GDTDisplayLayer> *)object;
+}
+
+void *libgodot_ios_create_rendering_layer(const char *p_rendering_driver) {
+	ERR_FAIL_NULL_V(p_rendering_driver, nullptr);
+	ERR_FAIL_COND_V_MSG(![NSThread isMainThread], nullptr, "Rendering layers must be created on the main thread.");
+
+	NSString *driver = [NSString stringWithUTF8String:p_rendering_driver];
+	CALayer<GDTDisplayLayer> *layer = nullptr;
+	if ([driver isEqualToString:@"metal"] || [driver isEqualToString:@"vulkan"]) {
+		layer = [GDTMetalLayer layer];
+	} else if ([driver isEqualToString:@"opengl3"]) {
+		GODOT_CLANG_WARNING_PUSH_AND_IGNORE("-Wdeprecated-declarations")
+		layer = [GDTOpenGLLayer layer];
+		GODOT_CLANG_WARNING_POP
+	}
+
+	return (__bridge_retained void *)layer;
+}
+
+void libgodot_ios_initialize_rendering_layer(void *p_rendering_layer) {
+	ERR_FAIL_COND_MSG(![NSThread isMainThread], "Rendering layers must be initialized on the main thread.");
+	CALayer<GDTDisplayLayer> *layer = _get_rendering_layer(p_rendering_layer);
+	ERR_FAIL_NULL(layer);
+	[layer initializeDisplayLayer];
+}
+
+void libgodot_ios_layout_rendering_layer(void *p_rendering_layer) {
+	ERR_FAIL_COND_MSG(![NSThread isMainThread], "Rendering layers must be laid out on the main thread.");
+	CALayer<GDTDisplayLayer> *layer = _get_rendering_layer(p_rendering_layer);
+	ERR_FAIL_NULL(layer);
+	[layer layoutDisplayLayer];
+}
+
+void libgodot_ios_start_rendering_layer(void *p_rendering_layer) {
+	CALayer<GDTDisplayLayer> *layer = _get_rendering_layer(p_rendering_layer);
+	ERR_FAIL_NULL(layer);
+	[layer startRenderDisplayLayer];
+}
+
+void libgodot_ios_stop_rendering_layer(void *p_rendering_layer) {
+	CALayer<GDTDisplayLayer> *layer = _get_rendering_layer(p_rendering_layer);
+	ERR_FAIL_NULL(layer);
+	[layer stopRenderDisplayLayer];
+}
 
 GDExtensionObjectPtr libgodot_create_godot_instance(int p_argc, char *p_argv[], GDExtensionInitializationFunction p_init_func) {
 	ERR_FAIL_COND_V_MSG(instance != nullptr, nullptr, "Only one Godot Instance may be created.");
