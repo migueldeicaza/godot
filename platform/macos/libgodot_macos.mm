@@ -30,8 +30,8 @@
 
 #include "core/extension/libgodot.h"
 
-#include "core/object/class_db.h"
 #include "core/extension/godot_instance.h"
+#include "core/object/class_db.h"
 #include "main/main.h"
 
 #include "display_server_embedded.h"
