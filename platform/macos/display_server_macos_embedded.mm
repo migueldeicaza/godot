@@ -33,6 +33,7 @@
 #import "embedded_debugger.h"
 
 #import "core/config/project_settings.h"
+#import "core/object/class_db.h"
 #import "core/debugger/engine_debugger.h"
 #import "core/input/input.h"
 #import "core/input/input_event.h"
@@ -66,6 +67,10 @@
 // Keep Quartz after rendering includes, as it includes system GL.h
 // which clashes with GLAD.
 #import "macos_quartz_core_spi.h"
+
+void register_macos_embedded_class() {
+	ClassDB::register_abstract_class<DisplayServerMacOSEmbedded>();
+}
 
 Ref<RenderingNativeSurface> DisplayServerMacOSEmbedded::native_surface;
 

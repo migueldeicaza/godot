@@ -59,6 +59,9 @@
 #include "servers/debugger/servers_debugger.h"
 #include "servers/display/accessibility_server.h"
 #include "servers/display/display_server.h"
+#if defined(MACOS_ENABLED) && defined(TOOLS_ENABLED)
+void register_macos_embedded_class();
+#endif
 #include "servers/display/native_menu.h"
 #include "servers/movie_writer/movie_writer.h"
 #include "servers/movie_writer/movie_writer_pngwav.h"
@@ -163,6 +166,9 @@ void register_server_types() {
 
 	GDREGISTER_ABSTRACT_CLASS(AccessibilityServer);
 	GDREGISTER_ABSTRACT_CLASS(DisplayServer);
+#if defined(MACOS_ENABLED) && defined(TOOLS_ENABLED)
+	register_macos_embedded_class();
+#endif
 	GDREGISTER_ABSTRACT_CLASS(RenderingNativeSurface);
 	GDREGISTER_ABSTRACT_CLASS(RenderingServer);
 	GDREGISTER_CLASS(AudioServer);
