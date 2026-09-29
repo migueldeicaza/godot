@@ -36,11 +36,21 @@
 #include "main/main.h"
 
 #import "display_layer_ios.h"
+#import <UIKit/UIKit.h>
 #include "os_ios.h"
 
 static OS_IOS *os = nullptr;
 static GodotInstance *instance = nullptr;
 static bool apple_embedded_class_registered = false;
+
+// SDL's iOS platform checks are referenced by the static library build.
+extern "C" bool SDL_IsIPad(void) {
+	return UI_USER_INTERFACE_IDIOM() == UIUserInterfaceIdiomPad;
+}
+
+extern "C" bool SDL_IsAppleTV(void) {
+	return UI_USER_INTERFACE_IDIOM() == UIUserInterfaceIdiomTV;
+}
 
 static CALayer<GDTDisplayLayer> *_get_rendering_layer(void *p_rendering_layer) {
 	ERR_FAIL_NULL_V(p_rendering_layer, nullptr);
