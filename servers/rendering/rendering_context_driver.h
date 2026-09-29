@@ -33,6 +33,7 @@
 #include "core/string/ustring.h"
 #include "core/templates/hash_map.h"
 #include "servers/display/display_server_enums.h"
+#include "servers/rendering/rendering_native_surface.h"
 
 #include <cstdint>
 

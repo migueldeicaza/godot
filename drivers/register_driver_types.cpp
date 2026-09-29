@@ -36,6 +36,9 @@
 #if defined(MACOS_ENABLED) || defined(APPLE_EMBEDDED_ENABLED)
 #include "drivers/apple/rendering_native_surface_apple.h"
 #endif
+#if defined(MACOS_ENABLED) && defined(TOOLS_ENABLED)
+#include "platform/macos/display_server_macos_embedded.h"
+#endif
 
 #ifdef ACCESSKIT_ENABLED
 #include "drivers/accesskit/accessibility_server_accesskit.h"
@@ -50,6 +53,9 @@ void register_core_driver_types() {
 #endif
 #if defined(MACOS_ENABLED) || defined(APPLE_EMBEDDED_ENABLED)
 	GDREGISTER_ABSTRACT_CLASS(RenderingNativeSurfaceApple);
+#endif
+#if defined(MACOS_ENABLED) && defined(TOOLS_ENABLED)
+	GDREGISTER_ABSTRACT_CLASS(DisplayServerMacOSEmbedded);
 #endif
 
 	image_loader_png.instantiate();

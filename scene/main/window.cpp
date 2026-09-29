@@ -702,7 +702,7 @@ void Window::_make_window() {
 		DisplayServer::get_singleton()->window_attach_instance_id(get_instance_id(), window_id);
 		_update_window_size();
 		_update_window_callbacks();
-		RS::get_singleton()->viewport_set_update_mode(get_viewport_rid(), RS::VIEWPORT_UPDATE_WHEN_VISIBLE);
+		RS::get_singleton()->viewport_set_update_mode(get_viewport_rid(), RenderingServerEnums::VIEWPORT_UPDATE_WHEN_VISIBLE);
 		return;
 	}
 
@@ -773,7 +773,7 @@ void Window::_clear_window() {
 	if (native_surface.is_valid()) {
 		DisplayServer::get_singleton()->delete_native_window(window_id);
 		window_id = DisplayServerEnums::INVALID_WINDOW_ID;
-		RS::get_singleton()->viewport_set_update_mode(get_viewport_rid(), RS::VIEWPORT_UPDATE_DISABLED);
+		RS::get_singleton()->viewport_set_update_mode(get_viewport_rid(), RenderingServerEnums::VIEWPORT_UPDATE_DISABLED);
 		return;
 	}
 
